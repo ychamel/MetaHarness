@@ -1,0 +1,22 @@
+{
+  "name": "metaharness",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Run a team of AI agents from different providers, each in its native harness, on one goal.",
+  "type": "module",
+  "bin": {
+    "mh": "./bin/mh.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "mh": "node src/cli.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.2"
+  }
+}
