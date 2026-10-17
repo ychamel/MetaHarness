@@ -30,5 +30,9 @@ export interface Role {
   instructions: string;
   /** Quick-helper roles get the short helper methodology instead of the team one. */
   helper: boolean;
+  /** Harness tool patterns allowed without asking, e.g. "Bash(npm test*)" for Claude Code. */
+  allow: string[];
+  /** The harness's own permission mode, e.g. acceptEdits for Claude Code. */
+  permissionMode?: string;
   file: string;
 }

@@ -59,7 +59,7 @@ test('a small scripted team completes the milestone-0 scenario', async () => {
   assert.ok(existsSync(join(g.sharedDir, 'design.md')));
   assert.match(readFileSync(join(g.sharedDir, 'notes', 'implementer-1.md'), 'utf8'), /async/);
   assert.equal(d.humanInbox.filter(i => i.kind === 'done').length, 1, 'only the lead reports to the human');
-  assert.ok(g.agents.get('architect')!.cost > 0, 'usage is tracked');
+  assert.ok((g.agents.get('architect')!.cost ?? 0) > 0, 'usage is tracked');
   await d.close();
 });
 

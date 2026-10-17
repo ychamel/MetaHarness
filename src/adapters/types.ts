@@ -40,6 +40,13 @@ export interface SessionEvents {
   /** Totals so far for this session. */
   usage(u: { tokensIn?: number; tokensOut?: number; costUsd?: number; contextPct?: number }): void;
   exited(reason: 'stopped' | 'crashed', detail?: string): void;
+  /** The harness wants permission for something. Resolves when the human decides. */
+  approval(tool: string, detail: string): Promise<ApprovalDecision>;
+}
+
+export interface ApprovalDecision {
+  allow: boolean;
+  message?: string;
 }
 
 export interface Session {

@@ -1,12 +1,12 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { EventStore } from './store.ts';
 import { loadConfig, type Config } from './config.ts';
 import { resolveName } from './fuzzy.ts';
 import { Hub } from './hub.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
-import type { HarnessAdapter, Session, SessionEvents } from './adapters/types.ts';
+import type { ApprovalDecision, HarnessAdapter, Session, SessionEvents } from './adapters/types.ts';
 
 export interface InboxEntry {
   id: string;
@@ -35,7 +35,8 @@ export interface AgentRec {
   cwd: string;
   state: AgentState;
   status: string;
-  cost: number;
+  /** Total spend so far; undefined when the harness doesn't report cost and no price is configured. */
+  cost?: number;
   contextPct?: number;
   lastText: string;
   adapter: HarnessAdapter;
@@ -65,7 +66,7 @@ export interface HumanInboxItem {
   id: string;
   goal: string;
   agent: string;
-  kind: 'question' | 'done' | 'stopped' | 'crash';
+  kind: 'question' | 'approval' | 'done' | 'stopped' | 'crash';
   text: string;
   ts: string;
 }
@@ -100,7 +101,11 @@ export class Daemon {
   readonly humanInbox: HumanInboxItem[] = [];
   readonly quickTimeoutMs: number;
   config: Config;
+  /** Base URL of the running server, e.g. http://127.0.0.1:7777. Real harnesses reach /mcp/<token> under it. */
+  mcpBase?: string;
   private adapters: Record<string, HarnessAdapter>;
+  private tokens = new Map<string, { goal: string; agent: string }>();
+  private approvals = new Map<string, (d: ApprovalDecision) => void>();
   private harnessOverride?: string;
 
   constructor(o: DaemonOptions) {
@@ -183,7 +188,7 @@ export class Daemon {
 
     const rec: AgentRec = {
       goal: goalId, name, role, harness, model: role.model, parent: o.parent, brief: o.brief,
-      quick: !!o.quick, isLead: !!o.isLead, cwd, state: 'starting', status: '', cost: 0, lastText: '',
+      quick: !!o.quick, isLead: !!o.isLead, cwd, state: 'starting', status: '', lastText: '',
       adapter, inbox: [], waiters: [], doneWaiters: [],
     };
     g.agents.set(name, rec);
@@ -192,12 +197,14 @@ export class Daemon {
       data: { role: role.name, harness, model: role.model, brief: o.brief, quick: !!o.quick, cwd },
     });
 
+    const token = randomBytes(16).toString('hex');
+    this.tokens.set(token, { goal: goalId, agent: name });
     adapter
       .start(
         {
           goal: goalId, agent: name, role, model: role.model,
-          systemPrompt: this.buildPrompt(g, rec, o.playbook), brief: o.brief,
-          cwd, sharedDir: g.sharedDir, mcpUrl: '',
+          systemPrompt: this.buildPrompt(g, rec, o.playbook), brief: this.firstMessage(rec),
+          cwd, sharedDir: g.sharedDir, mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${token}` : '',
           callTool: (tool, args) => this.hub.call(goalId, name, tool, args),
         },
         this.sessionEvents(rec),
@@ -237,6 +244,27 @@ export class Daemon {
     return parts.join('\n\n');
   }
 
+  /**
+   * The brief plus a short reminder of who the agent is and how to report back. Some models
+   * follow the first user message far more closely than their system instructions (seen with
+   * gpt-6-luna), so the essentials appear in both.
+   */
+  private firstMessage(rec: AgentRec): string {
+    const spawner = rec.parent === 'human' ? 'the human' : rec.parent;
+    const lines = [
+      rec.brief,
+      '',
+      '---',
+      `[MetaHarness] You are ${rec.name}, the ${rec.role.name} on a team of agents. Your role:`,
+      rec.role.instructions,
+      '',
+      rec.quick
+        ? 'When you have the answer, call the MetaHarness `done` tool with it as the note.'
+        : `Use the MetaHarness tools: \`send\` to ask ${spawner} if anything is unclear, \`status\` for progress, and \`done\` with a short note when you finish.`,
+    ];
+    return lines.join('\n');
+  }
+
   private sessionEvents(rec: AgentRec): SessionEvents {
     const base = { goal: rec.goal, agent: rec.name };
     return {
@@ -270,7 +298,44 @@ export class Daemon {
           this.finish(rec, note, state);
         }
       },
+      approval: (tool, detail) => this.requestApproval(rec, tool, detail),
     };
+  }
+
+  /** Which agent an MCP token belongs to. */
+  agentForToken(token: string): { goal: string; agent: string } | undefined {
+    return this.tokens.get(token);
+  }
+
+  /** Puts a permission request in the human's Inbox and resolves when they decide. */
+  requestApproval(rec: AgentRec, tool: string, detail: string): Promise<ApprovalDecision> {
+    const g = this.goals.get(rec.goal)!;
+    const item = this.toHuman(g, rec.name, 'approval', `${tool}: ${detail}`);
+    const before = rec.status;
+    this.status(rec, `Waiting for your approval: ${tool}`);
+    return new Promise(resolve => {
+      this.approvals.set(item.id, d => {
+        if (rec.status === `Waiting for your approval: ${tool}`) this.status(rec, before);
+        resolve(d);
+      });
+    });
+  }
+
+  /** Answers or dismisses an Inbox item. Approvals unblock the agent that asked. */
+  resolveInbox(itemId: string, decision: 'approve' | 'deny' | 'dismiss', reply?: string): string {
+    const i = this.humanInbox.findIndex(x => x.id === itemId || x.id.startsWith(itemId));
+    if (i < 0) return `There's no Inbox item ${itemId}.`;
+    const item = this.humanInbox[i];
+    this.humanInbox.splice(i, 1);
+    this.emit({ goal: item.goal, agent: item.agent, type: 'inbox.resolved', data: { id: item.id, decision, reply: reply ?? null } });
+    const pending = this.approvals.get(item.id);
+    if (pending) {
+      this.approvals.delete(item.id);
+      pending({ allow: decision === 'approve', message: reply ?? (decision === 'approve' ? undefined : 'The human denied this.') });
+      return decision === 'approve' ? `Approved for ${item.agent}.` : `Denied for ${item.agent}.`;
+    }
+    if (reply) this.deliver(item.goal, 'human', item.agent, reply);
+    return reply ? `Answered ${item.agent}.` : 'Dismissed.';
   }
 
   /**
@@ -385,10 +450,11 @@ export class Daemon {
     return { error: `There's nobody called "${to}". Teammates: ${agentNames.join(', ') || 'none yet'}. You can also send to lead, all or human.` };
   }
 
-  private toHuman(g: GoalRec, agent: string, kind: HumanInboxItem['kind'], text: string): void {
+  private toHuman(g: GoalRec, agent: string, kind: HumanInboxItem['kind'], text: string): HumanInboxItem {
     const item: HumanInboxItem = { id: randomUUID().slice(0, 8), goal: g.id, agent, kind, text, ts: new Date().toISOString() };
     this.humanInbox.push(item);
     this.emit({ goal: g.id, agent, type: 'inbox.item', data: { id: item.id, kind, text } });
+    return item;
   }
 
   private enqueue(rec: AgentRec, entry: InboxEntry): void {
@@ -509,7 +575,7 @@ export class Daemon {
           state: a.state,
           status: a.status,
           quick: a.quick,
-          cost: a.cost,
+          cost: a.cost ?? null,
           contextPct: a.contextPct ?? null,
           unread: a.inbox.length,
           nativeSession: a.session?.nativeId ?? null,
@@ -544,8 +610,15 @@ export class Daemon {
         const goal = goalOrLatest();
         return { goal, result: this.stopAgent(goal, agent) };
       }
+      case 'inbox.resolve': {
+        const item = s('item');
+        const decision = s('decision') ?? 'dismiss';
+        if (!item) throw new Error('inbox.resolve needs "item".');
+        if (!['approve', 'deny', 'dismiss'].includes(decision)) throw new Error('decision must be approve, deny or dismiss.');
+        return { result: this.resolveInbox(item, decision as 'approve' | 'deny' | 'dismiss', s('reply')) };
+      }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, agent.message, agent.stop.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, agent.message, agent.stop, inbox.resolve.`);
     }
   }
 

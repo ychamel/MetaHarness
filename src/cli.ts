@@ -19,6 +19,9 @@ const HELP = `mh: run a team of AI agents from different providers on one goal
   mh send <to> <message> [--urgent] [--goal <id>]
                                      Message an agent, a role, lead or all
   mh stop <agent> [--goal <id>]      Stop an agent
+  mh approve <item> [<note>]         Approve a permission request from your Inbox
+  mh deny <item> [<reason>]          Deny it; the agent gets the reason
+  mh dismiss <item>                  Clear an Inbox item
 
 Environment: MH_HOME (default ~/.metaharness), MH_PORT (default 7777)`;
 
@@ -82,7 +85,8 @@ async function printStatus(goalId?: string): Promise<void> {
         const what = `${a.role}${a.quick ? ' (helper)' : ''}`.padEnd(20);
         const where = `${a.harness} · ${a.model}`.padEnd(28);
         const unread = a.unread ? ` [${a.unread} unread]` : '';
-        console.log(`  ${name}${what}${where}${a.state.padEnd(9)}$${a.cost.toFixed(3)}  ${a.status}${unread}`);
+        const cost = a.cost == null ? '     —' : `$${a.cost.toFixed(3)}`;
+        console.log(`  ${name}${what}${where}${a.state.padEnd(9)}${cost}  ${a.status}${unread}`);
         walk(a.name, depth + 1);
       }
     };
@@ -90,7 +94,8 @@ async function printStatus(goalId?: string): Promise<void> {
   }
   if (s.inbox.length) {
     console.log(`\nFor you (${s.inbox.length}):`);
-    for (const i of s.inbox) console.log(`  [${i.kind}] ${i.agent}: ${i.text}`);
+    for (const i of s.inbox) console.log(`  ${i.id}  [${i.kind}] ${i.agent}: ${i.text}`);
+    if (s.inbox.some((i: { kind: string }) => i.kind === 'approval')) console.log('  Answer with: mh approve <id>  or  mh deny <id> [reason]');
   }
 }
 
@@ -127,18 +132,26 @@ async function main(): Promise<void> {
     case 'daemon': {
       const { Daemon } = await import('./daemon.ts');
       const { FakeAdapter, demoScripts } = await import('./adapters/fake.ts');
+      const { ClaudeAdapter } = await import('./adapters/claude.ts');
+      const { CodexAdapter } = await import('./adapters/codex.ts');
       const { startServer } = await import('./server.ts');
       const fake = opt.fake === true;
+      const pricesFile = [join(process.cwd(), '.metaharness', 'prices.json'), join(HOME, 'prices.json')].find(existsSync);
+      const prices = pricesFile ? JSON.parse(readFileSync(pricesFile, 'utf8')) : {};
       const d = new Daemon({
         home: HOME,
         repo: process.cwd(),
-        adapters: { fake: new FakeAdapter(demoScripts) },
+        adapters: {
+          fake: new FakeAdapter(demoScripts),
+          'claude-code': new ClaudeAdapter(),
+          codex: new CodexAdapter({ prices }),
+        },
         harnessOverride: fake ? 'fake' : undefined,
       });
       await startServer(d, PORT, token(true)).catch((e: Error) => die(`Couldn't listen on ${BASE}: ${e.message}`));
       console.log(`MetaHarness daemon on ${BASE}${fake ? ', running scripted agents' : ''}. Data in ${HOME}.`);
       console.log(`Roles: ${[...d.config.roles.keys()].join(', ') || 'none (add .metaharness/roles/<name>.md)'}`);
-      if (!fake) console.log('The Claude Code and Codex adapters arrive in the next step. Until then, use --fake.');
+      if (!fake) console.log('Harnesses: claude-code, codex. (antigravity arrives in milestone 1.)');
       const shutdown = () => void d.close().then(() => process.exit(0));
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
@@ -165,6 +178,14 @@ async function main(): Promise<void> {
     case 'stop': {
       if (!pos[0]) die('Usage: mh stop <agent>');
       const r = await command({ cmd: 'agent.stop', agent: pos[0], goal: s('goal') });
+      console.log(r.result);
+      return;
+    }
+    case 'approve':
+    case 'deny':
+    case 'dismiss': {
+      if (!pos[0]) die(`Usage: mh ${cmd} <item>. mh status lists Inbox items.`);
+      const r = await command({ cmd: 'inbox.resolve', item: pos[0], decision: cmd, reply: pos.slice(1).join(' ') || undefined });
       console.log(r.result);
       return;
     }

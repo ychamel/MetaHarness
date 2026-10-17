@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import type { Daemon } from './daemon.ts';
+import { handleMcp } from './mcp.ts';
 import type { MhEvent } from './types.ts';
 
 /**
@@ -8,14 +10,31 @@ import type { MhEvent } from './types.ts';
  */
 export function startServer(d: Daemon, port: number, token: string): Promise<Server> {
   const server = createServer((req, res) => void handle(d, token, req, res));
+  // wait() and quick spawns hold requests open for minutes.
+  server.requestTimeout = 0;
+  server.headersTimeout = 60_000;
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => resolve(server));
+    server.listen(port, '127.0.0.1', () => {
+      d.mcpBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      resolve(server);
+    });
   });
 }
 
 async function handle(d: Daemon, token: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+  // Agents reach their tools at /mcp/<agent token>; the token in the path is their credential.
+  const mcp = url.pathname.match(/^\/mcp\/([0-9a-f]+)\/?$/);
+  if (mcp) {
+    try {
+      const raw = req.method === 'POST' ? await readBody(req) : '';
+      return await handleMcp(d, mcp[1], req, res, raw ? JSON.parse(raw) : undefined);
+    } catch (e) {
+      if (!res.headersSent) json(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: (e as Error).message }, id: null });
+      return;
+    }
+  }
   const ok = req.headers.authorization === `Bearer ${token}` || url.searchParams.get('token') === token;
   if (!ok) return json(res, 401, { error: 'Missing or wrong token. The CLI reads it from the token file in MH_HOME.' });
   try {

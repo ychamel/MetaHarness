@@ -62,6 +62,8 @@ export function loadConfig(dirs: string[]): Config {
         goodAt: meta.good_at ?? '',
         instructions: body,
         helper: /^(true|yes|1)$/i.test(meta.helper ?? ''),
+        allow: (meta.allow ?? '').split(/,(?![^(]*\))/).map(s => s.trim()).filter(Boolean),
+        permissionMode: meta.permission_mode || undefined,
         file,
       });
     }

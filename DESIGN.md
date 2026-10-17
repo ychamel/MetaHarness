@@ -565,6 +565,11 @@ tested before milestone 1. (Antigravity CLI replaced Gemini CLI.)
 - **Approvals never need terminal scraping.** Claude Code asks a tool on our own MCP server;
   Codex sends approval requests over its protocol. Both land in the Inbox.
 - **Codex cost** is computed from a per-model price table in config.
+- **Role reminders in the first message.** In the first live run, `gpt-6-luna` ignored its role
+  and the methodology when they were only in its developer instructions, and just did the brief.
+  The daemon now also puts a short reminder in the first user message: who the agent is, its
+  role's instructions, and the tools for asking and reporting back. With that, Luna asked its
+  question, took the answer, and called `done`.
 - **Adapter choice.**
   - Claude Code: the CLI in stream-json mode, as tested. The Agent SDK wraps the same CLI and
     can replace it later if we need typed messages.

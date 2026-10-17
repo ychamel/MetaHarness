@@ -18,5 +18,9 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "zod": "4.6.5"
   }
 }
