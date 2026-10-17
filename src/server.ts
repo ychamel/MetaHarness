@@ -35,6 +35,16 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
       return;
     }
   }
+  // Harness hooks reach the daemon at /hook/<agent token>, the same credential as MCP.
+  const hook = url.pathname.match(/^\/hook\/([0-9a-f]+)\/?$/);
+  if (hook && req.method === 'POST') {
+    try {
+      const raw = await readBody(req);
+      return json(res, 200, await d.hook(hook[1], raw ? JSON.parse(raw) : { event: 'before_model' }));
+    } catch (e) {
+      return json(res, 400, { error: (e as Error).message });
+    }
+  }
   const ok = req.headers.authorization === `Bearer ${token}` || url.searchParams.get('token') === token;
   if (!ok) return json(res, 401, { error: 'Missing or wrong token. The CLI reads it from the token file in MH_HOME.' });
   try {

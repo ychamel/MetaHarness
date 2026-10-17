@@ -1,41 +1,47 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { APPROVAL_TOOL, MCP_SERVER_NAME } from '../mcp.ts';
-import type { CapabilityManifest, HarnessAdapter, Session, SessionEvents, SessionSpec } from './types.ts';
+import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions } from './types.ts';
 
 /**
  * Claude Code in streaming mode: one long-lived `claude -p` process per agent, NDJSON in and out.
  * A message written while a turn runs is seen in that same turn (verified, Appendix A).
  */
 export class ClaudeAdapter implements HarnessAdapter {
-  readonly manifest: CapabilityManifest = {
-    harness: 'claude-code',
-    injectMidTurn: true,
-    resume: true,
-    interrupt: true,
-    reportsCost: true,
-    reportsContext: true,
-  };
+  readonly manifest: CapabilityManifest;
   private bin: string;
+  private env: Record<string, string>;
 
-  constructor(opts: { bin?: string } = {}) {
+  /** `id` and `env` let one profile run Claude Code against another provider's endpoint. */
+  constructor(opts: { id?: string; bin?: string; env?: Record<string, string> } = {}) {
     this.bin = opts.bin ?? 'claude';
+    this.env = opts.env ?? {};
+    this.manifest = {
+      harness: opts.id ?? 'claude-code',
+      injectMidTurn: true,
+      resume: true,
+      interrupt: true,
+      reportsCost: true,
+      reportsContext: true,
+      reportsRateLimits: true,
+    };
   }
 
-  async start(spec: SessionSpec, events: SessionEvents): Promise<Session> {
+  async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
     if (!spec.mcpUrl) throw new Error('the daemon has no MCP address yet (is the server running?)');
-    return new ClaudeSession(this.bin, spec, events);
+    return new ClaudeSession(this.bin, this.env, spec, events, opts.resume);
   }
 }
 
-export function claudeArgs(spec: SessionSpec, sessionId: string): string[] {
+/** With `resume`, the session continues under the same ID instead of starting as `sessionId`. */
+export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false): string[] {
   const allowed = [`mcp__${MCP_SERVER_NAME}`, ...spec.role.allow];
   const args = [
     '-p',
     '--input-format', 'stream-json',
     '--output-format', 'stream-json',
     '--verbose',
-    '--session-id', sessionId,
+    resume ? '--resume' : '--session-id', sessionId,
     '--append-system-prompt', spec.systemPrompt,
     '--mcp-config', JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { type: 'http', url: spec.mcpUrl } } }),
     '--strict-mcp-config',
@@ -55,7 +61,7 @@ export function claudeArgs(spec: SessionSpec, sessionId: string): string[] {
 type Block = { type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: unknown; is_error?: boolean };
 
 class ClaudeSession implements Session {
-  readonly nativeId = randomUUID();
+  readonly nativeId: string;
   private proc: ChildProcessWithoutNullStreams;
   private ev: SessionEvents;
   private running = false;
@@ -65,11 +71,12 @@ class ClaudeSession implements Session {
   private costSoFar = 0;
   private toolNames = new Map<string, string>();
 
-  constructor(bin: string, spec: SessionSpec, ev: SessionEvents) {
+  constructor(bin: string, env: Record<string, string>, spec: SessionSpec, ev: SessionEvents, resume?: string) {
     this.ev = ev;
-    this.proc = spawn(bin, claudeArgs(spec, this.nativeId), {
+    this.nativeId = resume ?? randomUUID();
+    this.proc = spawn(bin, claudeArgs(spec, this.nativeId, !!resume), {
       cwd: spec.cwd,
-      env: { ...process.env, MCP_TOOL_TIMEOUT: '900000' },
+      env: { ...process.env, ...env, MCP_TOOL_TIMEOUT: '900000' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.proc.stdout.setEncoding('utf8');
@@ -82,7 +89,7 @@ class ClaudeSession implements Session {
     });
     // The brief starts the first turn right away, so messages the daemon delivers next join it
     // instead of arriving ahead of the brief.
-    void this.send(spec.brief, 'new_turn');
+    if (spec.brief) void this.send(spec.brief, 'new_turn');
   }
 
   busy(): boolean {
@@ -161,9 +168,15 @@ class ClaudeSession implements Session {
         if (name?.startsWith(`mcp__${MCP_SERVER_NAME}__`)) continue;
         this.ev.toolResult(resultText(b.content).slice(0, 200), !b.is_error);
       }
+    } else if (m.type === 'rate_limit_event') {
+      const info = rateLimitInfo(m.rate_limit_info);
+      if (info) this.ev.rateLimit(info);
     } else if (m.type === 'result') {
       this.reportUsage(m);
-      if (m.is_error && m.result) this.ev.text(`(turn ended with an error: ${String(m.result).slice(0, 300)})`);
+      if (m.is_error && m.result) {
+        if (LIMIT_ERROR.test(String(m.result))) this.ev.rateLimit({ status: 'limited' });
+        this.ev.text(`(turn ended with an error: ${String(m.result).slice(0, 300)})`);
+      }
       this.running = false;
       this.ev.turnEnded();
     }
@@ -183,6 +196,21 @@ class ClaudeSession implements Session {
       contextPct: window && used ? Math.round((100 * used) / window) : undefined,
     });
   }
+}
+
+/** How a refused turn reads when Claude Code has no rate_limit_event for it. */
+const LIMIT_ERROR = /usage limit|rate limit|limit reached|out of (extra )?usage/i;
+
+/** Claude Code's rate_limit_info: status allowed | allowed_warning | rejected, utilization 0–1, resetsAt in seconds. */
+export function rateLimitInfo(r: any): RateLimitInfo | undefined {
+  if (!r || typeof r !== 'object' || typeof r.status !== 'string') return undefined;
+  const status = r.status === 'rejected' ? 'limited' : r.status === 'allowed_warning' ? 'warning' : 'ok';
+  return {
+    status,
+    usedPct: typeof r.utilization === 'number' ? Math.round(r.utilization * 100) : undefined,
+    resetsAt: typeof r.resetsAt === 'number' ? r.resetsAt * 1000 : undefined,
+    window: typeof r.rateLimitType === 'string' ? r.rateLimitType : undefined,
+  };
 }
 
 function summarize(input: Record<string, unknown> | undefined): string {

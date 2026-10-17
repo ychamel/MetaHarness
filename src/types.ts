@@ -2,6 +2,7 @@ export type AgentState =
   | 'starting'
   | 'working'
   | 'waiting'
+  | 'limited'
   | 'idle'
   | 'done'
   | 'ended'
@@ -26,6 +27,8 @@ export interface Role {
   name: string;
   harness: string;
   model: string;
+  /** Backups, best first, for when the model is unavailable or its account is at its limit: "harness/model", or just "model" on the same harness. */
+  fallback: string[];
   goodAt: string;
   instructions: string;
   /** Quick-helper roles get the short helper methodology instead of the team one. */

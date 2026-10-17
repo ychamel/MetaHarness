@@ -40,6 +40,14 @@ export function eventLine(e: MhEvent): string {
       return `${t}  ${who}committed on ${d.branch}: ${oneLine(d.summary)}`;
     case 'git.merge':
       return `${t}  ${who}merged ${d.from} into ${d.into}${d.fastForward ? ' (fast-forward)' : ''}`;
+    case 'agent.moved':
+      return `${t}  ${who}moved from ${d.from.harness} · ${d.from.model} to ${d.to.harness} · ${d.to.model}: ${oneLine(d.reason)}`;
+    case 'agent.limited':
+      return `${t}  ${who}rate limited on ${d.account}; continues at ${String(d.until).slice(11, 16)} UTC${d.known ? '' : ' (reset time unknown, will retry)'}`;
+    case 'agent.interrupted':
+      return `${t}  ${who}interrupted${d.how === 'restart' ? ' (session restarted from its ID)' : ''}`;
+    case 'account.limit':
+      return `${t}  ${'account'.padEnd(15)}${d.account}: ${d.status}${d.usedPct != null ? `, ${d.usedPct}% used` : ''}${d.resetsAt ? `, resets ${String(d.resetsAt).slice(11, 16)} UTC` : ''}`;
     case 'inbox.item':
       return d.kind === 'approval'
         ? `${t}  ${'→ you'.padEnd(15)}approval ${d.id} from ${e.agent}: ${oneLine(d.text, 400)} (mh status shows it in full)`

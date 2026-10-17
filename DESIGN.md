@@ -34,7 +34,7 @@ through plain files, and you can watch and steer all of it.
 
 | Piece | What it is | Form |
 |---|---|---|
-| **Role** | A teammate type: which harness and model, what it's good at, how it should work | A markdown file with three lines of front matter |
+| **Role** | A teammate type: which harness and model (plus backups), what it's good at, how it should work | A markdown file with a few lines of front matter |
 | **Playbook** | A suggested way to run a kind of goal, written for the lead agent | Markdown |
 | **Methodology** | House rules every agent gets: how to communicate, hand off, ask for help | One markdown file |
 | **Goal** | One request plus the team working on it | Created with `mh run` or from the UI |
@@ -239,12 +239,12 @@ agent's harness supports:
 | Situation | How it's delivered |
 |---|---|
 | Agent is working (mid-turn) | **Straight into the running turn.** Claude Code: the message is written to its streaming input; Codex: `turn/steer`. Both are native and verified (Appendix A). **This is the main path** |
-| Harness has no native channel | A hook adds the message to the agent's context after its next tool call (Claude Code supports this; Antigravity CLI has hooks too, untested) |
+| Harness has no native channel | A hook adds the message before the agent's next model call or after its next tool call (Antigravity: `PreInvocation`, tested; Claude Code: `PostToolUse`, tested) |
 | Agent is calling our tools | Unread notice attached to every tool result; it reads them via `wait(0)` |
 | Agent is in `wait` | Returned immediately |
 | Agent's turn has ended (idle) | Sent as a new user turn (session resumed) |
 | Harness has neither | The methodology asks agents to call `wait(0)` between steps; the unread notice catches the rest |
-| You mark a message urgent | Interrupt and resume with the message, if the harness supports it |
+| You mark a message urgent | Interrupt and resume with the message. Without a native interrupt, the session is killed and resumed from its ID with the message |
 | Agent is done | Its session is resumed for the follow-up. If that's impossible, the message goes to its spawner with a note |
 
 Where a hook is used, it's a few lines of glue that call the daemon. It only adds something when
@@ -317,7 +317,8 @@ there are new messages or file changes, so an agent nobody is messaging sees not
 ## 11. Native subagents are off; quick spawns replace them
 
 Adapters turn off each harness's own subagent feature: `--disallowedTools Agent` for Claude
-Code, `--disable multi_agent` for Codex, and the Antigravity CLI equivalent if it has one. All delegation goes through MetaHarness.
+Code, `--disable multi_agent` for Codex, and a `PreToolUse` hook that refuses the subagent tools
+for Antigravity CLI. All delegation goes through MetaHarness.
 That means even small helper jobs can use whichever model suits them (an Opus architect can send
 a codebase search to Luna), and every one of them shows up in the UI.
 
@@ -523,12 +524,141 @@ diff component. The UI loads a snapshot from `/state`, then applies live events 
 | Daemon + CLI | TypeScript / Node (the MCP SDK is TypeScript-first; Node 26 runs TypeScript directly) |
 | Storage | SQLite for events; plain files for shared folders and config |
 | Agents → daemon | MCP over HTTP on localhost, one token per agent |
-| Daemon → agents | Claude Code CLI in stream-json mode, `codex app-server` (JSON-RPC), Antigravity CLI (`agy`) in stream-json mode for Gemini (Appendix A) |
+| Daemon → agents | Claude Code CLI in stream-json mode, `codex app-server` (JSON-RPC), Antigravity CLI (`agy`) in stream-json mode with hooks (Appendix A) |
 | UI | React + Vite, served by the daemon |
 
 ---
 
-## 16. Plan
+## 16. Harnesses, accounts and setup
+
+MetaHarness should work with whatever subscriptions a user has: one person has Claude and
+Cursor, another OpenCode with an API key, another all of them. The point to start from is that
+**a subscription comes with its vendor's harness**. A Claude subscription is used through Claude
+Code, ChatGPT through Codex, Google through Antigravity CLI, Cursor through `cursor-agent`. So
+vendor CLIs can't be avoided, but there are only a handful of them, one per subscription vendor,
+and they get careful support. Open harnesses (OpenCode, Goose, Aider, and the many forks of
+Claude Code and Gemini CLI, including Chinese ones like Qwen Code) are endless, so they have to
+work from configuration alone.
+
+### Transports and profiles, not one adapter per harness
+
+An adapter splits into two parts:
+
+- A **transport**: how we start the harness and talk to it. There are few: stream-json over
+  stdio (Claude Code, `agy`, and their imitators), a JSON-RPC app server (Codex), ACP (the Agent
+  Client Protocol, spoken by Gemini CLI, OpenCode, Goose and others), and a one-shot print mode
+  as the last resort. Each is code.
+- A **profile**: one harness on one transport. Its binary, flags, how it's given our MCP
+  server, which hook format it has, how to check its login and list its models, and which rung
+  of each ladder below it reaches. Profiles are data, so a new harness is usually a profile, not
+  code.
+
+Many harnesses can also be pointed at another provider's endpoint (Claude Code with
+`ANTHROPIC_BASE_URL` for GLM, Kimi or DeepSeek coding plans), so a profile can carry environment
+variables too.
+
+### Ladders: the best mechanism each harness has
+
+Every feature that matters for agents working together has several mechanisms, best first. A
+profile says which ones work; the daemon uses the best one available.
+
+| Feature | Best → fallback |
+|---|---|
+| Message into a running turn | native (stream input, `turn/steer`) → hook after the next tool call → unread notice on our tool results → interrupt and resume → next turn |
+| Interrupt | native → kill the process and resume the session with the message |
+| Approvals | native protocol or ACP `session/request_permission` → our MCP permission tool → a `PreToolUse` hook that asks the daemon → a fixed policy plus the harness's sandbox |
+| Our MCP server, one identity per agent | a CLI flag → a per-session config file → a separate config directory |
+| Seeing what it does | event stream → hooks that report tool calls → its transcript file → git commits only |
+| Resume | native session ID → a new session built from the handoff (below) |
+| Rate limits | a native usage signal (percent used, reset time) → the error when the limit hits |
+
+**Hooks are the middle ground.** Most harnesses now have `PreToolUse`/`PostToolUse` hooks
+(Claude Code, Antigravity, Cursor, Gemini CLI and its forks), and many copy Claude Code's format.
+A hook is a few lines that call the daemon, and it lifts a harness with a weak transport close to
+native: messages arrive within one tool call, approvals reach the Inbox, and tool calls are
+visible.
+
+**The minimum bar is MCP plus resume.** MCP lets an agent send to anyone, any time. Resume makes
+everything else possible on any harness: a message waiting for the turn to end is delivered by
+resuming, and an interrupt is "kill and resume with the message" when there's no native one.
+Everything above that on the ladder only shortens how long a message waits.
+
+### Roles: a primary and backups
+
+The user sets roles up before a run: connect harnesses, see which models each offers, pick one
+for each role. A role can name backups for when its model is unavailable or its subscription is
+at its limit:
+
+```markdown
+---
+harness: claude-code
+model: opus
+fallback: antigravity/claude-opus-5-5-high, codex/gpt-6-sol
+---
+```
+
+The same model can often be reached through more than one harness (Antigravity offers Claude
+models, for example), so a backup can be the same model by another route.
+
+### Accounts and rate limits
+
+Limits belong to the **account**, not the agent: three agents on one Claude subscription hit the
+limit together. The daemon keeps the state of each account from whatever the harness reports. An
+account is one harness login, or one quota pool when a login has several: Antigravity has
+separate pools for Gemini models, Gemini 4 Argon, and Claude/GPT models, so a Gemini agent at
+its limit can move to Claude on the same login. Claude Code sends `rate_limit_event`
+(`allowed`, `allowed_warning`, `rejected`, utilization and reset time); Codex sends
+`account/rateLimits/updated` (percent used per window, reset time) and turn errors such as
+`usageLimitExceeded`; Antigravity answers `agy -p=/quota` without a model call, which the adapter
+polls.
+
+- **Near the limit** (90% by default), each agent on that account is asked to write where it is
+  to `shared/notes/<name>.md` and finish its current step.
+- **At the limit**, each of its agents either waits or moves. If the reset is close (15 minutes
+  by default) it shows as *rate limited* with the retry time and continues by itself. Otherwise
+  it moves to the first backup whose account isn't limited. With no backup, it waits.
+- New spawns on a limited account go straight to a backup.
+- The lead is told, so it can plan around it.
+
+### Handoff
+
+Moving an agent to another harness means a new native session, so the daemon writes a handoff
+for it. **The handoff doesn't depend on the agent being moved**, because a limited agent may not
+be able to write one. It's built from what the daemon already has: the original brief, the
+messages it sent and received, its status lines, its last words, its recent tool calls, its
+notes in shared/, and its branch with commits and uncommitted changes. The new session starts in
+the same worktree, under the same name, with the handoff as its brief. If the agent did write
+notes when warned, the handoff points to them. A context window that's nearly full uses the same
+mechanism.
+
+### Setup
+
+Built so far: `mh doctor`, `mh test`, user profiles. Not yet: drafting profiles for unknown
+harnesses, the registry, presets, and the UI for all of it.
+
+- **`mh doctor`** finds the harnesses on this machine, their versions, whether each is signed in
+  (and with which plan), and the models each offers. MetaHarness never handles credentials: it
+  runs each CLI's own status command, and for sign-in it tells the user the CLI's own login
+  command. That keeps it simple, safe, and inside each vendor's terms.
+- **A test per harness** (`mh test <harness>`) spends a few cents to check what actually works
+  with this CLI version on this machine: our MCP tool is reached, a message arrives mid-turn, a
+  session resumes, usage is reported. Vendor CLIs change every few weeks, so this is also a
+  regression check. The probe also refuses anything it doesn't need except its own `sleep`
+  commands, and leaves nothing in the Inbox.
+- **User profiles** (`.metaharness/harnesses/<id>.md`): `bin`, `transport`, `env`, `install`,
+  `login`, `status_cmd`, `models_cmd` or `models`, `probe_model`. A file named after a built-in
+  profile changes only what it sets, so "Claude Code on GLM" is a `claude-stream` profile with
+  `ANTHROPIC_BASE_URL` in `env`.
+- **Unknown harnesses** (later): the user gives a command; we try what we can detect (does it
+  answer ACP `initialize`? does `--help` mention stream-json, MCP or hooks?), one of the user's
+  connected models drafts a profile from the help and docs, and the test checks it. Profiles are
+  plain files, so a shared registry can follow.
+- **Presets** (later): from what's connected, suggest a role assignment ("you have Claude and
+  ChatGPT: Opus architect and reviewer, Sol implementers") that the user then edits.
+
+---
+
+## 17. Plan
 
 | Step | Scope | Done when |
 |---|---|---|
@@ -542,7 +672,7 @@ Claude Code, and the team. Compare result quality, cost, time, and how often you
 
 ---
 
-## 17. Open questions
+## 18. Open questions
 
 1. Can you act as the lead (spawning and briefing agents from the UI), or is the lead always an agent? Probably both.
 2. Should the shared folder be committed with the code at the end (design docs, reports), or stay outside the repo?
@@ -553,32 +683,34 @@ Claude Code, and the team. Compare result quality, cost, time, and how often you
 
 ---
 
-## Appendix A. Harness capabilities (checked 2026-10-17)
+## Appendix A. Harness capabilities (checked 2026-10-17, Antigravity 2026-10-18)
 
 Checked on this machine against Claude Code 2.1.284, Codex CLI 0.162.1 and Antigravity CLI
-(`agy`) 1.4.0, using help output, the Codex app-server protocol schema, and live tests on a cheap
-model. The Antigravity column is from `agy --help` only, with no live tests yet; it must be
-tested before milestone 1. (Antigravity CLI replaced Gemini CLI.)
+(`agy`) 1.4.1, using help output, the Codex app-server protocol schema, the documentation built
+into the `agy` binary, and live tests on cheap models. `mh test` re-checks the main rows on any
+machine (last run: all three pass every check). (Antigravity CLI replaced Gemini CLI.)
 
-| Need | Claude Code | Codex | Antigravity CLI (`agy`, help only) |
+| Need | Claude Code | Codex | Antigravity CLI (`agy`) |
 |---|---|---|---|
-| Headless control | `claude -p --input-format stream-json --output-format stream-json` ✅ tested | `codex app-server`: JSON-RPC over stdio (105 methods) ✅ | `agy -p --input-format stream-json --output-format stream-json`. A community report says `-p` prints nothing without a terminal: test it |
-| Role prompt | `--append-system-prompt` | `developerInstructions` on `thread/start` | `--agent` (a custom agent definition); no system-prompt flag (test) |
-| Attach our MCP server | `--mcp-config` (+ `--strict-mcp-config`) | `config` override on `thread/start`: `mcp_servers.<name>.url` (streamable HTTP) | `agy mcp add` (global config, so per-agent tokens need care: test) |
+| Headless control | `claude -p --input-format stream-json --output-format stream-json` ✅ tested | `codex app-server`: JSON-RPC over stdio (105 methods) ✅ | `agy --input-format stream-json --output-format stream-json -p=` ✅ tested. `-p` takes the prompt as its value, so it gets an empty one; input lines are `{"event":"user","message":{"role":"user","content":…}}`; output is `init`, `step_update` (text deltas, tool steps) and one `result` per turn. Works without a terminal |
+| Role prompt | `--append-system-prompt` | `developerInstructions` on `thread/start` | An always-on rule in the agent's own customization root (below); also in the first message |
+| Attach our MCP server | `--mcp-config` (+ `--strict-mcp-config`) | `config` override on `thread/start`: `mcp_servers.<name>.url` (streamable HTTP) | ✅ `mcp_config.json` (`{"mcpServers": {"metaharness": {"url": …}}}`) in a directory passed with `--add-dir`: every workspace is a customization root, so each agent gets its own without touching the user's config or the worktree |
 | Shared folder access | `--add-dir` | `--add-dir` / sandbox writable roots | `--add-dir` |
-| **Message into a running turn** | ✅ **Tested.** A message written to the streaming input mid-turn is seen in the same turn. A `PostToolUse` hook's `additionalContext` also works ✅ tested | `turn/steer` (native) | Help says stream-json "runs a turn for each" message, which probably means queued for the next turn. Has hooks: test whether they can add context |
-| Interrupt | Interrupt control in streaming mode (confirm in milestone 0) | `turn/interrupt` | Unknown (test) |
-| Resume | `--resume <id>`; `--session-id <uuid>` lets us choose the ID | `thread/resume` | `--conversation <id>` |
-| Approvals to our Inbox | `--permission-prompt-tool` pointing at a tool on our MCP server | Server requests: `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | Unknown; `--mode accept-edits` and `--sandbox` limit what needs approval (test) |
-| Turn off native subagents | `--disallowedTools Agent` (the result reports `subagent_stats`) | `--disable multi_agent` | Unknown (test) |
-| Usage and cost | ✅ Result includes `total_cost_usd`, per-model usage and `contextWindow` | `thread/tokenUsage/updated`: tokens + `modelContextWindow`. **No cost**: we price tokens from a table | Unknown (check the stream-json result) |
-| Models | Aliases `opus`, `sonnet`, `haiku`, `fable`, or full IDs | `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`, … | `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{low,medium,high}`, plus Claude and GPT-OSS models |
-| Rate-limit signal | Verify | `account/rateLimits/updated` | Verify |
+| **Message into a running turn** | ✅ **Tested.** A message written to the streaming input mid-turn is seen in the same turn. A `PostToolUse` hook's `additionalContext` also works ✅ tested | `turn/steer` (native) ✅ tested | ✅ **Through a hook.** A line written mid-turn is queued as the next turn (tested), but a `PreInvocation` hook can add a user message before every model call (tested): the daemon hands it whatever is waiting |
+| Interrupt | ✅ Interrupt control request (tested with `mh test`) | `turn/interrupt` ✅ tested | None; the daemon kills the process and resumes with `--conversation <id>` ✅ tested |
+| Resume | `--resume <id>`; `--session-id <uuid>` lets us choose the ID | `thread/resume` | `--conversation <id>` ✅ tested |
+| Approvals to our Inbox | `--permission-prompt-tool` pointing at a tool on our MCP server | Server requests: `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | Print mode can't prompt and denies what needs permission. So: `--dangerously-skip-permissions` plus a `PreToolUse` hook that asks the daemon about every tool and answers allow or deny (deny is enforced, with our reason shown to the agent ✅ tested) |
+| Turn off native subagents | `--disallowedTools Agent` (the result reports `subagent_stats`) | `--disable multi_agent` | The `PreToolUse` hook refuses `invoke_subagent`, `define_subagent`, `manage_subagents`, `browser_subagent` |
+| Usage and cost | ✅ Result includes `total_cost_usd`, per-model usage and `contextWindow` | `thread/tokenUsage/updated`: tokens + `modelContextWindow`. **No cost**: we price tokens from a table | Tokens per step and per process in `result.usage` (input, output, thinking). No cost, no context window |
+| Models | Aliases `opus`, `sonnet`, `haiku`, `fable`, or full IDs | `model/list` on the app server: `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`, … | `agy models`: `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{low,medium,high}`, plus Claude and GPT-OSS models |
+| Rate-limit signal | `rate_limit_event` {status: allowed \| allowed_warning \| rejected, utilization 0–1, resetsAt, rateLimitType} (from the 2.1.284 binary's schema) | `account/rateLimits/updated` {primary/secondary: usedPercent, resetsAt; rateLimitReachedType}; turn errors `usageLimitExceeded`, `rateLimitExceeded`, `contextWindowExceeded` | `agy -p=/quota --output-format json` (no model call): remaining fraction and reset time per window, for three pools: Gemini models, Gemini 4 Argon, and Claude/GPT models. Polled every 5 minutes |
+| Login status | `claude auth status` (JSON: loggedIn, authMethod, subscriptionType) | `codex login status` | No status command; `agy models` only works when signed in |
+| Hooks | `PreToolUse`/`PostToolUse` in settings | Unknown | `SessionStart`, `PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop` in `.agents/hooks.json`; commands run with `sh -c` and inherit agy's environment ✅ tested |
 
 ### What this changes
 
-- **Mid-turn delivery is native** for both milestone-0 harnesses. Hooks are now only a fallback
-  (§7).
+- **Mid-turn delivery is native** for Claude Code and Codex. Antigravity gets it through its
+  `PreInvocation` hook, the middle rung of the ladder (§7, §16).
 - **Codex model IDs** are `gpt-6.1-sol` and `gpt-6-luna` (§4 examples updated).
 - **Approvals never need terminal scraping.** Claude Code asks a tool on our own MCP server;
   Codex sends approval requests over its protocol. Both land in the Inbox.
@@ -592,6 +724,9 @@ tested before milestone 1. (Antigravity CLI replaced Gemini CLI.)
   - Claude Code: the CLI in stream-json mode, as tested. The Agent SDK wraps the same CLI and
     can replace it later if we need typed messages.
   - Codex: one shared `codex app-server` process, with one thread per agent.
+  - Antigravity: one `agy` process per agent in print mode, with its MCP server, hooks and role
+    prompt in the agent's own directory (`~/.metaharness/goals/<goal>/agents/<name>/.agents/`).
+    Its hooks call the daemon at `/hook/<token>`, the same credential as MCP.
   - Each agent's MCP token goes in its server URL path, so one Codex process can host many
     agents.
 

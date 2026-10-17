@@ -59,7 +59,9 @@ const truthy = (v: unknown) => v === true || /^(true|yes|1|y)$/i.test(String(v ?
 function formatWait(entries: InboxEntry[]): string {
   const msgs = entries.filter(e => e.kind === 'message');
   const done = entries.filter(e => e.kind === 'done');
+  const notices = entries.filter(e => e.kind === 'notice');
   const out: string[] = [];
+  if (notices.length) out.push('From MetaHarness:\n' + notices.map(n => `- ${n.text}`).join('\n'));
   if (msgs.length) out.push('Messages:\n' + msgs.map(m => `- from ${m.from}${m.urgent ? ' (urgent)' : ''}: ${m.text}`).join('\n'));
   if (done.length) out.push('Finished:\n' + done.map(d => `- ${d.from}: ${d.text}`).join('\n'));
   return out.join('\n\n');
@@ -116,7 +118,8 @@ export class Hub {
         if (!r.ok) return r.error;
         const guessed = r.guessedRole ? `(Took "${role}" to mean ${r.guessedRole}.) ` : '';
         const where = r.rec.worktree ? ` on branch ${r.rec.worktree.branch}, from ${r.rec.worktree.base.slice(0, 7)}` : '';
-        return `${guessed}Started ${r.name} (${r.rec.harness} · ${r.rec.model})${where}. Its result will reach you when it calls done; use wait to block until then.`;
+        const backup = r.note ? ` ${r.note}` : '';
+        return `${guessed}Started ${r.name} (${r.rec.harness} · ${r.rec.model})${where}.${backup} Its result will reach you when it calls done; use wait to block until then.`;
       }
 
       case 'send': {

@@ -1,7 +1,7 @@
 # Tracker
 
-Where MetaHarness stands against the plan in [DESIGN.md §16](DESIGN.md). Update this file when a
-step lands. Last updated 2026-10-17.
+Where MetaHarness stands against the plan in [DESIGN.md §17](DESIGN.md). Update this file when a
+step lands. Last updated 2026-10-18.
 
 ## Milestone 0: a small team works ✅
 
@@ -38,7 +38,8 @@ Findings from the run:
   read-only commands for architect and reviewer, and nudging agents toward their edit tools.
 - A merge was reported as coming from `review-view` instead of `view`, because both branches
   pointed at the same commit. Fixed: merges are named after the branch a commit was first seen on.
-- After `done`, `mh status` still shows the agent's last status line, which is out of date by then.
+- After `done`, `mh status` still showed the agent's last status line, which is out of date by
+  then. Fixed: it's hidden once the agent is done or ended.
 
 - [x] Git worktree per agent on `mh/<goal>/<agent>`; the lead's branch `mh/<goal>/main` is the
       goal branch; `spawn(from:)`; `git.commit`/`git.merge` events; the lead's final note lists
@@ -49,10 +50,28 @@ Findings from the run:
 - [ ] Dependencies in fresh worktrees: agents are told to install them; consider linking
       `node_modules` and the like
 - [ ] Merge conflicts as events (watch `MERGE_HEAD` in worktrees)
-- [ ] **Antigravity CLI adapter for Gemini** (next up) (`agy` 1.4.0 is installed; test stream-json, hooks,
-      mid-turn delivery and the "-p prints nothing without a terminal" report first)
+- [x] Harness profiles and `mh doctor` (DESIGN.md §16): built-in profiles for Claude Code, Codex,
+      Antigravity; detection of Cursor, Gemini CLI, OpenCode, Copilot, Qwen Code, Goose; user
+      profiles in `.metaharness/harnesses/*.md`. The daemon builds its adapters from profiles
+- [x] **Antigravity CLI adapter** (`agy` 1.4.1): stream-json, MCP and hooks in the agent's own
+      `--add-dir` folder, mid-turn messages through `PreInvocation`, approvals and no native
+      subagents through `PreToolUse`, interrupt by restarting from `--conversation`, quota per
+      pool from `agy -p=/quota`. The "-p prints nothing without a terminal" report was wrong
+- [x] Backups in roles (`fallback:`), used when the primary can't run here or is at its limit
+- [x] Rate limits per account (or quota pool): warn at 90% and ask for notes; at the limit wait
+      for a reset within 15 minutes, else move to a backup with a handoff built from the event
+      log; new spawns skip limited accounts
+- [x] Urgent messages interrupt: natively, or by kill-and-resume on harnesses without it
+- [x] `mh test <harness>`: MCP, mid-turn message, follow-up, urgent interrupt, usage, rate
+      limits. All three harnesses pass every check (2026-10-18; haiku, gpt-6-luna,
+      gemini-3.8-flash-low)
+- [ ] An ACP transport (Gemini CLI, OpenCode, Goose, Qwen Code, Kimi) and a one-shot print-mode
+      transport, so most other harnesses are a profile
+- [ ] Drafting profiles for unknown harnesses, a shared profile registry, role presets
+- [ ] Handoff when a context window is nearly full (same mechanism as a move)
+- [ ] Antigravity isolation from the user's own global plugins and MCP servers (like
+      `--strict-mcp-config`); none are set up on this machine yet
 - [ ] Change notices when shared files change, plus `shared/.history/`
-- [ ] Rate-limit handling: show the agent as waiting with a retry time, not crashed
 - [ ] Resume agents after a daemon restart, from their saved native session IDs
 - [ ] Warm pool for quick-helper roles
 - [ ] Idle nudges, and detecting two agents waiting on each other
@@ -71,15 +90,19 @@ Findings from the run:
 
 - Two implementers who have to adjust to each other's changes mid-task (the run above kept
   them apart with contracts)
-- Interrupting a Claude Code turn
 - A quick spawn running on a real harness
-- How Claude Code reports cost across several turns of one session (we keep the running maximum)
+- How Claude Code reports cost across several turns of one session (we keep the running maximum),
+  and across a resumed session (counted as new spend on top of the old)
+- A real move to a backup at a real rate limit (tested with scripted agents only)
+- Antigravity approvals that reach the human (tested with the fake `agy`; live runs only hit
+  allowed and refused tools)
 - Codex cost needs `.metaharness/prices.json`; without it, cost shows as "—"
 
 ## Resuming work
 
 ```sh
-npm install && npm test        # 14 tests, about two seconds, no model calls
+npm install && npm test        # 25 tests, about ten seconds, no model calls
+node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```
 

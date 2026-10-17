@@ -59,6 +59,7 @@ export function loadConfig(dirs: string[]): Config {
         name,
         harness: meta.harness ?? 'claude-code',
         model: meta.model ?? '',
+        fallback: (meta.fallback ?? meta.fallbacks ?? '').split(',').map(s => s.trim()).filter(Boolean),
         goodAt: meta.good_at ?? '',
         instructions: body,
         helper: /^(true|yes|1)$/i.test(meta.helper ?? ''),

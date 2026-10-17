@@ -112,3 +112,8 @@ export function commitsBetween(g: GoalGit, from: string, to: string): NewCommit[
       return { sha, summary, mergedSha: second };
     });
 }
+
+/** Uncommitted changes in a worktree, one `git status --short` line each. */
+export function statusShort(path: string): string[] {
+  return (tryGit(path, 'status', '--short') ?? '').split('\n').filter(Boolean);
+}

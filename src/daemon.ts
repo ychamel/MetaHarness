@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventStore } from './store.ts';
@@ -7,11 +7,13 @@ import { resolveName } from './fuzzy.ts';
 import { Hub } from './hub.ts';
 import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
-import type { ApprovalDecision, HarnessAdapter, Session, SessionEvents } from './adapters/types.ts';
+import type { ApprovalDecision, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest } from './adapters/types.ts';
+import { MCP_SERVER_NAME } from './mcp.ts';
 
 export interface InboxEntry {
   id: string;
-  kind: 'message' | 'done';
+  /** notice: from MetaHarness itself, e.g. a rate-limit warning. */
+  kind: 'message' | 'done' | 'notice';
   from: string;
   text: string;
   urgent: boolean;
@@ -40,10 +42,24 @@ export interface AgentRec {
   status: string;
   /** Total spend so far; undefined when the harness doesn't report cost and no price is configured. */
   cost?: number;
+  /** Spend by the agent's earlier sessions, before it moved to another harness. */
+  costBefore?: number;
   contextPct?: number;
   lastText: string;
   adapter: HarnessAdapter;
   session?: Session;
+  /** Bumped whenever the agent gets a new session; events from older sessions are ignored. */
+  gen: number;
+  /** The agent's MCP credential. It survives a move to another harness. */
+  token: string;
+  systemPrompt: string;
+  /** A first message waiting for the account's limit to reset before the session starts. */
+  pendingBrief?: string;
+  /** While rate limited: when the agent continues by itself. */
+  limitedUntil?: number;
+  limitTimer?: NodeJS.Timeout;
+  /** An urgent message is waiting for the interrupted turn to end. */
+  interrupting?: boolean;
   inbox: InboxEntry[];
   waiters: Waiter[];
   /** Callers blocked in a quick spawn, waiting for this agent's answer. */
@@ -56,6 +72,8 @@ export interface AgentRec {
 export interface GoalRec {
   id: string;
   request: string;
+  /** Where the agents work: the daemon's repository, or another directory (harness tests use a scratch one). */
+  dir: string;
   lead: string;
   createdAt: string;
   sharedDir: string;
@@ -97,10 +115,39 @@ export interface DaemonOptions {
   quickTimeoutMs?: number;
   /** How often to look for new commits on the goal branches. 0 turns polling off (tests call refreshGit). */
   gitPollMs?: number;
+  limits?: Partial<LimitPolicy>;
+}
+
+/** What to do as an account nears or hits its rate limit (design §16). */
+export interface LimitPolicy {
+  /** Ask agents to write where they are once usage reaches this percent. */
+  warnPct: number;
+  /** Wait for a reset this close; move to a backup if it's further away. */
+  waitMaxMs: number;
+  /** When the reset time is unknown, try again after this long. */
+  retryMs: number;
+  /** Continue this long after the reset time, to allow for clock differences. */
+  marginMs: number;
+}
+
+/** One harness login. Its rate limit is shared by every agent that uses it. */
+export interface AccountRec {
+  id: string;
+  status: RateLimitInfo['status'];
+  usedPct?: number;
+  resetsAt?: number;
+  window?: string;
+  /** Agents (goal/name) already asked to write their notes in this window. */
+  warned: Set<string>;
+}
+
+interface Route {
+  harness: string;
+  model: string;
 }
 
 type SpawnResult =
-  | { ok: true; name: string; rec: AgentRec; guessedRole?: string }
+  | { ok: true; name: string; rec: AgentRec; guessedRole?: string; note?: string }
   | { ok: false; error: string };
 
 const FINISHED: AgentState[] = ['ended', 'crashed'];
@@ -122,6 +169,8 @@ export class Daemon {
   private harnessOverride?: string;
   private gitPollMs: number;
   private gitTimer?: NodeJS.Timeout;
+  readonly accounts = new Map<string, AccountRec>();
+  readonly limits: LimitPolicy;
 
   constructor(o: DaemonOptions) {
     this.home = o.home;
@@ -133,6 +182,7 @@ export class Daemon {
     this.harnessOverride = o.harnessOverride;
     this.quickTimeoutMs = o.quickTimeoutMs ?? 120_000;
     this.gitPollMs = o.gitPollMs ?? 3000;
+    this.limits = { warnPct: 90, waitMaxMs: 15 * 60_000, retryMs: 15 * 60_000, marginMs: 5000, ...o.limits };
     this.hub = new Hub(this);
   }
 
@@ -150,22 +200,23 @@ export class Daemon {
 
   /* ---------------- goals and agents ---------------- */
 
-  startGoal(o: { request: string; lead?: string; playbook?: string }): string {
+  /** `leadDef` runs the lead from a role that isn't in the config, and `dir` works somewhere other than the repository (both for harness tests). */
+  startGoal(o: { request: string; lead?: string; playbook?: string; leadDef?: Role; dir?: string }): string {
     const id = randomUUID().slice(0, 8);
     const sharedDir = join(this.home, 'goals', id, 'shared');
     mkdirSync(sharedDir, { recursive: true });
     let resolveLeadDone!: (note: string) => void;
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const g: GoalRec = {
-      id, request: o.request, lead: '', createdAt: new Date().toISOString(), sharedDir,
+      id, request: o.request, dir: o.dir ?? this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
       refs: new Map(), seenOn: new Map(),
       status: 'running', agents: new Map(), counters: new Map(), leadDone, resolveLeadDone,
     };
-    const gs = git.setupGoal(this.repo, id);
+    const gs = git.setupGoal(g.dir, id);
     if ('reason' in gs) g.gitNote = gs.reason;
     else g.git = gs;
     this.goals.set(id, g);
-    const leadRole = o.lead ?? 'architect';
+    const leadRole = o.leadDef?.name ?? o.lead ?? 'architect';
     this.emit({
       goal: id, type: 'goal.started',
       data: {
@@ -173,7 +224,7 @@ export class Daemon {
         branch: g.git?.branch ?? null, base: g.git?.base ?? null, notice: this.goalNotice(g) ?? null,
       },
     });
-    const r = this.spawnAgent(id, { role: leadRole, brief: o.request, parent: 'human', isLead: true, playbook: o.playbook });
+    const r = this.spawnAgent(id, { role: leadRole, roleDef: o.leadDef, brief: o.request, parent: 'human', isLead: true, playbook: o.playbook });
     if (!r.ok) {
       g.status = 'ended';
       this.emit({ goal: id, type: 'goal.ended', data: { reason: r.error } });
@@ -186,7 +237,7 @@ export class Daemon {
 
   /** What the human should know about where the agents' work happens, if anything. */
   goalNotice(g: GoalRec): string | undefined {
-    if (!g.git) return `No worktrees for this goal: ${g.gitNote}. The agents share ${this.repo}.`;
+    if (!g.git) return `No worktrees for this goal: ${g.gitNote}. The agents share ${g.dir}.`;
     if (g.git.dirty) {
       const sha = g.git.base.slice(0, 7);
       return `Your uncommitted changes aren't in the agents' worktrees. They start from ${sha} (${git.subject(g.git, sha)}).`;
@@ -195,23 +246,22 @@ export class Daemon {
 
   spawnAgent(
     goalId: string,
-    o: { role: string; brief: string; parent: string; name?: string; quick?: boolean; isLead?: boolean; playbook?: string; from?: string },
+    o: { role: string; roleDef?: Role; brief: string; parent: string; name?: string; quick?: boolean; isLead?: boolean; playbook?: string; from?: string },
   ): SpawnResult {
     const g = this.goals.get(goalId);
     if (!g) return { ok: false, error: `There's no goal ${goalId}.` };
     const roleNames = [...this.config.roles.keys()];
-    if (!roleNames.length) return { ok: false, error: 'No roles are defined yet. Add one as .metaharness/roles/<name>.md.' };
-    const res = resolveName(o.role, roleNames);
+    const res = o.roleDef ? { match: o.roleDef.name, guessed: false, suggestions: [] } : resolveName(o.role, roleNames);
+    if (!o.roleDef && !roleNames.length) return { ok: false, error: 'No roles are defined yet. Add one as .metaharness/roles/<name>.md.' };
     if (!res.match) {
       const hint = res.suggestions.length ? ` Did you mean ${res.suggestions[0]}?` : '';
       return { ok: false, error: `There's no role called "${o.role}".${hint} Roles you can spawn: ${roleNames.join(', ')}.` };
     }
-    const role = this.config.roles.get(res.match)!;
-    const harness = this.harnessOverride ?? role.harness;
+    const role = o.roleDef ?? this.config.roles.get(res.match)!;
+    const picked = this.pickRoute(role);
+    if ('error' in picked) return { ok: false, error: picked.error };
+    const { harness, model } = picked.route;
     const adapter = this.adapters[harness];
-    if (!adapter) {
-      return { ok: false, error: `The ${harness} adapter isn't available yet, so ${role.name} can't be started. Start the daemon with --fake to use scripted agents.` };
-    }
 
     const n = (g.counters.get(role.name) ?? 0) + 1;
     g.counters.set(role.name, n);
@@ -222,7 +272,7 @@ export class Daemon {
 
     // Quick helpers work in their caller's directory so they see uncommitted changes. Everyone
     // else gets a worktree: the lead on the goal branch, the rest on mh/<goal>/<name>.
-    let cwd = this.repo;
+    let cwd = g.dir;
     let worktree: git.Worktree | undefined;
     let startedFrom = '';
     if (o.quick && parentRec) cwd = parentRec.cwd;
@@ -240,45 +290,95 @@ export class Daemon {
       g.refs.set(worktree.branch, worktree.base);
     }
 
+    const token = randomBytes(16).toString('hex');
+    this.tokens.set(token, { goal: goalId, agent: name });
     const rec: AgentRec = {
-      goal: goalId, name, role, harness, model: role.model, parent: o.parent, brief: o.brief,
+      goal: goalId, name, role, harness, model, parent: o.parent, brief: o.brief,
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
-      adapter, inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0,
+      adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0,
     };
+    rec.systemPrompt = this.buildPrompt(g, rec, o.playbook, startedFrom);
     g.agents.set(name, rec);
     this.emit({
       goal: goalId, agent: name, parent: o.parent, type: 'agent.spawned',
       data: {
-        role: role.name, harness, model: role.model, brief: o.brief, quick: !!o.quick, cwd,
+        role: role.name, harness, model, brief: o.brief, quick: !!o.quick, cwd,
         worktree: worktree?.path ?? null, branch: worktree?.branch ?? null, base: worktree?.base ?? null,
+        ...(picked.note ? { note: picked.note } : {}),
       },
     });
 
-    const token = randomBytes(16).toString('hex');
-    this.tokens.set(token, { goal: goalId, agent: name });
-    adapter
+    const brief = this.firstMessage(rec);
+    if (this.accountLimited(harness, model)) {
+      // Every route is at its limit: start once this one resets.
+      rec.pendingBrief = brief;
+      this.hitLimit(rec);
+    } else this.startSession(rec, brief);
+
+    return { ok: true, name, rec, guessedRole: res.guessed ? res.match : undefined, note: picked.note };
+  }
+
+  /**
+   * Starts (or resumes) a native session for an agent. Events from any earlier session of the
+   * same agent are ignored from here on.
+   */
+  private startSession(rec: AgentRec, brief: string, resume?: string): void {
+    const g = this.goals.get(rec.goal)!;
+    const gen = ++rec.gen;
+    rec.pendingBrief = undefined;
+    rec.adapter
       .start(
         {
-          goal: goalId, agent: name, role, model: role.model,
-          systemPrompt: this.buildPrompt(g, rec, o.playbook, startedFrom), brief: this.firstMessage(rec),
-          cwd, sharedDir: g.sharedDir, mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${token}` : '',
-          gitDirs: worktree && g.git ? [g.git.commonDir, worktree.gitDir] : [],
-          callTool: (tool, args) => this.hub.call(goalId, name, tool, args),
+          goal: rec.goal, agent: rec.name, role: rec.role, model: rec.model, systemPrompt: rec.systemPrompt, brief,
+          cwd: rec.cwd, sharedDir: g.sharedDir, mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${rec.token}` : '',
+          hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${rec.token}` : '', agentDir: this.agentDir(rec),
+          gitDirs: rec.worktree && g.git ? [g.git.commonDir, rec.worktree.gitDir] : [],
+          callTool: (tool, args) => this.hub.call(rec.goal, rec.name, tool, args),
         },
-        this.sessionEvents(rec),
+        this.sessionEvents(rec, gen),
+        resume ? { resume } : {},
       )
       .then(session => {
+        if (rec.gen !== gen) return void session.stop().catch(() => {});
         rec.session = session;
-        this.emit({ goal: goalId, agent: name, type: 'agent.session', data: { nativeSession: session.nativeId } });
+        this.emit({
+          goal: rec.goal, agent: rec.name, type: 'agent.session',
+          data: { nativeSession: session.nativeId, harness: rec.harness, model: rec.model, ...(resume ? { resumed: true } : {}) },
+        });
         this.pump(rec);
       })
       .catch((err: Error) => {
+        // A session that dies while starting may already have reported its exit.
+        if (rec.gen !== gen || FINISHED.includes(rec.state)) return;
         this.setState(rec, 'crashed');
-        this.emit({ goal: goalId, agent: name, type: 'agent.crashed', data: { reason: `Couldn't start: ${err.message}` } });
-        this.finish(rec, `${name} couldn't start: ${err.message}`, 'crashed');
+        this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.crashed', data: { reason: `Couldn't start: ${err.message}` } });
+        this.finish(rec, `${rec.name} couldn't start: ${err.message}`, 'crashed');
       });
+  }
 
-    return { ok: true, name, rec, guessedRole: res.guessed ? res.match : undefined };
+  /** A role's primary harness and model, then its backups, as written in the role. */
+  routes(role: Role): Route[] {
+    const out: Route[] = [{ harness: role.harness, model: role.model }];
+    for (const f of role.fallback) {
+      const slash = f.indexOf('/');
+      out.push(slash > 0 ? { harness: f.slice(0, slash), model: f.slice(slash + 1) } : { harness: role.harness, model: f });
+    }
+    if (this.harnessOverride) for (const r of out) r.harness = this.harnessOverride;
+    return out.filter((r, i) => out.findIndex(x => x.harness === r.harness && x.model === r.model) === i);
+  }
+
+  /** The first route that can run now; else the first that can run at all (it waits for its reset). */
+  private pickRoute(role: Role): { route: Route; note?: string } | { error: string } {
+    const all = this.routes(role);
+    const runnable = all.filter(r => this.adapters[r.harness]);
+    if (!runnable.length) {
+      const missing = [...new Set(all.map(r => r.harness))].join(', ');
+      return { error: `MetaHarness can't run ${missing} yet, so ${role.name} can't be started. Run mh doctor to see which harnesses work here, or start the daemon with --fake to use scripted agents.` };
+    }
+    const route = runnable.find(r => !this.accountLimited(r.harness, r.model)) ?? runnable[0];
+    if (route === all[0]) return { route };
+    const why = this.adapters[all[0].harness] ? `${all[0].harness} is at its limit` : `MetaHarness can't run ${all[0].harness} yet`;
+    return { route, note: `${role.name} runs on its backup ${route.harness} · ${route.model}, because ${why}.` };
   }
 
   /**
@@ -348,10 +448,10 @@ export class Daemon {
    * follow the first user message far more closely than their system instructions (seen with
    * gpt-6-luna), so the essentials appear in both.
    */
-  private firstMessage(rec: AgentRec): string {
+  private firstMessage(rec: AgentRec, brief = rec.brief): string {
     const spawner = rec.parent === 'human' ? 'the human' : rec.parent;
     const lines = [
-      rec.brief,
+      brief,
       '',
       '---',
       `[MetaHarness] You are ${rec.name}, the ${rec.role.name} on a team of agents. Your role:`,
@@ -371,31 +471,38 @@ export class Daemon {
     return lines.join('\n');
   }
 
-  private sessionEvents(rec: AgentRec): SessionEvents {
+  /** Callbacks for one session of an agent. Once the agent has a newer session, they do nothing. */
+  private sessionEvents(rec: AgentRec, gen: number): SessionEvents {
     const base = { goal: rec.goal, agent: rec.name };
+    const live = () => rec.gen === gen;
     return {
       turnStarted: () => {
-        if (!FINISHED.includes(rec.state) && rec.state !== 'paused') this.setState(rec, 'working');
+        if (live() && !FINISHED.includes(rec.state) && rec.state !== 'paused' && rec.state !== 'limited') this.setState(rec, 'working');
       },
       turnEnded: () => {
-        if (FINISHED.includes(rec.state)) return;
+        if (!live() || FINISHED.includes(rec.state)) return;
+        // A turn refused at the rate limit isn't the agent stopping: it continues later.
+        if (rec.state === 'limited') return;
         if (rec.doneNote !== undefined) this.setState(rec, 'done');
-        else this.endedTurnWithoutDone(rec);
+        else if (!rec.interrupting) this.endedTurnWithoutDone(rec);
         this.pump(rec);
       },
       text: text => {
+        if (!live()) return;
         rec.lastText = text;
         this.emit({ ...base, type: 'agent.text', data: { text } });
       },
-      toolCall: (tool, summary) => this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } }),
-      toolResult: (summary, ok) => this.emit({ ...base, type: 'agent.tool_result', data: { summary, ok } }),
+      toolCall: (tool, summary) => live() && void this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } }),
+      toolResult: (summary, ok) => live() && void this.emit({ ...base, type: 'agent.tool_result', data: { summary, ok } }),
       usage: u => {
-        if (u.costUsd !== undefined) rec.cost = u.costUsd;
+        if (!live()) return;
+        if (u.costUsd !== undefined) rec.cost = (rec.costBefore ?? 0) + u.costUsd;
         if (u.contextPct !== undefined) rec.contextPct = u.contextPct;
         this.emit({ ...base, type: 'usage', data: { ...u } });
       },
+      rateLimit: info => live() && this.onRateLimit(rec, info),
       exited: (reason, detail) => {
-        if (FINISHED.includes(rec.state)) return;
+        if (!live() || FINISHED.includes(rec.state)) return;
         const state = reason === 'crashed' ? 'crashed' : 'ended';
         this.setState(rec, state);
         this.emit({ ...base, type: `agent.${state}`, data: { reason: detail ?? reason } });
@@ -404,7 +511,7 @@ export class Daemon {
           this.finish(rec, note, state);
         }
       },
-      approval: (tool, detail) => this.requestApproval(rec, tool, detail),
+      approval: (tool, detail) => (live() ? this.requestApproval(rec, tool, detail) : Promise.resolve({ allow: false, message: 'This session was replaced.' })),
     };
   }
 
@@ -655,17 +762,301 @@ export class Daemon {
       return;
     }
     const s = rec.session;
-    if (!s || rec.state === 'paused' || FINISHED.includes(rec.state)) return;
+    if (!s || rec.state === 'paused' || rec.state === 'limited' || FINISHED.includes(rec.state)) return;
     if (s.busy()) {
+      // An interrupted turn is ending; its messages go in the next turn.
+      if (rec.interrupting) return;
+      if (rec.inbox.some(e => e.urgent) && this.interrupt(rec, s)) return;
       if (!rec.adapter.manifest.injectMidTurn) return;
       const entries = rec.inbox.splice(0);
       this.markDelivered(rec, entries, 'inject');
       void s.send(formatForAgent(entries), 'inject');
       return;
     }
+    // A new turn on an account at its limit would only be refused.
+    if (this.accountLimited(rec.harness, rec.model)) return void this.hitLimit(rec);
+    const via = rec.interrupting ? 'interrupt' : rec.state === 'done' ? 'resume' : 'new_turn';
+    rec.interrupting = false;
     const entries = rec.inbox.splice(0);
-    this.markDelivered(rec, entries, rec.state === 'done' ? 'resume' : 'new_turn');
+    this.markDelivered(rec, entries, via);
     void s.send(formatForAgent(entries), 'new_turn');
+  }
+
+  /**
+   * Stops a running turn for an urgent message. With a native interrupt, the message follows
+   * when the turn ends. Without one, the session is restarted from its saved ID with the
+   * message (design §16: any harness that can resume can be interrupted).
+   */
+  private interrupt(rec: AgentRec, s: Session): boolean {
+    const m = rec.adapter.manifest;
+    if (m.interrupt && s.interrupt) {
+      rec.interrupting = true;
+      this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.interrupted', data: { how: 'native' } });
+      void s.interrupt().catch(() => {});
+      // If the turn doesn't end, restart it instead (or inject, as a last resort).
+      setTimeout(() => {
+        if (!rec.interrupting || rec.session !== s || !s.busy()) return;
+        rec.interrupting = false;
+        if (!(m.resume && this.restart(rec, s))) this.pump(rec);
+      }, 10_000).unref();
+      return true;
+    }
+    return m.resume && this.restart(rec, s);
+  }
+
+  /** Kills the session and resumes it from its native ID, with the waiting messages as the next turn. */
+  private restart(rec: AgentRec, s: Session): boolean {
+    if (!s.nativeId) return false;
+    const entries = rec.inbox.splice(0);
+    this.markDelivered(rec, entries, 'interrupt');
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.interrupted', data: { how: 'restart' } });
+    rec.gen++;
+    rec.session = undefined;
+    rec.costBefore = rec.cost;
+    void s.stop().catch(() => {});
+    this.startSession(rec, formatForAgent(entries), s.nativeId);
+    return true;
+  }
+
+  /* ---------------- hooks (design §16: the middle rung of each ladder) ---------------- */
+
+  /** A directory of the agent's own, outside its worktree, for harness config such as hooks. */
+  agentDir(rec: AgentRec): string {
+    const dir = join(this.home, 'goals', rec.goal, 'agents', rec.name);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  /**
+   * A harness hook asking the daemon something. before_model: messages waiting for a busy agent
+   * go into its next model call. before_tool: whether a tool may run.
+   */
+  async hook(token: string, req: HookRequest): Promise<{ messages?: string; allow?: boolean; reason?: string }> {
+    const who = this.tokens.get(token);
+    const rec = who && this.agent(who.goal, who.agent);
+    if (!rec) return req.event === 'before_tool' ? { allow: false, reason: 'MetaHarness does not know this agent.' } : {};
+    if (req.event === 'before_model') {
+      if (!rec.inbox.length || rec.interrupting || rec.state === 'paused') return {};
+      const entries = rec.inbox.splice(0);
+      this.markDelivered(rec, entries, 'hook');
+      return { messages: formatForAgent(entries) };
+    }
+    const t = rec.adapter.toolRequest?.(req.tool, req.args ?? {}) ?? { kind: 'other', tool: req.tool, detail: JSON.stringify(req.args ?? {}).slice(0, 8000) };
+    const verdict = this.toolPolicy(rec, t);
+    if (verdict !== 'ask') return verdict;
+    const d = await this.requestApproval(rec, t.tool, t.detail);
+    return { allow: d.allow, reason: d.allow ? undefined : (d.message ?? 'The human denied this.') };
+  }
+
+  /** What may run without asking: reads, MetaHarness's own tools, edits in the agent's own directories, and commands its role allows. */
+  toolPolicy(rec: AgentRec, t: ToolRequest): { allow: boolean; reason?: string } | 'ask' {
+    switch (t.kind) {
+      case 'delegate':
+        return { allow: false, reason: 'MetaHarness handles delegation: use its spawn tool (quick: true for a quick helper).' };
+      case 'ask_user':
+        return { allow: false, reason: 'Ask with the MetaHarness send tool, to: human. The answer arrives as a message.' };
+      case 'read':
+        return { allow: true };
+      case 'mcp':
+        return t.server === MCP_SERVER_NAME ? { allow: true } : 'ask';
+      case 'edit': {
+        const g = this.goals.get(rec.goal)!;
+        const inside = (dir: string) => !!t.path && (t.path === dir || t.path.startsWith(dir.endsWith('/') ? dir : dir + '/'));
+        if (rec.role.permissionMode === 'default' || (rec.quick && !inside(g.sharedDir))) return 'ask';
+        return inside(rec.cwd) || inside(g.sharedDir) ? { allow: true } : 'ask';
+      }
+      case 'shell':
+        return roleAllows(rec.role, t.detail) ? { allow: true } : 'ask';
+      default:
+        return 'ask';
+    }
+  }
+
+  /* ---------------- accounts and rate limits (design §16) ---------------- */
+
+  /** True while a harness login is refusing turns. A reset time in the past counts as reset. */
+  accountLimited(harness: string, model: string): boolean {
+    const a = this.accounts.get(this.accountOf(harness, model));
+    return !!a && a.status === 'limited' && (a.resetsAt === undefined || a.resetsAt > Date.now());
+  }
+
+  private onRateLimit(rec: AgentRec, info: RateLimitInfo): void {
+    const id = this.accountOf(rec.harness, rec.model);
+    const prev = this.accounts.get(id);
+    const a: AccountRec = prev ?? { id, status: 'ok', warned: new Set() };
+    // Updates can be partial (a refused turn may say only "limited"), so keep what's known.
+    const changed =
+      a.status !== info.status ||
+      (info.resetsAt !== undefined && info.resetsAt !== a.resetsAt) ||
+      (info.usedPct !== undefined && Math.floor(info.usedPct / 5) !== Math.floor((a.usedPct ?? -5) / 5));
+    a.status = info.status;
+    if (info.usedPct !== undefined) a.usedPct = info.usedPct;
+    if (info.resetsAt !== undefined) {
+      // A new window starts: agents may need warning again.
+      if (a.resetsAt !== undefined && info.resetsAt > a.resetsAt + 60_000) a.warned.clear();
+      a.resetsAt = info.resetsAt;
+    }
+    if (info.window !== undefined) a.window = info.window;
+    this.accounts.set(a.id, a);
+    if (changed) {
+      this.emit({
+        goal: rec.goal, agent: rec.name, type: 'account.limit',
+        data: { account: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ? new Date(a.resetsAt).toISOString() : null, window: a.window ?? null },
+      });
+    }
+    const agents = this.agentsOn(a.id);
+    if (a.status === 'limited') {
+      for (const r of agents) if (r.session?.busy() || r === rec || r.pendingBrief) this.hitLimit(r);
+      return;
+    }
+    if (a.status === 'warning' || (a.usedPct ?? 0) >= this.limits.warnPct) {
+      for (const r of agents) {
+        const key = `${r.goal}/${r.name}`;
+        if (a.warned.has(key) || r.quick || r.doneNote !== undefined) continue;
+        a.warned.add(key);
+        this.notice(r, this.limitWarning(r, a));
+      }
+    }
+  }
+
+  /** Live agents on an account, across goals. */
+  private agentsOn(account: string): AgentRec[] {
+    return [...this.goals.values()].flatMap(g => [...g.agents.values()]).filter(r => this.accountOf(r.harness, r.model) === account && !FINISHED.includes(r.state));
+  }
+
+  /** The account a harness and model count against: the harness, or one of its quota pools. */
+  accountOf(harness: string, model: string): string {
+    return this.adapters[harness]?.account?.(model) ?? harness;
+  }
+
+  private limitWarning(rec: AgentRec, a: AccountRec): string {
+    const used = a.usedPct !== undefined ? `${a.usedPct}% of its limit` : 'close to its limit';
+    const resets = a.resetsAt ? ` (it resets at ${clock(a.resetsAt)})` : '';
+    return (
+      `Your ${a.id} account is at ${used}${resets}. Write where you are to shared/notes/${rec.name}.md now: what's done, ` +
+      `what's next, and anything uncommitted. Commit what works, then finish your current step. If the limit is hit, ` +
+      `your work may continue on another model from those notes.`
+    );
+  }
+
+  /**
+   * An agent can't run because its account is at its limit. Wait if the reset is close,
+   * otherwise move to a backup whose account isn't limited, otherwise wait anyway.
+   */
+  hitLimit(rec: AgentRec): void {
+    if (rec.state === 'limited' || FINISHED.includes(rec.state)) return;
+    const account = this.accountOf(rec.harness, rec.model);
+    const a = this.accounts.get(account);
+    const now = Date.now();
+    const soon = a?.resetsAt !== undefined && a.resetsAt - now <= this.limits.waitMaxMs;
+    if (!soon) {
+      const backup = this.routes(rec.role).find(r => this.adapters[r.harness] && !this.accountLimited(r.harness, r.model) && !(r.harness === rec.harness && r.model === rec.model));
+      if (backup) return this.move(rec, backup, `the ${account} account is at its limit`);
+    }
+    const until = a?.resetsAt !== undefined && a.resetsAt > now ? a.resetsAt : now + this.limits.retryMs;
+    rec.limitedUntil = until;
+    this.setState(rec, 'limited');
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.limited', data: { account, until: new Date(until).toISOString(), known: a?.resetsAt !== undefined } });
+    clearTimeout(rec.limitTimer);
+    rec.limitTimer = setTimeout(() => this.limitOver(rec), Math.max(0, until - now) + this.limits.marginMs).unref();
+  }
+
+  /** The wait is over: start the session that was waiting, or ask the agent to carry on. */
+  private limitOver(rec: AgentRec): void {
+    if (rec.state !== 'limited') return;
+    rec.limitedUntil = undefined;
+    const account = this.accountOf(rec.harness, rec.model);
+    const a = this.accounts.get(account);
+    if (a && a.status === 'limited') a.status = 'ok';
+    this.setState(rec, rec.session?.busy() ? 'working' : 'idle');
+    if (rec.pendingBrief !== undefined) return this.startSession(rec, rec.pendingBrief);
+    if (rec.session && !rec.session.busy()) this.notice(rec, `The limit on your ${account} account should have reset. Carry on where you left off.`);
+  }
+
+  /** Moves an agent to another harness or model: a new session, started from a handoff. */
+  private move(rec: AgentRec, to: Route, reason: string): void {
+    const from = { harness: rec.harness, model: rec.model };
+    const old = rec.session;
+    const brief = rec.pendingBrief ?? this.handoff(rec, from, reason);
+    rec.gen++;
+    rec.session = undefined;
+    rec.interrupting = false;
+    rec.costBefore = rec.cost;
+    clearTimeout(rec.limitTimer);
+    rec.limitedUntil = undefined;
+    // Its wait() calls belong to the old session; the new one makes its own.
+    for (const w of rec.waiters.splice(0)) {
+      clearTimeout(w.timer);
+      w.resolve([]);
+    }
+    void old?.stop().catch(() => {});
+    rec.harness = to.harness;
+    rec.model = to.model;
+    rec.adapter = this.adapters[to.harness];
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.moved', data: { from, to, reason } });
+    this.setState(rec, 'starting');
+    this.startSession(rec, brief);
+    const g = this.goals.get(rec.goal)!;
+    const line = `${rec.name} moved from ${from.harness} · ${from.model} to ${to.harness} · ${to.model}, because ${reason}. It continues from a handoff.`;
+    for (const who of new Set([rec.parent, g.lead])) {
+      const r = g.agents.get(who);
+      if (r && r !== rec && !FINISHED.includes(r.state)) this.notice(r, line);
+    }
+  }
+
+  /**
+   * The brief for an agent's new session after a move. Built from what the daemon saw, so it
+   * doesn't depend on the old session being able to write anything.
+   */
+  handoff(rec: AgentRec, from: Route, reason: string): string {
+    const g = this.goals.get(rec.goal)!;
+    const events = this.store.since(rec.goal).filter(e => e.agent === rec.name || (e.type === 'message.sent' && e.data.to === rec.name));
+    const last = <T>(xs: T[], n: number) => xs.slice(Math.max(0, xs.length - n));
+    const cut = (v: unknown, n = 300) => {
+      const t = String(v ?? '').replace(/\s+/g, ' ').trim();
+      return t.length > n ? t.slice(0, n - 1) + '…' : t;
+    };
+    const statuses = last([...new Set(events.filter(e => e.type === 'agent.status').map(e => cut(e.data.text, 160)))], 8);
+    const messages = last(
+      events
+        .filter(e => e.type === 'message.sent')
+        .map(e => (e.agent === rec.name ? `- you → ${e.data.to}: ${cut(e.data.text)}` : `- ${e.agent} → you: ${cut(e.data.text)}`)),
+      12,
+    );
+    const tools = last(events.filter(e => e.type === 'agent.tool_call').map(e => `- ${e.data.tool} ${cut(e.data.summary, 120)}`), 12);
+    const spawner = rec.parent === 'human' ? 'the human' : rec.parent;
+    const parts = [
+      `[MetaHarness] You're taking over as ${rec.name}, the ${rec.role.name}. Until now ${from.harness} · ${from.model} did this work, and it stopped because ${reason}. ` +
+        `Your name and working directory are the same, and teammates reach you as before. Read what's below and the state of the work, then carry on.`,
+      `## The original brief (from ${spawner})\n\n${rec.brief}`,
+    ];
+    const did: string[] = [];
+    if (statuses.length) did.push(`Status lines, oldest first:\n${statuses.map(t => `- ${t}`).join('\n')}`);
+    if (messages.length) did.push(`Messages:\n${messages.join('\n')}`);
+    if (tools.length) did.push(`Its last tool calls:\n${tools.join('\n')}`);
+    if (rec.lastText) did.push(`The last thing it said: ${cut(rec.lastText, 800)}`);
+    if (did.length) parts.push(`## What happened so far\n\n${did.join('\n\n')}`);
+    const where: string[] = [];
+    const notes = join(g.sharedDir, 'notes', `${rec.name}.md`);
+    if (existsSync(notes)) where.push(`- Its notes: ${notes}. Read them first.`);
+    if (rec.worktree && g.git) {
+      const commits = git.commitsBetween(g.git, rec.worktree.base, rec.worktree.branch);
+      where.push(
+        commits.length
+          ? `- Commits on ${rec.worktree.branch}: ${commits.map(c => `${c.sha.slice(0, 7)} ${c.summary}`).join('; ')}`
+          : `- No commits on ${rec.worktree.branch} yet.`,
+      );
+      const dirty = git.statusShort(rec.worktree.path);
+      if (dirty.length) where.push(`- Uncommitted changes in ${rec.worktree.path} (git status --short):\n${dirty.slice(0, 30).map(l => `    ${l}`).join('\n')}`);
+    }
+    where.push(`- Shared folder: ${g.sharedDir}`);
+    parts.push(`## Where the work is\n\n${where.join('\n')}`);
+    return this.firstMessage(rec, parts.join('\n\n'));
+  }
+
+  /** A message from MetaHarness itself. */
+  private notice(rec: AgentRec, text: string): void {
+    this.enqueue(rec, { id: randomUUID(), kind: 'notice', from: 'MetaHarness', text, urgent: false, ts: new Date().toISOString() });
   }
 
   private markDelivered(rec: AgentRec, entries: InboxEntry[], via: string): void {
@@ -725,6 +1116,9 @@ export class Daemon {
     if (!rec) return `There's no agent called ${name}.`;
     if (FINISHED.includes(rec.state)) return `${name} has already ${rec.state}.`;
     void rec.session?.stop();
+    // Whatever the stopped session still says is no longer news.
+    rec.gen++;
+    clearTimeout(rec.limitTimer);
     this.setState(rec, 'ended');
     this.emit({ goal: goalId, agent: name, type: 'agent.ended', data: { reason: `stopped by ${by}` } });
     if (rec.doneNote === undefined) this.finish(rec, `${name} was stopped by ${by}.`, 'ended');
@@ -761,9 +1155,11 @@ export class Daemon {
           unread: a.inbox.length,
           awaitingApproval: a.pendingApprovals,
           nativeSession: a.session?.nativeId ?? null,
+          limitedUntil: a.limitedUntil ?? null,
         })),
       })),
       inbox: this.humanInbox.filter(i => !goalId || i.goal === goalId),
+      accounts: [...this.accounts.values()].map(a => ({ id: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ?? null, window: a.window ?? null })),
     };
   }
 
@@ -800,8 +1196,15 @@ export class Daemon {
         if (!['approve', 'deny', 'dismiss'].includes(decision)) throw new Error('decision must be approve, deny or dismiss.');
         return { result: this.resolveInbox(item, decision as 'approve' | 'deny' | 'dismiss', s('reply')) };
       }
+      case 'harness.test': {
+        const harness = s('harness');
+        if (!harness) throw new Error('harness.test needs "harness".');
+        if (!this.adapters[harness]) throw new Error(`MetaHarness can't run ${harness} here. Harnesses it can run: ${Object.keys(this.adapters).join(', ')}.`);
+        const { probeHarness } = await import('./probe.ts');
+        return { ...(await probeHarness(this, harness, s('model') ?? '')) };
+      }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, agent.message, agent.stop, inbox.resolve.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, agent.message, agent.stop, inbox.resolve, harness.test.`);
     }
   }
 
@@ -810,6 +1213,7 @@ export class Daemon {
     for (const g of this.goals.values()) {
       for (const a of g.agents.values()) {
         for (const w of a.waiters) clearTimeout(w.timer);
+        clearTimeout(a.limitTimer);
         if (a.session && !FINISHED.includes(a.state)) await a.session.stop().catch(() => {});
       }
     }
@@ -822,7 +1226,25 @@ export function formatForAgent(entries: InboxEntry[]): string {
     .map(e =>
       e.kind === 'done'
         ? `[MetaHarness] ${e.from} finished: ${e.text}`
-        : `[MetaHarness] Message from ${e.from}${e.urgent ? ' (urgent)' : ''}: ${e.text}`,
+        : e.kind === 'notice'
+          ? `[MetaHarness] ${e.text}`
+          : `[MetaHarness] Message from ${e.from}${e.urgent ? ' (urgent)' : ''}: ${e.text}`,
     )
     .join('\n');
+}
+
+/** Whether a role's allow list (Claude Code style, e.g. "Bash(npm test*)") covers a shell command. */
+export function roleAllows(role: Role, command: string): boolean {
+  const cmd = command.trim();
+  return role.allow.some(a => {
+    const m = /^Bash\((.*)\)$/.exec(a.trim());
+    if (!m) return false;
+    const re = new RegExp('^' + m[1].split('*').map(p => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
+    return re.test(cmd);
+  });
+}
+
+/** A time of day for messages, e.g. 18:20. */
+function clock(ms: number): string {
+  return new Date(ms).toTimeString().slice(0, 5);
 }

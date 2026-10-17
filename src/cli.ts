@@ -11,6 +11,8 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 const HELP = `mh: run a team of AI agents from different providers on one goal
 
+  mh doctor                          Which harnesses are here, signed in, with which models; can each role run?
+  mh test <harness> [--model <m>]    Check what works with a harness here: a short run on a cheap model
   mh daemon [--fake]                 Start the daemon (--fake: scripted agents, no model calls)
   mh run "<request>" [--lead <role>] [--playbook <name>]
                                      Start a goal; the lead role defaults to architect
@@ -24,6 +26,11 @@ const HELP = `mh: run a team of AI agents from different providers on one goal
   mh dismiss <item>                  Clear an Inbox item
 
 Environment: MH_HOME (default ~/.metaharness), MH_PORT (default 7777)`;
+
+/** Personal config, then the repository's, as the daemon reads them. */
+function configDirs(): string[] {
+  return [HOME, join(process.cwd(), '.metaharness')];
+}
 
 function die(msg: string): never {
   console.error(msg);
@@ -79,20 +86,34 @@ async function printStatus(goalId?: string): Promise<void> {
     console.log(`  shared folder: ${g.sharedDir}`);
     if (g.branch) console.log(`  goal branch:   ${g.branch}`);
     if (g.notice) console.log(`  note: ${g.notice}`);
+    // Model names vary a lot in length (gemini-3.8-flash-low), so size the column to fit.
+    const whereWidth = Math.max(28, ...g.agents.map((a: { harness: string; model: string }) => `${a.harness} · ${a.model}`.length + 2));
     const byParent = new Map<string, any[]>();
     for (const a of g.agents) byParent.set(a.parent, [...(byParent.get(a.parent) ?? []), a]);
     const walk = (parent: string, depth: number) => {
       for (const a of byParent.get(parent) ?? []) {
         const name = ('  '.repeat(depth) + a.name).padEnd(22);
         const what = `${a.role}${a.quick ? ' (helper)' : ''}`.padEnd(20);
-        const where = `${a.harness} · ${a.model}`.padEnd(28);
+        const where = `${a.harness} · ${a.model}`.padEnd(whereWidth);
         const unread = (a.unread ? ` [${a.unread} unread]` : '') + (a.awaitingApproval ? ' [needs your approval]' : '');
         const cost = a.cost == null ? '     —' : `$${a.cost.toFixed(3)}`;
-        console.log(`  ${name}${what}${where}${a.state.padEnd(9)}${cost}  ${a.status}${unread}`);
+        const until = a.limitedUntil ? ` [rate limited until ${new Date(a.limitedUntil).toTimeString().slice(0, 5)}]` : '';
+        // A finished agent's last status line is out of date; its note says what it did.
+        const line = a.state === 'done' || a.state === 'ended' ? '' : a.status;
+        console.log(`  ${name}${what}${where}${a.state.padEnd(9)}${cost}  ${line}${unread}${until}`);
         walk(a.name, depth + 1);
       }
     };
     walk('human', 0);
+  }
+  const accounts = (s.accounts ?? []).filter((a: { status: string; usedPct: number | null }) => a.status !== 'ok' || (a.usedPct ?? 0) > 0);
+  if (accounts.length) {
+    console.log('\nAccounts:');
+    for (const a of accounts) {
+      const used = a.usedPct != null ? `${a.usedPct}% used` : '';
+      const resets = a.resetsAt ? `resets ${new Date(a.resetsAt).toTimeString().slice(0, 5)}` : '';
+      console.log(`  ${a.id.padEnd(14)}${a.status.padEnd(9)}${[used, a.window, resets].filter(Boolean).join(' · ')}`);
+    }
   }
   if (s.inbox.length) {
     console.log(`\nFor you (${s.inbox.length}):`);
@@ -136,27 +157,49 @@ async function main(): Promise<void> {
       const { FakeAdapter, demoScripts } = await import('./adapters/fake.ts');
       const { ClaudeAdapter } = await import('./adapters/claude.ts');
       const { CodexAdapter } = await import('./adapters/codex.ts');
+      const { AgyAdapter } = await import('./adapters/agy.ts');
+      const { loadProfiles, findBin } = await import('./harnesses.ts');
       const { startServer } = await import('./server.ts');
       const fake = opt.fake === true;
       const pricesFile = [join(process.cwd(), '.metaharness', 'prices.json'), join(HOME, 'prices.json')].find(existsSync);
       const prices = pricesFile ? JSON.parse(readFileSync(pricesFile, 'utf8')) : {};
-      const d = new Daemon({
-        home: HOME,
-        repo: process.cwd(),
-        adapters: {
-          fake: new FakeAdapter(demoScripts),
-          'claude-code': new ClaudeAdapter(),
-          codex: new CodexAdapter({ prices }),
-        },
-        harnessOverride: fake ? 'fake' : undefined,
-      });
+      // One adapter per profile MetaHarness can drive and that is installed here.
+      const adapters: Record<string, import('./adapters/types.ts').HarnessAdapter> = { fake: new FakeAdapter(demoScripts) };
+      for (const p of loadProfiles(configDirs()).values()) {
+        const bin = p.transport && findBin(p.bin);
+        if (!bin) continue;
+        if (p.transport === 'claude-stream') adapters[p.id] = new ClaudeAdapter({ id: p.id, bin, env: p.env });
+        else if (p.transport === 'codex-app-server') adapters[p.id] = new CodexAdapter({ bin, prices });
+        else if (p.transport === 'agy-stream') adapters[p.id] = new AgyAdapter({ id: p.id, bin });
+      }
+      const d = new Daemon({ home: HOME, repo: process.cwd(), adapters, harnessOverride: fake ? 'fake' : undefined });
       await startServer(d, PORT, token(true)).catch((e: Error) => die(`Couldn't listen on ${BASE}: ${e.message}`));
       console.log(`MetaHarness daemon on ${BASE}${fake ? ', running scripted agents' : ''}. Data in ${HOME}.`);
       console.log(`Roles: ${[...d.config.roles.keys()].join(', ') || 'none (add .metaharness/roles/<name>.md)'}`);
-      if (!fake) console.log('Harnesses: claude-code, codex. (antigravity arrives in milestone 1.)');
+      if (!fake) console.log(`Harnesses: ${Object.keys(adapters).filter(h => h !== 'fake').join(', ') || 'none found'}. mh doctor shows what each role can use.`);
       const shutdown = () => void d.close().then(() => process.exit(0));
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
+      return;
+    }
+    case 'doctor': {
+      const { loadProfiles, inspect } = await import('./harnesses.ts');
+      const { loadConfig } = await import('./config.ts');
+      const { doctorLines } = await import('./doctor.ts');
+      console.log('Checking harnesses (this runs each CLI\'s own version, login and model commands)…\n');
+      const reports = await Promise.all([...loadProfiles(configDirs()).values()].map(inspect));
+      for (const line of doctorLines(reports, [...loadConfig(configDirs()).roles.values()])) console.log(line);
+      return;
+    }
+    case 'test': {
+      const harness = pos[0];
+      if (!harness) die('Usage: mh test <harness> [--model <model>]. mh doctor lists the harnesses.');
+      const { loadProfiles } = await import('./harnesses.ts');
+      const model = s('model') ?? loadProfiles(configDirs()).get(harness)?.probeModel ?? '';
+      console.log(`Testing ${harness}${model ? ` on ${model}` : ''}. This takes a minute or two and a few small turns…`);
+      const r = await command({ cmd: 'harness.test', harness, model });
+      for (const c of r.checks) console.log(`  ${c.ok === true ? '✓' : c.ok === false ? '✗' : '?'} ${c.name.padEnd(28)} ${c.detail}`);
+      console.log(`\n${r.seconds}s${r.cost != null ? `, $${r.cost.toFixed(4)}` : ''}.`);
       return;
     }
     case 'run': {

@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 import { MCP_SERVER_NAME } from '../mcp.ts';
-import type { CapabilityManifest, HarnessAdapter, Session, SessionEvents, SessionSpec } from './types.ts';
+import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions } from './types.ts';
 
 /**
  * Config overrides that keep a thread to what MetaHarness gives it: the user's global MCP servers
@@ -31,6 +31,28 @@ async function listUserMcpServers(bin: string): Promise<string[]> {
   }
 }
 
+const LIMIT_ERRORS = ['usageLimitExceeded', 'rateLimitExceeded'];
+
+type Window = { usedPercent?: number; resetsAt?: number | null; windowDurationMins?: number | null };
+
+/**
+ * A Codex rate-limit snapshot: a primary and a secondary window, each with the percent used and
+ * a reset time in seconds. Updates can be sparse, so only what's present is reported.
+ */
+export function codexRateLimit(r: any): RateLimitInfo | undefined {
+  if (!r || typeof r !== 'object') return undefined;
+  const windows = [r.primary, r.secondary].filter((w): w is Window => !!w && typeof w.usedPercent === 'number');
+  const top = windows.sort((a, b) => b.usedPercent! - a.usedPercent!)[0];
+  if (!top && !r.rateLimitReachedType) return undefined;
+  const mins = top?.windowDurationMins;
+  return {
+    status: r.rateLimitReachedType ? 'limited' : 'ok',
+    usedPct: top?.usedPercent,
+    resetsAt: top?.resetsAt ? top.resetsAt * 1000 : undefined,
+    window: r.limitName ?? (mins ? (mins % 1440 === 0 ? `${mins / 1440}d` : mins % 60 === 0 ? `${mins / 60}h` : `${mins}m`) : undefined),
+  };
+}
+
 /** USD per million tokens. Codex reports tokens only, so cost comes from this table (if filled in). */
 export type PriceTable = Record<string, { input: number; cachedInput?: number; output: number }>;
 
@@ -46,6 +68,7 @@ export class CodexAdapter implements HarnessAdapter {
     interrupt: true,
     reportsCost: false,
     reportsContext: true,
+    reportsRateLimits: true,
   };
   private bin: string;
   private prices: PriceTable;
@@ -57,7 +80,7 @@ export class CodexAdapter implements HarnessAdapter {
     this.prices = opts.prices ?? {};
   }
 
-  async start(spec: SessionSpec, events: SessionEvents): Promise<Session> {
+  async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
     if (!spec.mcpUrl) throw new Error('the daemon has no MCP address yet (is the server running?)');
     if (!this.server) {
       this.server = AppServer.start(this.bin);
@@ -66,7 +89,7 @@ export class CodexAdapter implements HarnessAdapter {
     const server = await this.server;
     this.isolation ??= listUserMcpServers(this.bin).then(isolationConfig);
     const session = new CodexSession(server, spec, events, this.prices[spec.model], await this.isolation);
-    await session.init();
+    await session.init(opts.resume);
     return session;
   }
 }
@@ -145,7 +168,9 @@ class AppServer {
         if (m.id !== undefined) {
           if (thread) void thread.onServerRequest(m.id, m.method, m.params);
           else this.respondError(m.id, 'MetaHarness has no agent on this thread.');
-        } else thread?.onNotification(m.method, m.params);
+        } else if (thread) thread.onNotification(m.method, m.params);
+        // Account notifications (rate limits) carry no thread: they concern every agent on it.
+        else if (m.params?.threadId === undefined) for (const t of this.threads.values()) t.onNotification(m.method, m.params);
       }
     }
   }
@@ -172,8 +197,9 @@ class CodexSession implements Session {
     this.isolation = isolation;
   }
 
-  async init(): Promise<void> {
-    const r = await this.server.request('thread/start', {
+  async init(resume?: string): Promise<void> {
+    const r = await this.server.request(resume ? 'thread/resume' : 'thread/start', {
+      ...(resume ? { threadId: resume } : {}),
       model: this.spec.model || null,
       cwd: this.spec.cwd,
       approvalPolicy: 'on-request',
@@ -194,7 +220,7 @@ class CodexSession implements Session {
     this.server.threads.set(this.nativeId, this);
     // Started right away, so the session is already busy when the daemon first delivers messages:
     // they then join this turn instead of starting a turn ahead of the brief.
-    void this.send(this.spec.brief, 'new_turn');
+    if (this.spec.brief) void this.send(this.spec.brief, 'new_turn');
   }
 
   busy(): boolean {
@@ -263,7 +289,10 @@ class CodexSession implements Session {
         break;
       case 'turn/completed': {
         if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
-        if (p.turn?.status === 'failed') this.ev.text(`(turn failed: ${p.turn.error?.message ?? 'unknown error'})`);
+        if (p.turn?.status === 'failed') {
+          if (LIMIT_ERRORS.includes(p.turn.error?.codexErrorInfo)) this.ev.rateLimit({ status: 'limited' });
+          this.ev.text(`(turn failed: ${p.turn.error?.message ?? 'unknown error'})`);
+        }
         this.turnId = null;
         this.running = false;
         this.ev.turnEnded();
@@ -278,6 +307,11 @@ class CodexSession implements Session {
         else if (it.type === 'commandExecution') this.ev.toolResult(`exit ${it.exitCode ?? '?'}: ${String(it.aggregatedOutput ?? '').slice(0, 160)}`, it.exitCode === 0);
         else if (it.type === 'fileChange') this.ev.toolCall('Edit', (it.changes ?? []).map((c: { path?: string }) => c.path).join(', ').slice(0, 160));
         else if (it.type === 'mcpToolCall' && it.server !== MCP_SERVER_NAME) this.ev.toolCall(`${it.server}.${it.tool}`, JSON.stringify(it.arguments ?? {}).slice(0, 160));
+        break;
+      }
+      case 'account/rateLimits/updated': {
+        const info = codexRateLimit(p.rateLimits);
+        if (info) this.ev.rateLimit(info);
         break;
       }
       case 'thread/tokenUsage/updated': {

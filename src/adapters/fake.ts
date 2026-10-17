@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CapabilityManifest, HarnessAdapter, Session, SessionEvents, SessionSpec } from './types.ts';
+import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions } from './types.ts';
 
 /**
  * Scripted agents for developing and testing the daemon without calling any model.
@@ -16,7 +16,16 @@ export interface FakeCtx {
   /** Resolves with the next message injected into this turn, or null after the timeout. */
   nextMessage(timeoutMs?: number): Promise<string | null>;
   writeShared(relPath: string, content: string): void;
+  /** Reports the account's rate-limit state, as a real harness would. */
+  rateLimit(info: RateLimitInfo): void;
+  /** True once this session has been stopped, e.g. to move the agent elsewhere. */
+  stopped(): boolean;
+  /** A shell command that takes `ms`, as a tool call; an interrupt cuts it short. Resolves false if interrupted. */
+  run(command: string, ms: number): Promise<boolean>;
 }
+
+/** A role's later turns: each message that starts a new turn, after the first script. */
+export type FakeTurnScript = (ctx: FakeCtx, text: string) => Promise<void>;
 
 export type FakeScript = (ctx: FakeCtx) => Promise<void>;
 
@@ -26,27 +35,38 @@ const defaultScript: FakeScript = async ctx => {
 };
 
 export class FakeAdapter implements HarnessAdapter {
-  readonly manifest: CapabilityManifest = {
-    harness: 'fake',
-    injectMidTurn: true,
-    resume: true,
-    interrupt: true,
-    reportsCost: true,
-    reportsContext: true,
-  };
+  readonly manifest: CapabilityManifest;
   private scripts: Record<string, FakeScript>;
+  private turns: Record<string, FakeTurnScript>;
+  /** Every session started, for tests: its spec and whether it resumed an earlier one. */
+  readonly started: { spec: SessionSpec; resume?: string }[] = [];
 
-  constructor(scripts: Record<string, FakeScript> = {}) {
+  /** `manifest` overrides capabilities, e.g. { harness: 'fake2', injectMidTurn: false }. */
+  constructor(scripts: Record<string, FakeScript> = {}, manifest: Partial<CapabilityManifest> = {}, turns: Record<string, FakeTurnScript> = {}) {
     this.scripts = scripts;
+    this.turns = turns;
+    this.manifest = {
+      harness: 'fake',
+      injectMidTurn: true,
+      resume: true,
+      interrupt: true,
+      reportsCost: true,
+      reportsContext: true,
+      reportsRateLimits: true,
+      ...manifest,
+    };
   }
 
-  async start(spec: SessionSpec, events: SessionEvents): Promise<Session> {
-    return new FakeSession(spec, events, this.scripts[spec.role.name] ?? this.scripts['*'] ?? defaultScript);
+  async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
+    this.started.push({ spec, resume: opts.resume });
+    // A resumed session has already run its script; the brief is just its next turn.
+    const script = opts.resume ? undefined : (this.scripts[spec.role.name] ?? this.scripts['*'] ?? defaultScript);
+    return new FakeSession(spec, events, script, this.manifest.interrupt, opts.resume, this.turns[spec.role.name]);
   }
 }
 
 class FakeSession implements Session {
-  readonly nativeId = 'fake-' + randomUUID().slice(0, 8);
+  readonly nativeId: string;
   private spec: SessionSpec;
   private ev: SessionEvents;
   private running = false;
@@ -54,10 +74,21 @@ class FakeSession implements Session {
   private queue: string[] = [];
   private onMessage: ((m: string) => void) | null = null;
   private cost = 0;
+  interrupt?: () => Promise<void>;
+  private turnScript?: FakeTurnScript;
+  private cancelRun?: () => void;
 
-  constructor(spec: SessionSpec, ev: SessionEvents, script: FakeScript) {
+  constructor(spec: SessionSpec, ev: SessionEvents, script: FakeScript | undefined, canInterrupt: boolean, resume?: string, turnScript?: FakeTurnScript) {
     this.spec = spec;
     this.ev = ev;
+    this.turnScript = turnScript;
+    this.nativeId = resume ?? 'fake-' + randomUUID().slice(0, 8);
+    // Interrupting a scripted turn hands it a message it can stop on; the turn then ends.
+    if (canInterrupt) this.interrupt = async () => (this.cancelRun ? this.cancelRun() : this.onMessage?.('[interrupted]'));
+    if (!script) {
+      if (spec.brief) setImmediate(() => void this.send(spec.brief, 'new_turn'));
+      return;
+    }
     // Busy from the start, like the real adapters: early messages join the first turn.
     // The script starts on the next tick so the daemon has the session before the first event.
     this.running = true;
@@ -72,6 +103,8 @@ class FakeSession implements Session {
     return {
       spec: this.spec,
       tool: async (name, args) => {
+        // A real harness process is gone once stopped; a script that keeps going reaches nothing.
+        if (this.stopped) throw new Error('this session was stopped');
         this.ev.toolCall(name, JSON.stringify(args ?? {}).slice(0, 160));
         this.bill();
         const r = await this.spec.callTool(name, args ?? {});
@@ -99,6 +132,21 @@ class FakeSession implements Session {
         mkdirSync(dirname(p), { recursive: true });
         writeFileSync(p, content);
         this.ev.toolCall('Write', `shared/${relPath}`);
+      },
+      rateLimit: info => this.ev.rateLimit(info),
+      stopped: () => this.stopped,
+      run: (command, ms) => {
+        this.ev.toolCall('Bash', command);
+        return new Promise<boolean>(resolve => {
+          const timer = setTimeout(() => finish(true), ms);
+          const finish = (completed: boolean) => {
+            clearTimeout(timer);
+            this.cancelRun = undefined;
+            this.ev.toolResult(completed ? 'done' : 'interrupted', completed);
+            resolve(completed);
+          };
+          this.cancelRun = () => finish(false);
+        });
       },
     };
   }
@@ -128,15 +176,15 @@ class FakeSession implements Session {
       else this.queue.push(text);
       return;
     }
+    if (this.turnScript) return void this.turn(() => this.turnScript!(this.ctx(), text));
     // A scripted agent answers follow-ups with a one-line acknowledgement.
     void this.turn(async () => {
       this.ev.text(`Got it: ${text.replace(/\[MetaHarness\]\s*/g, '').slice(0, 160)}`);
     });
   }
 
-  async interrupt(): Promise<void> {}
-
   async stop(): Promise<void> {
+    this.cancelRun?.();
     this.stopped = true;
     this.running = false;
     this.ev.exited('stopped');
