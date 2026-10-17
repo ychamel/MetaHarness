@@ -12,7 +12,10 @@ The design is in [DESIGN.md](DESIGN.md).
 Milestone 0: the core runs real teams across **Claude Code and Codex**. Agents reach their tools
 over MCP, messages reach running turns natively (Claude Code streaming input, Codex `turn/steer`),
 and permission requests land in your Inbox. Scripted agents (`--fake`) are there for development.
-Antigravity CLI (Gemini) and git worktrees per agent come in milestone 1.
+
+Milestone 1 in progress: each agent works in its own git worktree on `mh/<goal>/<agent>`, and the
+lead merges into the goal branch `mh/<goal>/main`, which is what you take at the end. Antigravity
+CLI (Gemini) is next. See [TRACKER.md](TRACKER.md).
 
 ## Try it
 
@@ -44,8 +47,9 @@ repository's `.metaharness/` folder. Codex reports tokens but not cost; to see c
 | `src/hub.ts` | The six agent tools: `team`, `spawn`, `send`, `wait`, `status`, `done` |
 | `src/store.ts` | Append-only event log (SQLite, built into Node) |
 | `src/server.ts` | Client API: `GET /state`, `GET /events` (with replay), `POST /commands`, and `/mcp/<token>` for agents |
+| `src/git.ts` | Worktrees and branches per agent, and reading new commits for git events |
 | `src/mcp.ts` | The tools as an MCP server, one identity per agent, plus the approval tool |
 | `src/cli.ts` | The `mh` command |
 | `src/adapters/` | `claude.ts` (Claude Code, stream-json), `codex.ts` (Codex app-server), `fake.ts` (scripted agents for tests) |
 | `.metaharness/` | Roles, methodology and playbooks for this repo |
-| `test/` | `npm test` runs the milestone-0 scenario end to end |
+| `test/` | `npm test` runs the milestone-0 scenario and a parallel worktree team end to end, in throwaway repositories |

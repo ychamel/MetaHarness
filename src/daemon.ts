@@ -5,6 +5,7 @@ import { EventStore } from './store.ts';
 import { loadConfig, type Config } from './config.ts';
 import { resolveName } from './fuzzy.ts';
 import { Hub } from './hub.ts';
+import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
 import type { ApprovalDecision, HarnessAdapter, Session, SessionEvents } from './adapters/types.ts';
 
@@ -33,6 +34,8 @@ export interface AgentRec {
   quick: boolean;
   isLead: boolean;
   cwd: string;
+  /** The agent's own worktree. Quick helpers and goals without git have none. */
+  worktree?: git.Worktree;
   state: AgentState;
   status: string;
   /** Total spend so far; undefined when the harness doesn't report cost and no price is configured. */
@@ -56,6 +59,12 @@ export interface GoalRec {
   lead: string;
   createdAt: string;
   sharedDir: string;
+  /** Git state for worktrees; unset when the repository can't have them (see gitNote). */
+  git?: git.GoalGit;
+  gitNote?: string;
+  /** Last seen tip of each goal branch, and commits already reported, for git events. */
+  refs: Map<string, string>;
+  seen: Set<string>;
   status: 'running' | 'ended';
   agents: Map<string, AgentRec>;
   counters: Map<string, number>;
@@ -86,6 +95,8 @@ export interface DaemonOptions {
   harnessOverride?: string;
   /** How long a quick spawn blocks its caller before handing back control. */
   quickTimeoutMs?: number;
+  /** How often to look for new commits on the goal branches. 0 turns polling off (tests call refreshGit). */
+  gitPollMs?: number;
 }
 
 type SpawnResult =
@@ -109,6 +120,8 @@ export class Daemon {
   private tokens = new Map<string, { goal: string; agent: string }>();
   private approvals = new Map<string, (d: ApprovalDecision) => void>();
   private harnessOverride?: string;
+  private gitPollMs: number;
+  private gitTimer?: NodeJS.Timeout;
 
   constructor(o: DaemonOptions) {
     this.home = o.home;
@@ -119,6 +132,7 @@ export class Daemon {
     this.adapters = o.adapters ?? {};
     this.harnessOverride = o.harnessOverride;
     this.quickTimeoutMs = o.quickTimeoutMs ?? 120_000;
+    this.gitPollMs = o.gitPollMs ?? 3000;
     this.hub = new Hub(this);
   }
 
@@ -144,11 +158,21 @@ export class Daemon {
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const g: GoalRec = {
       id, request: o.request, lead: '', createdAt: new Date().toISOString(), sharedDir,
+      refs: new Map(), seen: new Set(),
       status: 'running', agents: new Map(), counters: new Map(), leadDone, resolveLeadDone,
     };
+    const gs = git.setupGoal(this.repo, id);
+    if ('reason' in gs) g.gitNote = gs.reason;
+    else g.git = gs;
     this.goals.set(id, g);
     const leadRole = o.lead ?? 'architect';
-    this.emit({ goal: id, type: 'goal.started', data: { request: o.request, lead: leadRole, playbook: o.playbook ?? null, sharedDir } });
+    this.emit({
+      goal: id, type: 'goal.started',
+      data: {
+        request: o.request, lead: leadRole, playbook: o.playbook ?? null, sharedDir,
+        branch: g.git?.branch ?? null, base: g.git?.base ?? null, notice: this.goalNotice(g) ?? null,
+      },
+    });
     const r = this.spawnAgent(id, { role: leadRole, brief: o.request, parent: 'human', isLead: true, playbook: o.playbook });
     if (!r.ok) {
       g.status = 'ended';
@@ -156,12 +180,22 @@ export class Daemon {
       throw new Error(r.error);
     }
     g.lead = r.name;
+    if (g.git && this.gitPollMs > 0) this.gitTimer ??= setInterval(() => this.refreshGit(), this.gitPollMs).unref();
     return id;
+  }
+
+  /** What the human should know about where the agents' work happens, if anything. */
+  goalNotice(g: GoalRec): string | undefined {
+    if (!g.git) return `No worktrees for this goal: ${g.gitNote}. The agents share ${this.repo}.`;
+    if (g.git.dirty) {
+      const sha = g.git.base.slice(0, 7);
+      return `Your uncommitted changes aren't in the agents' worktrees. They start from ${sha} (${git.subject(g.git, sha)}).`;
+    }
   }
 
   spawnAgent(
     goalId: string,
-    o: { role: string; brief: string; parent: string; name?: string; quick?: boolean; isLead?: boolean; playbook?: string },
+    o: { role: string; brief: string; parent: string; name?: string; quick?: boolean; isLead?: boolean; playbook?: string; from?: string },
   ): SpawnResult {
     const g = this.goals.get(goalId);
     if (!g) return { ok: false, error: `There's no goal ${goalId}.` };
@@ -181,22 +215,43 @@ export class Daemon {
 
     const n = (g.counters.get(role.name) ?? 0) + 1;
     g.counters.set(role.name, n);
-    let name = o.name?.trim() || (o.isLead ? role.name : `${role.name}-${n}`);
-    while (g.agents.has(name)) name = `${name}-${n}`;
+    // Names end up in branch names, so keep them to safe characters. "main" is the goal branch.
+    let name = o.name?.trim().replace(/[^\w.-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '') || (o.isLead ? role.name : `${role.name}-${n}`);
+    while (g.agents.has(name) || name === 'main') name = `${name}-${n}`;
     const parentRec = g.agents.get(o.parent);
-    // Quick helpers work in their caller's directory so they see uncommitted changes.
-    // Worktrees per coding agent arrive in milestone 1.
-    const cwd = o.quick && parentRec ? parentRec.cwd : this.repo;
+
+    // Quick helpers work in their caller's directory so they see uncommitted changes. Everyone
+    // else gets a worktree: the lead on the goal branch, the rest on mh/<goal>/<name>.
+    let cwd = this.repo;
+    let worktree: git.Worktree | undefined;
+    let startedFrom = '';
+    if (o.quick && parentRec) cwd = parentRec.cwd;
+    else if (g.git) {
+      const start = o.isLead ? { ref: g.git.base, label: 'the commit you were on' } : this.startPoint(g, parentRec, o.from);
+      if ('error' in start) return { ok: false, error: start.error };
+      try {
+        const path = join(this.home, 'goals', goalId, 'worktrees', name);
+        worktree = git.addWorktree(g.git, path, o.isLead ? g.git.branch : git.agentBranch(goalId, name), start.ref);
+      } catch (e) {
+        return { ok: false, error: `Couldn't create a git worktree for ${name}: ${(e as Error).message.trim()}` };
+      }
+      cwd = worktree.path;
+      startedFrom = start.label;
+      g.refs.set(worktree.branch, worktree.base);
+    }
 
     const rec: AgentRec = {
       goal: goalId, name, role, harness, model: role.model, parent: o.parent, brief: o.brief,
-      quick: !!o.quick, isLead: !!o.isLead, cwd, state: 'starting', status: '', lastText: '',
+      quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
       adapter, inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0,
     };
     g.agents.set(name, rec);
     this.emit({
       goal: goalId, agent: name, parent: o.parent, type: 'agent.spawned',
-      data: { role: role.name, harness, model: role.model, brief: o.brief, quick: !!o.quick, cwd },
+      data: {
+        role: role.name, harness, model: role.model, brief: o.brief, quick: !!o.quick, cwd,
+        worktree: worktree?.path ?? null, branch: worktree?.branch ?? null, base: worktree?.base ?? null,
+      },
     });
 
     const token = randomBytes(16).toString('hex');
@@ -205,8 +260,9 @@ export class Daemon {
       .start(
         {
           goal: goalId, agent: name, role, model: role.model,
-          systemPrompt: this.buildPrompt(g, rec, o.playbook), brief: this.firstMessage(rec),
+          systemPrompt: this.buildPrompt(g, rec, o.playbook, startedFrom), brief: this.firstMessage(rec),
           cwd, sharedDir: g.sharedDir, mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${token}` : '',
+          gitDirs: worktree && g.git ? [g.git.commonDir, worktree.gitDir] : [],
           callTool: (tool, args) => this.hub.call(goalId, name, tool, args),
         },
         this.sessionEvents(rec),
@@ -225,7 +281,28 @@ export class Daemon {
     return { ok: true, name, rec, guessedRole: res.guessed ? res.match : undefined };
   }
 
-  private buildPrompt(g: GoalRec, rec: AgentRec, playbook?: string): string {
+  /**
+   * Where a new agent's branch starts: the latest commit of a teammate (or any branch) named in
+   * `from`, else its spawner's, else the goal branch.
+   */
+  private startPoint(g: GoalRec, parent: AgentRec | undefined, from?: string): { ref: string; label: string } | { error: string } {
+    const gg = g.git!;
+    if (from) {
+      const res = resolveName(from, [...g.agents.keys()]);
+      const mate = res.match ? g.agents.get(res.match) : undefined;
+      // An exact teammate name, then a real branch or commit, then a teammate's name with a typo.
+      const fromMate = mate?.worktree && { ref: mate.worktree.branch, label: `${mate.name}'s branch ${mate.worktree.branch}` };
+      if (fromMate && !res.guessed) return fromMate;
+      if (git.resolveCommit(gg, from)) return { ref: from, label: from };
+      if (fromMate) return fromMate;
+      const mates = [...g.agents.values()].filter(a => a.worktree).map(a => a.name);
+      return { error: `"from" should be a teammate or a branch, and there's no "${from}". Teammates with branches: ${mates.join(', ') || 'none'}.` };
+    }
+    if (parent?.worktree) return { ref: parent.worktree.branch, label: `${parent.name}'s branch ${parent.worktree.branch}` };
+    return { ref: gg.branch, label: `the goal branch ${gg.branch}` };
+  }
+
+  private buildPrompt(g: GoalRec, rec: AgentRec, playbook?: string, startedFrom = ''): string {
     const parts = [rec.role.helper ? this.config.helperMethodology : this.config.methodology];
     parts.push(`## Your role: ${rec.role.name}\n\n${rec.role.instructions}`);
     if (rec.isLead && playbook) {
@@ -241,9 +318,29 @@ export class Daemon {
         `- Spawned by: ${rec.parent === 'human' ? 'the human' : rec.parent}`,
         `- Shared folder: ${g.sharedDir}`,
         `- Working directory: ${rec.cwd}`,
+        ...this.gitLines(g, rec, startedFrom),
       ].join('\n'),
     );
     return parts.join('\n\n');
+  }
+
+  private gitLines(g: GoalRec, rec: AgentRec, startedFrom: string): string[] {
+    if (!g.git) {
+      return [`- Git: no worktrees for this goal (${g.gitNote}). Everyone shares this directory, so agree on who edits which files, and run one implementer at a time.`];
+    }
+    const wt = rec.worktree;
+    if (!wt) return rec.quick ? [`- This is ${rec.parent}'s worktree. Read it, but don't change it.`] : [];
+    const sha = wt.base.slice(0, 7);
+    const lines = [
+      `- Git: this is your own worktree on branch ${wt.branch}, started from ${startedFrom} at ${sha} (${git.subject(g.git, sha)}).`,
+      `- Teammates' branches are mh/${g.id}/<their name>, in the same repository, so you can diff or merge them straight away (no fetch).`,
+    ];
+    lines.push(
+      rec.isLead
+        ? `- ${wt.branch} is the goal branch. Merge the team's branches into it: it's what the human gets.`
+        : `- The goal branch is ${g.git.branch}. The lead merges into it.`,
+    );
+    return lines;
   }
 
   /**
@@ -264,6 +361,13 @@ export class Daemon {
         ? 'When you have the answer, call the MetaHarness `done` tool with it as the note.'
         : `Use the MetaHarness tools: \`send\` to ask ${spawner} if anything is unclear, \`status\` for progress, and \`done\` with a short note when you finish.`,
     ];
+    if (rec.worktree) {
+      lines.push(
+        rec.isLead
+          ? `You work in your own git worktree on ${rec.worktree.branch}, the goal branch. Merge teammates' branches into it before you call \`done\`.`
+          : `You work in your own git worktree on branch ${rec.worktree.branch}. Commit your work there before you call \`done\`.`,
+      );
+    }
     return lines.join('\n');
   }
 
@@ -378,6 +482,7 @@ export class Daemon {
     const g = this.goals.get(rec.goal)!;
     if (rec.parent === 'human') {
       const kind = how === 'done' || how === 'idle' ? 'done' : how === 'crashed' ? 'crash' : 'stopped';
+      if (rec.isLead) note += this.branchSummary(g);
       this.toHuman(g, rec.name, kind, note);
       if (rec.isLead && how === 'done') g.resolveLeadDone(note);
       return;
@@ -385,6 +490,72 @@ export class Daemon {
     const parent = g.agents.get(rec.parent);
     if (!parent) return;
     this.enqueue(parent, { id: randomUUID(), kind: 'done', from: rec.name, text: note, urgent: false, ts: new Date().toISOString() });
+  }
+
+  /** For the human: where the team's work is, and which branches haven't been merged into it. */
+  private branchSummary(g: GoalRec): string {
+    if (!g.git) return '';
+    const gg = g.git;
+    const ahead = git.countCommits(gg, gg.base, gg.branch);
+    const lead = g.agents.get(g.lead)?.worktree?.path;
+    const lines = [
+      ahead
+        ? `The team's work is on branch ${gg.branch}, ${ahead} commit${ahead > 1 ? 's' : ''} ahead of where the goal started${lead ? ` (worktree: ${lead})` : ''}.`
+        : `There are no commits on ${gg.branch} yet${lead ? `. Uncommitted work may be in ${lead}` : ''}.`,
+    ];
+    const unmerged = [...git.goalBranches(gg, g.id).keys()]
+      .filter(b => b !== gg.branch)
+      .map(b => ({ b, n: git.countCommits(gg, gg.branch, b) }))
+      .filter(x => x.n > 0);
+    if (unmerged.length) lines.push(`Not merged into it: ${unmerged.map(x => `${x.b} (${x.n} commit${x.n > 1 ? 's' : ''})`).join(', ')}.`);
+    return '\n\n' + lines.join(' ');
+  }
+
+  /**
+   * Turns new commits on the goal branches into git.commit and git.merge events. Best effort:
+   * it compares branch tips with the last look, on a timer.
+   */
+  refreshGit(goalId?: string): void {
+    for (const g of this.goals.values()) {
+      if (!g.git || (goalId && g.id !== goalId)) continue;
+      try {
+        this.refreshGoalGit(g, g.git);
+      } catch {
+        // The repository may be mid-operation; try again next time.
+      }
+    }
+  }
+
+  private refreshGoalGit(g: GoalRec, gg: git.GoalGit): void {
+    const tips = git.goalBranches(gg, g.id);
+    // The goal branch last, so commits merged into it have already been seen on their own branch.
+    const order = [...tips.keys()].sort((a, b) => Number(a === gg.branch) - Number(b === gg.branch));
+    for (const branch of order) {
+      const sha = tips.get(branch)!;
+      const old = g.refs.get(branch);
+      g.refs.set(branch, sha);
+      if (!old || old === sha) continue;
+      const owner = [...g.agents.values()].find(a => a.worktree?.branch === branch)?.name;
+      const merged = (from: string, sha: string, fastForward?: boolean) =>
+        this.emit({
+          goal: g.id, agent: owner, type: 'git.merge',
+          data: { from: git.branchOf(gg, g.id, from, branch) ?? from.slice(0, 7), into: branch, sha, ...(fastForward ? { fastForward } : {}) },
+        });
+      // Commits already reported on another branch arrived here by a fast-forward merge.
+      let fastForwarded = '';
+      for (const c of git.commitsBetween(gg, old, sha)) {
+        if (g.seen.has(c.sha)) {
+          fastForwarded = c.sha;
+          continue;
+        }
+        if (fastForwarded) merged(fastForwarded, fastForwarded, true);
+        fastForwarded = '';
+        g.seen.add(c.sha);
+        this.emit({ goal: g.id, agent: owner, type: 'git.commit', data: { branch, sha: c.sha, summary: c.summary } });
+        if (c.mergedSha) merged(c.mergedSha, c.sha);
+      }
+      if (fastForwarded) merged(fastForwarded, fastForwarded, true);
+    }
   }
 
   status(rec: AgentRec, text: string): void {
@@ -567,6 +738,8 @@ export class Daemon {
         lead: g.lead,
         createdAt: g.createdAt,
         sharedDir: g.sharedDir,
+        branch: g.git?.branch ?? null,
+        notice: this.goalNotice(g) ?? null,
         agents: [...g.agents.values()].map(a => ({
           name: a.name,
           role: a.role.name,
@@ -576,6 +749,8 @@ export class Daemon {
           state: a.state,
           status: a.status,
           quick: a.quick,
+          branch: a.worktree?.branch ?? null,
+          cwd: a.cwd,
           cost: a.cost ?? null,
           contextPct: a.contextPct ?? null,
           unread: a.inbox.length,
@@ -598,7 +773,8 @@ export class Daemon {
       case 'goal.start': {
         const request = s('request');
         if (!request) throw new Error('goal.start needs a request.');
-        return { goal: this.startGoal({ request, lead: s('lead'), playbook: s('playbook') }) };
+        const goal = this.startGoal({ request, lead: s('lead'), playbook: s('playbook') });
+        return { goal, notice: this.goalNotice(this.goals.get(goal)!) ?? null };
       }
       case 'agent.message': {
         const to = s('to'), text = s('text');
@@ -625,6 +801,7 @@ export class Daemon {
   }
 
   async close(): Promise<void> {
+    clearInterval(this.gitTimer);
     for (const g of this.goals.values()) {
       for (const a of g.agents.values()) {
         for (const w of a.waiters) clearTimeout(w.timer);

@@ -5,7 +5,7 @@ import { isolationConfig } from '../src/adapters/codex.ts';
 import type { SessionSpec } from '../src/adapters/types.ts';
 
 const spec: SessionSpec = {
-  goal: 'g', agent: 'architect', model: 'opus', systemPrompt: 'prompt', brief: 'brief', cwd: '/repo', sharedDir: '/shared',
+  goal: 'g', agent: 'architect', model: 'opus', systemPrompt: 'prompt', brief: 'brief', cwd: '/repo', sharedDir: '/shared', gitDirs: [],
   mcpUrl: 'http://127.0.0.1:7777/mcp/abc',
   role: { name: 'architect', harness: 'claude-code', model: 'opus', goodAt: '', instructions: '', helper: false, allow: ['Bash(npm test*)'], file: '' },
   callTool: async () => '',

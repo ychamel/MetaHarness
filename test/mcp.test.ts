@@ -9,8 +9,9 @@ import { Daemon } from '../src/daemon.ts';
 import { FakeAdapter } from '../src/adapters/fake.ts';
 import type { HarnessAdapter, SessionSpec } from '../src/adapters/types.ts';
 import { startServer } from '../src/server.ts';
+import { makeRepo } from './helpers.ts';
 
-const repo = join(import.meta.dirname, '..');
+const configDir = join(import.meta.dirname, '..', '.metaharness');
 
 /** Records the MCP URL each agent is given, and keeps the agent alive until released. */
 function capturingAdapter(urls: Map<string, string>, release: Promise<void>): HarnessAdapter {
@@ -35,11 +36,12 @@ test('agents reach their tools over MCP, each under its own identity', async () 
   const released = new Promise<void>(r => (release = r));
   const d = new Daemon({
     home: mkdtempSync(join(tmpdir(), 'mh-mcp-')),
-    repo,
+    repo: makeRepo(),
     dbPath: ':memory:',
-    configDirs: [join(repo, '.metaharness')],
+    configDirs: [configDir],
     adapters: { fake: capturingAdapter(urls, released) },
     harnessOverride: 'fake',
+    gitPollMs: 0,
   });
   const server = await startServer(d, 0, 'secret');
   const clients: Client[] = [];

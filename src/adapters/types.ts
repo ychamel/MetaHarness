@@ -24,6 +24,8 @@ export interface SessionSpec {
   brief: string;
   cwd: string;
   sharedDir: string;
+  /** Git directories a commit in cwd writes to (the shared .git and the worktree's own). Empty without a worktree. */
+  gitDirs: string[];
   /** Where a real harness reaches our tools over MCP. Empty until the MCP layer exists. */
   mcpUrl: string;
   /** In-process access to the same tools (used by the fake adapter and tests). */

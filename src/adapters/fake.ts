@@ -58,7 +58,9 @@ class FakeSession implements Session {
   constructor(spec: SessionSpec, ev: SessionEvents, script: FakeScript) {
     this.spec = spec;
     this.ev = ev;
-    // Start on the next tick so the daemon has the session before the first event.
+    // Busy from the start, like the real adapters: early messages join the first turn.
+    // The script starts on the next tick so the daemon has the session before the first event.
+    this.running = true;
     setImmediate(() => void this.turn(() => script(this.ctx())));
   }
 

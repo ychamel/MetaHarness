@@ -36,6 +36,10 @@ export function eventLine(e: MhEvent): string {
     case 'agent.ended':
     case 'agent.crashed':
       return `${t}  ${who}${e.type.slice(6)}: ${oneLine(d.reason)}`;
+    case 'git.commit':
+      return `${t}  ${who}committed on ${d.branch}: ${oneLine(d.summary)}`;
+    case 'git.merge':
+      return `${t}  ${who}merged ${d.from} into ${d.into}${d.fastForward ? ' (fast-forward)' : ''}`;
     case 'inbox.item':
       return d.kind === 'approval'
         ? `${t}  ${'→ you'.padEnd(15)}approval ${d.id} from ${e.agent}: ${oneLine(d.text, 400)} (mh status shows it in full)`

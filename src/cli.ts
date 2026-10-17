@@ -77,6 +77,8 @@ async function printStatus(goalId?: string): Promise<void> {
   for (const g of s.goals) {
     console.log(`\nGoal ${g.id} · ${g.status} · ${g.request}`);
     console.log(`  shared folder: ${g.sharedDir}`);
+    if (g.branch) console.log(`  goal branch:   ${g.branch}`);
+    if (g.notice) console.log(`  note: ${g.notice}`);
     const byParent = new Map<string, any[]>();
     for (const a of g.agents) byParent.set(a.parent, [...(byParent.get(a.parent) ?? []), a]);
     const walk = (parent: string, depth: number) => {
@@ -162,6 +164,7 @@ async function main(): Promise<void> {
       if (!request) die('Say what the goal is: mh run "<request>"');
       const r = await command({ cmd: 'goal.start', request, lead: s('lead'), playbook: s('playbook') });
       console.log(`Started goal ${r.goal}. Follow it with: mh tail ${r.goal}`);
+      if (r.notice) console.log(`Note: ${r.notice}`);
       return;
     }
     case 'status':

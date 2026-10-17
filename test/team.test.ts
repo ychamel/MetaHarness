@@ -1,33 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { Daemon } from '../src/daemon.ts';
-import { FakeAdapter, demoScripts, type FakeScript } from '../src/adapters/fake.ts';
 import { startServer } from '../src/server.ts';
 import { resolveName } from '../src/fuzzy.ts';
-
-const repo = join(import.meta.dirname, '..');
-
-function makeDaemon(scripts: Record<string, FakeScript> = demoScripts, quickTimeoutMs?: number) {
-  return new Daemon({
-    home: mkdtempSync(join(tmpdir(), 'mh-test-')),
-    repo,
-    dbPath: ':memory:',
-    configDirs: [join(repo, '.metaharness')],
-    adapters: { fake: new FakeAdapter(scripts) },
-    harnessOverride: 'fake',
-    quickTimeoutMs,
-  });
-}
-
-function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
-  return Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`timed out: ${what}`)), ms).unref())]);
-}
-
-const settle = () => new Promise(r => setTimeout(r, 30));
+import { makeDaemon, settle, withTimeout } from './helpers.ts';
 
 test('a small scripted team completes the milestone-0 scenario', async () => {
   const d = makeDaemon();
@@ -41,6 +19,7 @@ test('a small scripted team completes the milestone-0 scenario', async () => {
   for (const a of g.agents.values()) assert.equal(a.state, 'done', `${a.name} should be done`);
   assert.equal(g.agents.get('scout-1')!.parent, 'implementer-1');
   assert.equal(g.agents.get('scout-1')!.quick, true);
+  assert.equal(g.agents.get('scout-1')!.cwd, g.agents.get('implementer-1')!.cwd, "a quick helper works in its caller's worktree");
 
   const events = d.store.since(goal);
   const delivered = events.filter(e => e.type === 'message.delivered');
@@ -127,7 +106,7 @@ test('a slow quick helper hands control back and answers later', async () => {
         await ctx.tool('done', { note: 'the slow answer' });
       },
     },
-    100,
+    { quickTimeoutMs: 100 },
   );
   const goal = d.startGoal({ request: 'Slow helper' });
   const note = await withTimeout(d.goals.get(goal)!.leadDone, 5000, 'lead done');

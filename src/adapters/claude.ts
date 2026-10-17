@@ -80,8 +80,9 @@ class ClaudeSession implements Session {
     this.proc.on('exit', code => {
       if (!this.stopped) this.crash(`claude exited with code ${code}. ${this.stderrTail.trim()}`.trim());
     });
-    // The brief starts the first turn.
-    setImmediate(() => void this.send(spec.brief, 'new_turn'));
+    // The brief starts the first turn right away, so messages the daemon delivers next join it
+    // instead of arriving ahead of the brief.
+    void this.send(spec.brief, 'new_turn');
   }
 
   busy(): boolean {

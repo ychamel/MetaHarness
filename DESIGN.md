@@ -145,8 +145,10 @@ You're part of a team of AI agents from different providers working toward one g
   heads-down for a while, call `wait(0)` between steps.
 - In the shared folder, write your own files (e.g. `notes/<your-name>.md`). To change someone
   else's document, message its owner instead of editing it.
-- If someone depends on your code, commit early and tell them the branch. They can read it
-  straight away.
+- You have your own git worktree and branch. Commit there when a piece works; if someone
+  depends on your code, commit early and tell them. Teammates' branches are in the same
+  repository, so `git diff` or `git merge` them straight away.
+- Your worktree is a fresh checkout: ignored files (dependencies, build output) aren't in it.
 - For quick help (searching the codebase, reading many files, checking one thing), use
   `spawn(role, brief, quick: true)` with a fast role like `scout`. You get the answer back
   directly.
@@ -272,10 +274,26 @@ there are new messages or file changes, so an agent nobody is messaging sees not
 
 ## 9. Code and git
 
-- Every coding agent gets its own **git worktree** on a branch `mh/<goal>/<agent>`, so agents
-  never overwrite each other's files. This is plumbing for safety, not a rule on behaviour.
-- Agents integrate with git themselves, like a human team would. The lead or a designated agent
-  merges branches into `mh/<goal>`, and resolving conflicts is ordinary agent work.
+- Every agent except quick helpers gets its own **git worktree** on a branch `mh/<goal>/<agent>`,
+  under `~/.metaharness/goals/<goal>/worktrees/`, so agents never overwrite each other's files.
+  This is plumbing for safety, not a rule on behaviour. The human's own checkout isn't touched.
+- The **goal branch** is `mh/<goal>/main`, and it's the lead's branch: it starts from the commit
+  the human was on. (Git can't have a branch `mh/<goal>` next to branches under `mh/<goal>/`.)
+- A new agent's branch starts from its spawner's latest commit, or from a teammate's with
+  `spawn(..., from: "impl-1")`, which is how a reviewer gets the code it reviews. Uncommitted
+  work isn't included, so the methodology asks agents to commit before handing off.
+- Agents integrate with git themselves, like a human team would. The lead merges branches into
+  the goal branch, and resolving conflicts is ordinary agent work. When the lead finishes, the
+  human's note says how far the goal branch got and which branches aren't merged into it.
+- Codex sandboxes writes to the working directory, so its writable roots also get the shared
+  `.git` and the worktree's own git directory; without both, commits fail (checked with Codex
+  0.162). Claude Code's commands aren't sandboxed by default.
+- `git.commit` and `git.merge` events come from polling the goal's branch tips every few
+  seconds, so they're best effort: a fast-forward merge is recognised by commits already seen on
+  another branch.
+- A repository with no commits, or a folder that isn't one, gets no worktrees: everyone shares
+  the folder, and the lead is told to run one implementer at a time. If the human's checkout has
+  uncommitted changes, `mh run` warns that the agents won't see them.
 - **Parallel agents read each other's code through branches.** All worktrees share one git
   repository, so once impl-2 commits, impl-1 can run `git diff mh/42/impl-2` or merge it right
   away, with no push or fetch. The methodology asks agents to commit early when someone depends
@@ -387,7 +405,7 @@ type Event = {
 | Shared folder | `shared.write` {path, version} · `shared.read` {path} (best effort) · `shared.clash` | Graph file nodes, folder browser |
 | You | `inbox.item` {kind: approval \| question \| stuck \| crash} · `inbox.resolved` | Inbox, notifications |
 | Usage | `usage` {tokens_in, tokens_out, cost, context_pct?} | Costs, context bars |
-| Git | `git.commit` {branch, sha, summary} · `git.merge` {from, into, conflict?} | Git view |
+| Git | `git.commit` {branch, sha, summary} · `git.merge` {from, into, sha, fastForward?} (conflicts aren't detected yet) | Git view |
 | Health | `nudge.sent` · `alert` {kind: idle \| ping_pong \| context_full \| cost} | Health flags |
 
 Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended` · `crashed`.

@@ -159,6 +159,8 @@ class CodexSession implements Session {
   private price?: PriceTable[string];
   private isolation: Record<string, unknown>;
   private turnId: string | null = null;
+  /** Settles once the latest turn/start has answered, so a message sent meanwhile can steer that turn. */
+  private turnStarting: Promise<unknown> = Promise.resolve();
   private running = false;
   private stopped = false;
 
@@ -183,12 +185,16 @@ class CodexSession implements Session {
         [`mcp_servers.${MCP_SERVER_NAME}.tool_timeout_sec`]: 900,
         // All delegation goes through MetaHarness (design §11).
         'features.multi_agent': false,
-        'sandbox_workspace_write.writable_roots': [this.spec.sharedDir],
+        // Committing from a worktree writes outside it, into the shared .git. Codex keeps the
+        // worktree's own git directory read-only unless it's named here too.
+        'sandbox_workspace_write.writable_roots': [this.spec.sharedDir, ...this.spec.gitDirs],
       },
     });
     this.nativeId = r.thread.id;
     this.server.threads.set(this.nativeId, this);
-    setImmediate(() => void this.send(this.spec.brief, 'new_turn'));
+    // Started right away, so the session is already busy when the daemon first delivers messages:
+    // they then join this turn instead of starting a turn ahead of the brief.
+    void this.send(this.spec.brief, 'new_turn');
   }
 
   busy(): boolean {
@@ -201,6 +207,7 @@ class CodexSession implements Session {
 
   async send(text: string, how: 'inject' | 'new_turn'): Promise<void> {
     if (this.stopped) return;
+    if (how === 'inject' && this.running) await this.turnStarting;
     if (how === 'inject' && this.running && this.turnId) {
       try {
         await this.server.request('turn/steer', { threadId: this.nativeId, expectedTurnId: this.turnId, input: this.input(text) });
@@ -214,7 +221,9 @@ class CodexSession implements Session {
       this.ev.turnStarted();
     }
     try {
-      const r = await this.server.request('turn/start', { threadId: this.nativeId, input: this.input(text) });
+      const started = this.server.request('turn/start', { threadId: this.nativeId, input: this.input(text) });
+      this.turnStarting = started.catch(() => {});
+      const r = await started;
       this.turnId = r.turn?.id ?? this.turnId;
     } catch (e) {
       this.running = false;

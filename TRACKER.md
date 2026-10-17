@@ -23,8 +23,16 @@ passed, the review findings were fixed, and the human only had to answer 3 appro
 
 ## Milestone 1: real use
 
-- [ ] **Git worktree per coding agent**, branches `mh/<goal>/<agent>`, and merging (next up)
-- [ ] Antigravity CLI adapter for Gemini (`agy` 1.4.0 is installed; test stream-json, hooks,
+- [x] Git worktree per agent on `mh/<goal>/<agent>`; the lead's branch `mh/<goal>/main` is the
+      goal branch; `spawn(from:)`; `git.commit`/`git.merge` events; the lead's final note lists
+      unmerged branches. Codex gets the git dirs as writable roots so it can commit
+- [x] First turn counts as busy from the start in every adapter, so early messages join it
+      (Codex could otherwise start a second turn before `turn/start` answered)
+- [ ] Clean up worktrees when a goal is over (`mh clean`?); they're kept for now
+- [ ] Dependencies in fresh worktrees: agents are told to install them; consider linking
+      `node_modules` and the like
+- [ ] Merge conflicts as events (watch `MERGE_HEAD` in worktrees)
+- [ ] **Antigravity CLI adapter for Gemini** (next up) (`agy` 1.4.0 is installed; test stream-json, hooks,
       mid-turn delivery and the "-p prints nothing without a terminal" report first)
 - [ ] Change notices when shared files change, plus `shared/.history/`
 - [ ] Rate-limit handling: show the agent as waiting with a retry time, not crashed
@@ -44,6 +52,9 @@ passed, the review findings were fixed, and the human only had to answer 3 appro
 
 ## Not yet verified live
 
+- A team using worktrees: Codex committing from its worktree through the app-server (the same
+  sandbox settings were checked with `codex sandbox`), and an Opus lead merging branches
+- Two implementers in parallel (the milestone-1 exit test)
 - Interrupting a Claude Code turn
 - A quick spawn running on a real harness
 - How Claude Code reports cost across several turns of one session (we keep the running maximum)
@@ -52,7 +63,7 @@ passed, the review findings were fixed, and the human only had to answer 3 appro
 ## Resuming work
 
 ```sh
-npm install && npm test        # 10 tests, under a second, no model calls
+npm install && npm test        # 14 tests, about two seconds, no model calls
 node src/cli.ts daemon --fake  # try it without spending anything
 ```
 

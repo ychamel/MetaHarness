@@ -8,7 +8,13 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
   team: { description: "See who's on the team, what each agent is doing, and which roles you can spawn.", params: {} },
   spawn: {
     description: 'Start a teammate in a role. With quick: true, wait for its answer and get it back directly.',
-    params: { role: 'Role name, e.g. implementer or scout', brief: 'What they should do, what is done already, where to look, what you want back', quick: 'true for a quick helper', name: 'Optional name' },
+    params: {
+      role: 'Role name, e.g. implementer or scout',
+      brief: 'What they should do, what is done already, where to look, what you want back',
+      quick: 'true for a quick helper',
+      name: 'Optional name',
+      from: "Optional: a teammate (or branch) whose latest commit their git worktree starts from, e.g. the implementer whose code a reviewer checks. Default: your branch's latest commit",
+    },
   },
   send: {
     description: 'Send a short message to a teammate (by name or role), to lead, to all, or to human.',
@@ -105,10 +111,12 @@ export class Hub {
           ?? '(No brief was given. Ask whoever spawned you what they need.)';
         const name = str(pick(a, 'name', 'id'));
         if (truthy(pick(a, 'quick', 'helper', 'blocking'))) return (await d.quickSpawn(rec, role, brief, name)).text;
-        const r = d.spawnAgent(rec.goal, { role, brief, parent: rec.name, name });
+        const from = str(pick(a, 'from', 'base', 'branch', 'start_from', 'starting_from'));
+        const r = d.spawnAgent(rec.goal, { role, brief, parent: rec.name, name, from });
         if (!r.ok) return r.error;
         const guessed = r.guessedRole ? `(Took "${role}" to mean ${r.guessedRole}.) ` : '';
-        return `${guessed}Started ${r.name} (${r.rec.harness} · ${r.rec.model}). Its result will reach you when it calls done; use wait to block until then.`;
+        const where = r.rec.worktree ? ` on branch ${r.rec.worktree.branch}, from ${r.rec.worktree.base.slice(0, 7)}` : '';
+        return `${guessed}Started ${r.name} (${r.rec.harness} · ${r.rec.model})${where}. Its result will reach you when it calls done; use wait to block until then.`;
       }
 
       case 'send': {
