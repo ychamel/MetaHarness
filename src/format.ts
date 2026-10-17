@@ -40,6 +40,8 @@ export function eventLine(e: MhEvent): string {
       return `${t}  ${who}committed on ${d.branch}: ${oneLine(d.summary)}`;
     case 'git.merge':
       return `${t}  ${who}merged ${d.from} into ${d.into}${d.fastForward ? ' (fast-forward)' : ''}`;
+    case 'approval.auto':
+      return `${t}  ${who}ran without asking (read-only): ${oneLine(d.detail, 110)}`;
     case 'agent.moved':
       return `${t}  ${who}moved from ${d.from.harness} · ${d.from.model} to ${d.to.harness} · ${d.to.model}: ${oneLine(d.reason)}`;
     case 'agent.limited':

@@ -35,6 +35,8 @@ export interface Role {
   helper: boolean;
   /** Harness tool patterns allowed without asking, e.g. "Bash(npm test*)" for Claude Code. */
   allow: string[];
+  /** read-only (default): shell commands that only read are approved without asking. none: always ask. */
+  autoApprove: 'read-only' | 'none';
   /** The harness's own permission mode, e.g. acceptEdits for Claude Code. */
   permissionMode?: string;
   file: string;

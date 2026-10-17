@@ -40,10 +40,19 @@ Findings from the run:
   pointed at the same commit. Fixed: merges are named after the branch a commit was first seen on.
 - After `done`, `mh status` still showed the agent's last status line, which is out of date by
   then. Fixed: it's hidden once the agent is done or ended.
+- The 7 approvals: 4 of them were read-only and are now approved by the daemon (see below).
 
 - [x] Git worktree per agent on `mh/<goal>/<agent>`; the lead's branch `mh/<goal>/main` is the
       goal branch; `spawn(from:)`; `git.commit`/`git.merge` events; the lead's final note lists
       unmerged branches. Codex gets the git dirs as writable roots so it can commit
+- [x] Read-only shell commands approved without asking, for every harness (`src/readonly.ts`).
+      Replayed on the worktree run's 7 approvals: 4 would no longer ask; the 3 left are real
+      writes (`git merge`, `cat >` into shared/, a Python edit of README), and the methodology
+      now points agents to their edit tools for those
+- [ ] **Exit-test run** (next): branch `exit-test` in `test_meta` (from the color-history goal
+      branch) has role backups, a reporter on Antigravity, and `.metaharness/requests/themes.md`,
+      a goal whose two implementers start together on a model and a UI piece while the model's
+      API is still moving
 - [x] First turn counts as busy from the start in every adapter, so early messages join it
       (Codex could otherwise start a second turn before `turn/start` answered)
 - [ ] Clean up worktrees when a goal is over (`mh clean`?); they're kept for now

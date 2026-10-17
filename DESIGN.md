@@ -308,6 +308,11 @@ there are new messages or file changes, so an agent nobody is messaging sees not
 - **Permissions stay native.** Each role can set its harness's own permission mode, so we don't
   build a policy engine on top. When a harness asks for approval, the adapter sends the request
   to **your Inbox** rather than leaving the agent stuck on a terminal prompt.
+- **Read-only commands don't ask.** Whatever the harness, a shell command that only reads
+  (`cat`, `sed -n`, `git diff`, pipes and loops of such, a `$( … )` that only reads) is approved
+  by the daemon itself and logged as `approval.auto`. The check errs towards asking: writes,
+  redirections, unknown programs and anything it can't parse still come to you. A role can
+  opt out with `auto_approve: none`.
 - **Questions:** `send("human", …)` also lands in the Inbox.
 - **Steering:** you can message any agent, the lead, or everyone, and pause, resume or stop any
   of them.

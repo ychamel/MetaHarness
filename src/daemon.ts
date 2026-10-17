@@ -9,6 +9,7 @@ import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
 import type { ApprovalDecision, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest } from './adapters/types.ts';
 import { MCP_SERVER_NAME } from './mcp.ts';
+import { readOnlyCommand } from './readonly.ts';
 
 export interface InboxEntry {
   id: string;
@@ -522,6 +523,11 @@ export class Daemon {
 
   /** Puts a permission request in the human's Inbox and resolves when they decide. */
   requestApproval(rec: AgentRec, tool: string, detail: string): Promise<ApprovalDecision> {
+    // Commands that only read don't need the human (design §10), whichever harness asks.
+    if (tool === 'Bash' && rec.role.autoApprove !== 'none' && readOnlyCommand(detail).readOnly) {
+      this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.auto', data: { tool, detail: detail.slice(0, 2000), why: 'read-only' } });
+      return Promise.resolve({ allow: true });
+    }
     const g = this.goals.get(rec.goal)!;
     const item = this.toHuman(g, rec.name, 'approval', `${tool}: ${detail}`);
     rec.pendingApprovals++;

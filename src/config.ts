@@ -65,6 +65,7 @@ export function loadConfig(dirs: string[]): Config {
         helper: /^(true|yes|1)$/i.test(meta.helper ?? ''),
         allow: (meta.allow ?? '').split(/,(?![^(]*\))/).map(s => s.trim()).filter(Boolean),
         permissionMode: meta.permission_mode || undefined,
+        autoApprove: /^(none|no|off|false|ask)$/i.test(meta.auto_approve ?? '') ? 'none' : 'read-only',
         file,
       });
     }

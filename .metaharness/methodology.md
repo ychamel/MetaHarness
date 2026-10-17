@@ -19,4 +19,7 @@ You're part of a team of AI agents from different providers working toward one g
   it. Install or build what you need.
 - For quick help (searching the codebase, reading many files, checking one thing), use
   `spawn` with `quick: true` and a fast role like `scout`. You get the answer back directly.
+- Change files with your harness's own edit and write tools, including files in the shared
+  folder. Shell commands that only read run without asking, but writing through the shell
+  (heredocs, `cat >`, `sed -i`, scripts) waits for the human's approval.
 - When finished, call `done` with a short note on what you did and where it is.
