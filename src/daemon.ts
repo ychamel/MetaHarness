@@ -62,9 +62,9 @@ export interface GoalRec {
   /** Git state for worktrees; unset when the repository can't have them (see gitNote). */
   git?: git.GoalGit;
   gitNote?: string;
-  /** Last seen tip of each goal branch, and commits already reported, for git events. */
+  /** Last seen tip of each goal branch, and the branch each reported commit was made on, for git events. */
   refs: Map<string, string>;
-  seen: Set<string>;
+  seenOn: Map<string, string>;
   status: 'running' | 'ended';
   agents: Map<string, AgentRec>;
   counters: Map<string, number>;
@@ -158,7 +158,7 @@ export class Daemon {
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const g: GoalRec = {
       id, request: o.request, lead: '', createdAt: new Date().toISOString(), sharedDir,
-      refs: new Map(), seen: new Set(),
+      refs: new Map(), seenOn: new Map(),
       status: 'running', agents: new Map(), counters: new Map(), leadDone, resolveLeadDone,
     };
     const gs = git.setupGoal(this.repo, id);
@@ -536,21 +536,26 @@ export class Daemon {
       g.refs.set(branch, sha);
       if (!old || old === sha) continue;
       const owner = [...g.agents.values()].find(a => a.worktree?.branch === branch)?.name;
+      // Name a merge after the branch its commit was made on. Several branches can point at the
+      // same commit (a reviewer's starts at the implementer's tip), so asking git is a last resort.
       const merged = (from: string, sha: string, fastForward?: boolean) =>
         this.emit({
           goal: g.id, agent: owner, type: 'git.merge',
-          data: { from: git.branchOf(gg, g.id, from, branch) ?? from.slice(0, 7), into: branch, sha, ...(fastForward ? { fastForward } : {}) },
+          data: {
+            from: g.seenOn.get(from) ?? git.branchOf(gg, g.id, from, branch) ?? from.slice(0, 7),
+            into: branch, sha, ...(fastForward ? { fastForward } : {}),
+          },
         });
       // Commits already reported on another branch arrived here by a fast-forward merge.
       let fastForwarded = '';
       for (const c of git.commitsBetween(gg, old, sha)) {
-        if (g.seen.has(c.sha)) {
+        if (g.seenOn.has(c.sha)) {
           fastForwarded = c.sha;
           continue;
         }
         if (fastForwarded) merged(fastForwarded, fastForwarded, true);
         fastForwarded = '';
-        g.seen.add(c.sha);
+        g.seenOn.set(c.sha, branch);
         this.emit({ goal: g.id, agent: owner, type: 'git.commit', data: { branch, sha: c.sha, summary: c.summary } });
         if (c.mergedSha) merged(c.mergedSha, c.sha);
       }

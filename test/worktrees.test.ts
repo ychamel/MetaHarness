@@ -26,10 +26,11 @@ test('parallel implementers work in their own worktrees, build on each other, an
         await ctx.tool('spawn', { role: 'implementer', name: 'client', brief: 'Write client.js on top of api.js' });
         for (let finished = 0; finished < 2; ) finished += ((await ctx.tool('wait', { timeout: 5 })).match(/^- (api|client):/gm) ?? []).length;
         const goal = ctx.spec.goal;
-        git(ctx.spec.cwd, 'merge', '-q', '--no-ff', '--no-edit', `mh/${goal}/api`);
-        git(ctx.spec.cwd, 'merge', '-q', '--no-ff', '--no-edit', `mh/${goal}/client`);
+        // The reviewer's branch starts at the client's tip, so two branches share that commit.
         seen.reviewerSpawn = await ctx.tool('spawn', { role: 'reviewer', brief: 'Review client', from: 'client' });
         seen.review = await ctx.tool('wait', { timeout: 5 });
+        git(ctx.spec.cwd, 'merge', '-q', '--no-ff', '--no-edit', `mh/${goal}/api`);
+        git(ctx.spec.cwd, 'merge', '-q', '--no-ff', '--no-edit', `mh/${goal}/client`);
         await ctx.tool('done', { note: 'Merged api and client.' });
       },
       implementer: async ctx => {

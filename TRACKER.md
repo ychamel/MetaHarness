@@ -23,6 +23,23 @@ passed, the review findings were fixed, and the human only had to answer 3 appro
 
 ## Milestone 1: real use
 
+Worktree run on 2026-10-18 (goal `e6cb3a94` in `test_meta`, "color history"). An Opus architect
+split the work into two contract-bound pieces. Two Sol implementers built them in parallel in
+their own worktrees and committed there, and each piece got its own Opus reviewer, started on
+the implementer's branch with `from`. One reviewer test-merged the sibling branch (55/55 tests).
+The architect merged both, added an integration test, fixed a review nit and updated the
+README: 59/59 tests, 7 commits on the goal branch, about 11 minutes, $1.40 on Claude (Codex
+cost unknown, no prices.json). The exit test also asks for implementers who adjust to each
+other's changes, and this run didn't need that: the contracts kept them apart.
+
+Findings from the run:
+- 7 approvals, all for harmless Bash from Claude agents: compound read-only commands (`sed -n`,
+  `cat`, loops), a heredoc writing to shared/, and a Python edit of README. Consider allowing
+  read-only commands for architect and reviewer, and nudging agents toward their edit tools.
+- A merge was reported as coming from `review-view` instead of `view`, because both branches
+  pointed at the same commit. Fixed: merges are named after the branch a commit was first seen on.
+- After `done`, `mh status` still shows the agent's last status line, which is out of date by then.
+
 - [x] Git worktree per agent on `mh/<goal>/<agent>`; the lead's branch `mh/<goal>/main` is the
       goal branch; `spawn(from:)`; `git.commit`/`git.merge` events; the lead's final note lists
       unmerged branches. Codex gets the git dirs as writable roots so it can commit
@@ -52,9 +69,8 @@ passed, the review findings were fixed, and the human only had to answer 3 appro
 
 ## Not yet verified live
 
-- A team using worktrees: Codex committing from its worktree through the app-server (the same
-  sandbox settings were checked with `codex sandbox`), and an Opus lead merging branches
-- Two implementers in parallel (the milestone-1 exit test)
+- Two implementers who have to adjust to each other's changes mid-task (the run above kept
+  them apart with contracts)
 - Interrupting a Claude Code turn
 - A quick spawn running on a real harness
 - How Claude Code reports cost across several turns of one session (we keep the running maximum)
