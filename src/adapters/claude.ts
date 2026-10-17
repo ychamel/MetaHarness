@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { APPROVAL_TOOL, MCP_SERVER_NAME } from '../mcp.ts';
+import { claudeMcpDef } from '../mcpservers.ts';
 import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions } from './types.ts';
 
 /**
@@ -35,7 +36,13 @@ export class ClaudeAdapter implements HarnessAdapter {
 
 /** With `resume`, the session continues under the same ID instead of starting as `sessionId`. */
 export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false): string[] {
-  const allowed = [`mcp__${MCP_SERVER_NAME}`, ...spec.role.allow];
+  // Ours, plus the servers the role names: from MetaHarness's mcp.json, else Claude Code's own config.
+  const servers: Record<string, unknown> = { [MCP_SERVER_NAME]: { type: 'http', url: spec.mcpUrl } };
+  for (const s of spec.mcpServers ?? []) {
+    const def = s.def ?? claudeMcpDef(s.name, spec.cwd);
+    if (def && s.name !== MCP_SERVER_NAME) servers[s.name] = def;
+  }
+  const allowed = [`mcp__${MCP_SERVER_NAME}`, ...Object.keys(servers).filter(n => n !== MCP_SERVER_NAME).map(n => `mcp__${n}`), ...spec.role.allow];
   const args = [
     '-p',
     '--input-format', 'stream-json',
@@ -43,7 +50,7 @@ export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false)
     '--verbose',
     resume ? '--resume' : '--session-id', sessionId,
     '--append-system-prompt', spec.systemPrompt,
-    '--mcp-config', JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { type: 'http', url: spec.mcpUrl } } }),
+    '--mcp-config', JSON.stringify({ mcpServers: servers }),
     '--strict-mcp-config',
     // Leave out user-level settings (plugins, hooks, permission rules); the role decides instead.
     '--setting-sources', 'project,local',

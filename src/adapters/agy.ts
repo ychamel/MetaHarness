@@ -122,7 +122,10 @@ export function quotaInfo(groups: { name?: string; buckets?: Bucket[] }[], model
 export function writeAgentConfig(spec: SessionSpec, hookScript: string): void {
   const dir = join(spec.agentDir, '.agents');
   mkdirSync(join(dir, 'rules'), { recursive: true });
-  writeFileSync(join(dir, 'mcp_config.json'), JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { url: spec.mcpUrl } } }, null, 2));
+  // Ours, plus the role's servers MetaHarness has definitions for. Others come from agy's own config.
+  const servers: Record<string, unknown> = { [MCP_SERVER_NAME]: { url: spec.mcpUrl } };
+  for (const s of spec.mcpServers ?? []) if (s.def && s.name !== MCP_SERVER_NAME) servers[s.name] = s.def;
+  writeFileSync(join(dir, 'mcp_config.json'), JSON.stringify({ mcpServers: servers }, null, 2));
   // The daemon's own Node, so the hook works whatever is on the agent's PATH.
   const hook = (event: string, timeout: number) => ({ type: 'command', command: `${JSON.stringify(process.execPath)} ${JSON.stringify(hookScript)} ${event}`, timeout });
   writeFileSync(

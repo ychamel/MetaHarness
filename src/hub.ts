@@ -1,7 +1,7 @@
 import { resolveName } from './fuzzy.ts';
 import type { AgentRec, Daemon, InboxEntry } from './daemon.ts';
 
-export const TOOL_NAMES = ['team', 'spawn', 'send', 'wait', 'status', 'done'] as const;
+export const TOOL_NAMES = ['team', 'spawn', 'send', 'wait', 'status', 'done', 'workflow'] as const;
 
 /** Descriptions the MCP layer will publish. Written for the agents that read them. */
 export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: string; params: Record<string, string> }> = {
@@ -13,12 +13,18 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
       brief: 'What they should do, what is done already, where to look, what you want back',
       quick: 'true for a quick helper',
       name: 'Optional name',
-      from: "Optional: a teammate (or branch) whose latest commit their git worktree starts from, e.g. the implementer whose code a reviewer checks. Default: your branch's latest commit",
+      worktree: "true to give them their own git worktree and branch, for code written in parallel with others. Default: they work in the shared folder, like everyone else",
+      from: "Optional: a teammate (or branch) whose latest commit their own worktree starts from, e.g. the implementer whose code a reviewer checks. Implies worktree",
     },
   },
   send: {
     description: 'Send a short message to a teammate (by name or role), to lead, to all, or to human.',
-    params: { to: 'Recipient', text: 'The message', urgent: 'true to interrupt them' },
+    params: {
+      to: 'Recipient',
+      text: 'The message',
+      urgent: 'true to interrupt them',
+      decision: 'With to: human, true to ask for an approval (e.g. of a design). Say what to approve and where it is; the answer arrives as a message',
+    },
   },
   wait: {
     description: 'Pause until a message arrives or a teammate you spawned finishes. timeout 0 just checks.',
@@ -26,6 +32,10 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
   },
   status: { description: 'Post a one-line progress update for the human and your teammates.', params: { text: 'What you are doing now' } },
   done: { description: "Say you're finished. The note goes to whoever spawned you.", params: { note: 'What you did and where it is' } },
+  workflow: {
+    description: 'Read a workflow: a guide for running a kind of task, e.g. the next one a workflow says to continue with. Without a name, lists them.',
+    params: { name: 'Workflow name (optional)' },
+  },
 };
 
 type Args = Record<string, unknown>;
@@ -114,10 +124,12 @@ export class Hub {
         const name = str(pick(a, 'name', 'id'));
         if (truthy(pick(a, 'quick', 'helper', 'blocking'))) return (await d.quickSpawn(rec, role, brief, name)).text;
         const from = str(pick(a, 'from', 'base', 'branch', 'start_from', 'starting_from'));
-        const r = d.spawnAgent(rec.goal, { role, brief, parent: rec.name, name, from });
+        const wt = pick(a, 'worktree', 'own_worktree', 'isolated', 'isolation');
+        const worktree = wt === undefined ? undefined : truthy(wt) || /^worktree$/i.test(String(wt));
+        const r = d.spawnAgent(rec.goal, { role, brief, parent: rec.name, name, from, worktree });
         if (!r.ok) return r.error;
         const guessed = r.guessedRole ? `(Took "${role}" to mean ${r.guessedRole}.) ` : '';
-        const where = r.rec.worktree ? ` on branch ${r.rec.worktree.branch}, from ${r.rec.worktree.base.slice(0, 7)}` : '';
+        const where = r.rec.worktree ? ` in its own worktree on branch ${r.rec.worktree.branch}, from ${r.rec.worktree.base.slice(0, 7)}` : ' in the shared folder';
         const backup = r.note ? ` ${r.note}` : '';
         return `${guessed}Started ${r.name} (${r.rec.harness} · ${r.rec.model})${where}.${backup} Its result will reach you when it calls done; use wait to block until then.`;
       }
@@ -127,7 +139,7 @@ export class Hub {
         const text = str(pick(a, 'text', 'message', 'content', 'body', 'msg'));
         if (!to) return 'send needs "to": a teammate name, a role, lead, all, or human.';
         if (!text) return 'send needs some text.';
-        return d.deliver(rec.goal, rec.name, to, text, truthy(pick(a, 'urgent', 'interrupt')));
+        return d.deliver(rec.goal, rec.name, to, text, truthy(pick(a, 'urgent', 'interrupt')), truthy(pick(a, 'decision', 'approval', 'approve')));
       }
 
       case 'wait': {
@@ -143,6 +155,18 @@ export class Hub {
         if (!text) return 'status needs a short line of text.';
         d.status(rec, text);
         return 'Status posted.';
+      }
+
+      case 'workflow': {
+        const want = str(pick(a, 'name', 'workflow', 'text'));
+        const names = [...d.config.workflows.keys()];
+        const list = () => [...d.config.workflows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
+        if (!names.length) return 'There are no workflows yet (.metaharness/workflows/<name>.md).';
+        if (!want) return `Workflows:\n${list()}\n\nRead one with workflow(name).`;
+        const r = resolveName(want, names);
+        if (!r.match) return `There's no workflow called "${want}". Workflows:\n${list()}`;
+        const w = d.config.workflows.get(r.match)!;
+        return `${r.guessed ? `(Took "${want}" to mean ${w.name}.)\n` : ''}# Workflow: ${w.name}\n\n${w.body}`;
       }
 
       case 'done': {

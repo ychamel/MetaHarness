@@ -1,6 +1,6 @@
 # Tracker
 
-Where MetaHarness stands against the plan in [DESIGN.md §17](DESIGN.md). Update this file when a
+Where MetaHarness stands against the plan in [DESIGN.md §18](DESIGN.md). Update this file when a
 step lands. Last updated 2026-10-18.
 
 ## Milestone 0: a small team works ✅
@@ -55,6 +55,14 @@ Findings from the run:
       API is still moving
 - [x] First turn counts as busy from the start in every adapter, so early messages join it
       (Codex could otherwise start a second turn before `turn/start` answered)
+- [x] **Workflows, specialist roles, one shared folder** (DESIGN.md §17): workflow files (with
+      `playbooks/` still read) that the lead follows and chains with a `workflow` tool;
+      `send(..., decision: true)` puts a decision in the Inbox; roles with `mcp:` (resolved by
+      name per machine) and `workflow:`; the team works in the human's checkout, with worktrees
+      from `spawn(worktree: true)`, a role's `worktree: true`, or `from`. Default workflows
+      `feature`, `feature-explore`, `implementation`; new roles `explorer`, `designer`
+- [ ] Not yet run live: a workflow chain with a human decision; a role with its own MCP server
+      (blender is configured here for Claude Code and Codex)
 - [ ] Clean up worktrees when a goal is over (`mh clean`?); they're kept for now
 - [ ] Dependencies in fresh worktrees: agents are told to install them; consider linking
       `node_modules` and the like
@@ -110,7 +118,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 25 tests, about ten seconds, no model calls
+npm install && npm test        # 33 tests, about ten seconds, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

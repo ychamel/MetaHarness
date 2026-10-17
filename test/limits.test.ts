@@ -68,7 +68,7 @@ test('near the limit agents are asked for notes; at the limit they move to a bac
   assert.match(handoff, /Writing part A/, 'and its status lines');
   assert.match(handoff, /you → architect: Starting on part A\./, 'and its messages');
   assert.match(handoff, /notes\/implementer-1\.md\. Read them first/, 'and points to its notes');
-  assert.match(handoff, /mh\/[0-9a-f]+\/implementer-1/, 'and says where its branch is');
+  assert.match(handoff, /It worked in .* on trunk, which teammates share/, 'and says where the work is');
 
   assert.ok(heard.some(h => /implementer-1 moved from fake · sol to backup · backup-model/.test(h)), 'the lead is told about the move');
   assert.equal(d.accounts.get('fake')?.status, 'limited');

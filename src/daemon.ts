@@ -96,7 +96,8 @@ export interface HumanInboxItem {
   id: string;
   goal: string;
   agent: string;
-  kind: 'question' | 'approval' | 'done' | 'stopped' | 'crash';
+  /** decision: an agent asks the human to approve something (send with decision: true). */
+  kind: 'question' | 'decision' | 'approval' | 'done' | 'stopped' | 'crash';
   text: string;
   ts: string;
 }
@@ -201,8 +202,17 @@ export class Daemon {
 
   /* ---------------- goals and agents ---------------- */
 
-  /** `leadDef` runs the lead from a role that isn't in the config, and `dir` works somewhere other than the repository (both for harness tests). */
-  startGoal(o: { request: string; lead?: string; playbook?: string; leadDef?: Role; dir?: string }): string {
+  /**
+   * `workflow` is the guide the lead follows (none: it picks one). `leadDef` runs the lead from a
+   * role that isn't in the config, and `dir` works somewhere other than the repository (both for
+   * harness tests).
+   */
+  startGoal(o: { request: string; lead?: string; workflow?: string; playbook?: string; leadDef?: Role; dir?: string }): string {
+    const workflow = o.workflow ?? o.playbook;
+    if (workflow && !resolveName(workflow, [...this.config.workflows.keys()]).match) {
+      const names = [...this.config.workflows.keys()];
+      throw new Error(`There's no workflow called "${workflow}". Workflows: ${names.join(', ') || 'none (add .metaharness/workflows/<name>.md)'}.`);
+    }
     const id = randomUUID().slice(0, 8);
     const sharedDir = join(this.home, 'goals', id, 'shared');
     mkdirSync(sharedDir, { recursive: true });
@@ -215,17 +225,20 @@ export class Daemon {
     };
     const gs = git.setupGoal(g.dir, id);
     if ('reason' in gs) g.gitNote = gs.reason;
-    else g.git = gs;
+    else {
+      g.git = gs;
+      g.refs.set(gs.branch, gs.base);
+    }
     this.goals.set(id, g);
     const leadRole = o.leadDef?.name ?? o.lead ?? 'architect';
     this.emit({
       goal: id, type: 'goal.started',
       data: {
-        request: o.request, lead: leadRole, playbook: o.playbook ?? null, sharedDir,
+        request: o.request, lead: leadRole, workflow: workflow ?? null, sharedDir, dir: g.dir,
         branch: g.git?.branch ?? null, base: g.git?.base ?? null, notice: this.goalNotice(g) ?? null,
       },
     });
-    const r = this.spawnAgent(id, { role: leadRole, roleDef: o.leadDef, brief: o.request, parent: 'human', isLead: true, playbook: o.playbook });
+    const r = this.spawnAgent(id, { role: leadRole, roleDef: o.leadDef, brief: o.request, parent: 'human', isLead: true, workflow });
     if (!r.ok) {
       g.status = 'ended';
       this.emit({ goal: id, type: 'goal.ended', data: { reason: r.error } });
@@ -236,18 +249,20 @@ export class Daemon {
     return id;
   }
 
-  /** What the human should know about where the agents' work happens, if anything. */
+  /** What the human should know about where the agents' work happens. */
   goalNotice(g: GoalRec): string | undefined {
-    if (!g.git) return `No worktrees for this goal: ${g.gitNote}. The agents share ${g.dir}.`;
-    if (g.git.dirty) {
-      const sha = g.git.base.slice(0, 7);
-      return `Your uncommitted changes aren't in the agents' worktrees. They start from ${sha} (${git.subject(g.git, sha)}).`;
-    }
+    if (!g.git) return `The team works in ${g.dir}. No worktrees for this goal: ${g.gitNote}.`;
+    const where = `The team works in your checkout, ${g.dir}, on ${g.git.branch === 'HEAD' ? 'a detached HEAD' : g.git.branch}.`;
+    return g.git.dirty ? `${where} You have uncommitted changes: the agents will see them and may change them.` : where;
   }
 
   spawnAgent(
     goalId: string,
-    o: { role: string; roleDef?: Role; brief: string; parent: string; name?: string; quick?: boolean; isLead?: boolean; playbook?: string; from?: string },
+    o: {
+      role: string; roleDef?: Role; brief: string; parent: string; name?: string; quick?: boolean; isLead?: boolean; workflow?: string;
+      /** Its own git worktree instead of the shared folder. Default: the role's setting, or yes when `from` is given. */
+      worktree?: boolean; from?: string;
+    },
   ): SpawnResult {
     const g = this.goals.get(goalId);
     if (!g) return { ok: false, error: `There's no goal ${goalId}.` };
@@ -271,18 +286,23 @@ export class Daemon {
     while (g.agents.has(name) || name === 'main') name = `${name}-${n}`;
     const parentRec = g.agents.get(o.parent);
 
-    // Quick helpers work in their caller's directory so they see uncommitted changes. Everyone
-    // else gets a worktree: the lead on the goal branch, the rest on mh/<goal>/<name>.
+    // Like native subagents, everyone works in the goal's folder (design §17). Quick helpers use
+    // their caller's, and a worktree on mh/<goal>/<name> is there for whoever asks for one: a
+    // workflow running code writers in parallel, or a reviewer starting `from` someone's branch.
     let cwd = g.dir;
     let worktree: git.Worktree | undefined;
     let startedFrom = '';
+    let note = picked.note;
+    const wantWorktree = !o.quick && !o.isLead && (o.worktree ?? (role.worktree || !!o.from));
     if (o.quick && parentRec) cwd = parentRec.cwd;
-    else if (g.git) {
-      const start = o.isLead ? { ref: g.git.base, label: 'the commit you were on' } : this.startPoint(g, parentRec, o.from);
+    else if (wantWorktree && !g.git) {
+      note = [note, `${name} works in the shared folder, because there are no worktrees here: ${g.gitNote}.`].filter(Boolean).join(' ');
+    } else if (wantWorktree && g.git) {
+      const start = this.startPoint(g, parentRec, o.from);
       if ('error' in start) return { ok: false, error: start.error };
       try {
         const path = join(this.home, 'goals', goalId, 'worktrees', name);
-        worktree = git.addWorktree(g.git, path, o.isLead ? g.git.branch : git.agentBranch(goalId, name), start.ref);
+        worktree = git.addWorktree(g.git, path, git.agentBranch(goalId, name), start.ref);
       } catch (e) {
         return { ok: false, error: `Couldn't create a git worktree for ${name}: ${(e as Error).message.trim()}` };
       }
@@ -298,14 +318,14 @@ export class Daemon {
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
       adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0,
     };
-    rec.systemPrompt = this.buildPrompt(g, rec, o.playbook, startedFrom);
+    rec.systemPrompt = this.buildPrompt(g, rec, o.workflow, startedFrom);
     g.agents.set(name, rec);
     this.emit({
       goal: goalId, agent: name, parent: o.parent, type: 'agent.spawned',
       data: {
         role: role.name, harness, model, brief: o.brief, quick: !!o.quick, cwd,
         worktree: worktree?.path ?? null, branch: worktree?.branch ?? null, base: worktree?.base ?? null,
-        ...(picked.note ? { note: picked.note } : {}),
+        ...(note ? { note } : {}),
       },
     });
 
@@ -316,7 +336,7 @@ export class Daemon {
       this.hitLimit(rec);
     } else this.startSession(rec, brief);
 
-    return { ok: true, name, rec, guessedRole: res.guessed ? res.match : undefined, note: picked.note };
+    return { ok: true, name, rec, guessedRole: res.guessed ? res.match : undefined, note };
   }
 
   /**
@@ -333,6 +353,7 @@ export class Daemon {
           goal: rec.goal, agent: rec.name, role: rec.role, model: rec.model, systemPrompt: rec.systemPrompt, brief,
           cwd: rec.cwd, sharedDir: g.sharedDir, mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${rec.token}` : '',
           hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${rec.token}` : '', agentDir: this.agentDir(rec),
+          mcpServers: rec.role.mcp.map(name => ({ name, def: this.config.mcp.get(name) })),
           gitDirs: rec.worktree && g.git ? [g.git.commonDir, rec.worktree.gitDir] : [],
           callTool: (tool, args) => this.hub.call(rec.goal, rec.name, tool, args),
         },
@@ -397,18 +418,23 @@ export class Daemon {
       if (git.resolveCommit(gg, from)) return { ref: from, label: from };
       if (fromMate) return fromMate;
       const mates = [...g.agents.values()].filter(a => a.worktree).map(a => a.name);
-      return { error: `"from" should be a teammate or a branch, and there's no "${from}". Teammates with branches: ${mates.join(', ') || 'none'}.` };
+      return { error: `"from" should be a teammate with their own worktree, or a branch, and there's no "${from}". Teammates with worktrees: ${mates.join(', ') || 'none'}.` };
     }
     if (parent?.worktree) return { ref: parent.worktree.branch, label: `${parent.name}'s branch ${parent.worktree.branch}` };
     return { ref: gg.branch, label: `the goal branch ${gg.branch}` };
   }
 
-  private buildPrompt(g: GoalRec, rec: AgentRec, playbook?: string, startedFrom = ''): string {
+  private buildPrompt(g: GoalRec, rec: AgentRec, workflow?: string, startedFrom = ''): string {
     const parts = [rec.role.helper ? this.config.helperMethodology : this.config.methodology];
     parts.push(`## Your role: ${rec.role.name}\n\n${rec.role.instructions}`);
-    if (rec.isLead && playbook) {
-      const p = resolveName(playbook, [...this.config.playbooks.keys()]);
-      if (p.match) parts.push(`## Playbook: ${p.match}\n\n${this.config.playbooks.get(p.match)}`);
+    // The lead runs the goal's workflow; any role can have one of its own.
+    for (const name of [rec.isLead ? workflow : undefined, rec.role.workflow]) {
+      const w = name ? this.config.workflows.get(resolveName(name, [...this.config.workflows.keys()]).match ?? '') : undefined;
+      if (w) parts.push(`## Workflow: ${w.name}\n\nFollow this guide, adapting it to the task. When it says to continue with another workflow, read that one with the \`workflow\` tool.\n\n${w.body}`);
+    }
+    if (rec.isLead && !workflow && this.config.workflows.size) {
+      const list = [...this.config.workflows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
+      parts.push(`## Workflows\n\nGuides for running kinds of tasks. If one fits this goal, read it with the \`workflow\` tool and follow it.\n\n${list}`);
     }
     parts.push(
       [
@@ -426,21 +452,25 @@ export class Daemon {
   }
 
   private gitLines(g: GoalRec, rec: AgentRec, startedFrom: string): string[] {
-    if (!g.git) {
-      return [`- Git: no worktrees for this goal (${g.gitNote}). Everyone shares this directory, so agree on who edits which files, and run one implementer at a time.`];
-    }
+    if (rec.quick) return [`- This is ${rec.parent}'s working folder. Read it, but don't change it.`];
+    if (!g.git) return [`- Git: none here (${g.gitNote}). Everyone works in this folder, so agree on who edits which files.`];
+    const branch = g.git.branch === 'HEAD' ? 'a detached HEAD' : `branch ${g.git.branch}`;
+    const lead = rec.isLead ? 'you' : g.lead || 'the lead';
     const wt = rec.worktree;
-    if (!wt) return rec.quick ? [`- This is ${rec.parent}'s worktree. Read it, but don't change it.`] : [];
-    const sha = wt.base.slice(0, 7);
+    if (wt) {
+      const sha = wt.base.slice(0, 7);
+      return [
+        `- Git: this is your own worktree on branch ${wt.branch}, started from ${startedFrom} at ${sha} (${git.subject(g.git, sha)}). Teammates don't see your changes until you commit.`,
+        `- Commit your work there. ${lead === 'you' ? 'You merge' : `${lead} merges`} your branch into ${g.git.branch} in the human's checkout, ${g.dir}.`,
+        `- Other teammates' branches are mh/${g.id}/<their name>, in the same repository, so you can diff or merge them straight away (no fetch).`,
+      ];
+    }
     const lines = [
-      `- Git: this is your own worktree on branch ${wt.branch}, started from ${startedFrom} at ${sha} (${git.subject(g.git, sha)}).`,
-      `- Teammates' branches are mh/${g.id}/<their name>, in the same repository, so you can diff or merge them straight away (no fetch).`,
+      `- Git: this is the human's checkout, on ${branch}, and teammates work in it too. You see each other's changes as they're made, so agree on who edits which files, and commit only your own (\`git add <your files>\`, never \`git add -A\`).`,
     ];
-    lines.push(
-      rec.isLead
-        ? `- ${wt.branch} is the goal branch. Merge the team's branches into it: it's what the human gets.`
-        : `- The goal branch is ${g.git.branch}. The lead merges into it.`,
-    );
+    if (rec.isLead) {
+      lines.push(`- Teammates you spawn with \`worktree: true\` get their own worktree and commit on mh/${g.id}/<their name>. Merge their branches into ${g.git.branch} when they're done: what's here is what the human gets.`);
+    }
     return lines;
   }
 
@@ -462,12 +492,9 @@ export class Daemon {
         ? 'When you have the answer, call the MetaHarness `done` tool with it as the note.'
         : `Use the MetaHarness tools: \`send\` to ask ${spawner} if anything is unclear, \`status\` for progress, and \`done\` with a short note when you finish.`,
     ];
-    if (rec.worktree) {
-      lines.push(
-        rec.isLead
-          ? `You work in your own git worktree on ${rec.worktree.branch}, the goal branch. Merge teammates' branches into it before you call \`done\`.`
-          : `You work in your own git worktree on branch ${rec.worktree.branch}. Commit your work there before you call \`done\`.`,
-      );
+    if (rec.worktree) lines.push(`You work in your own git worktree on branch ${rec.worktree.branch}. Commit your work there before you call \`done\`.`);
+    else if (!rec.quick && this.goals.get(rec.goal)?.git) {
+      lines.push("You work in the human's checkout alongside teammates: commit only the files you changed.");
     }
     return lines.join('\n');
   }
@@ -552,6 +579,11 @@ export class Daemon {
       pending({ allow: decision === 'approve', message: reply ?? (decision === 'approve' ? undefined : 'The human denied this.') });
       return decision === 'approve' ? `Approved for ${item.agent}.` : `Denied for ${item.agent}.`;
     }
+    if (item.kind === 'decision' && decision !== 'dismiss') {
+      const answer = decision === 'approve' ? `Approved.${reply ? ` ${reply}` : ''}` : `Not approved.${reply ? ` What to change: ${reply}` : ''}`;
+      this.deliver(item.goal, 'human', item.agent, answer);
+      return `${decision === 'approve' ? 'Approved' : 'Sent back'} for ${item.agent}.`;
+    }
     if (reply) this.deliver(item.goal, 'human', item.agent, reply);
     return reply ? `Answered ${item.agent}.` : 'Dismissed.';
   }
@@ -610,17 +642,16 @@ export class Daemon {
     if (!g.git) return '';
     const gg = g.git;
     const ahead = git.countCommits(gg, gg.base, gg.branch);
-    const lead = g.agents.get(g.lead)?.worktree?.path;
+    const dirty = git.statusShort(g.dir).length;
+    const where = gg.branch === 'HEAD' ? 'the detached HEAD' : gg.branch;
     const lines = [
-      ahead
-        ? `The team's work is on branch ${gg.branch}, ${ahead} commit${ahead > 1 ? 's' : ''} ahead of where the goal started${lead ? ` (worktree: ${lead})` : ''}.`
-        : `There are no commits on ${gg.branch} yet${lead ? `. Uncommitted work may be in ${lead}` : ''}.`,
+      (ahead ? `The team's work is in ${g.dir} on ${where}: ${ahead} commit${ahead > 1 ? 's' : ''} since the goal started` : `There are no new commits on ${where}`) +
+        (dirty ? `, and ${dirty} uncommitted change${dirty > 1 ? 's' : ''} in ${g.dir}.` : '.'),
     ];
     const unmerged = [...git.goalBranches(gg, g.id).keys()]
-      .filter(b => b !== gg.branch)
       .map(b => ({ b, n: git.countCommits(gg, gg.branch, b) }))
       .filter(x => x.n > 0);
-    if (unmerged.length) lines.push(`Not merged into it: ${unmerged.map(x => `${x.b} (${x.n} commit${x.n > 1 ? 's' : ''})`).join(', ')}.`);
+    if (unmerged.length) lines.push(`Worktree branches not merged into it: ${unmerged.map(x => `${x.b} (${x.n} commit${x.n > 1 ? 's' : ''})`).join(', ')}.`);
     return '\n\n' + lines.join(' ');
   }
 
@@ -641,6 +672,9 @@ export class Daemon {
 
   private refreshGoalGit(g: GoalRec, gg: git.GoalGit): void {
     const tips = git.goalBranches(gg, g.id);
+    // The branch the team shares, in the human's checkout.
+    const head = git.resolveCommit(gg, gg.branch);
+    if (head) tips.set(gg.branch, head);
     // The goal branch last, so commits merged into it have already been seen on their own branch.
     const order = [...tips.keys()].sort((a, b) => Number(a === gg.branch) - Number(b === gg.branch));
     for (const branch of order) {
@@ -682,14 +716,16 @@ export class Daemon {
   }
 
   /** Delivers a message. Returns a plain-language summary for the sender. */
-  deliver(goalId: string, from: string, to: string, text: string, urgent = false): string {
+  deliver(goalId: string, from: string, to: string, text: string, urgent = false, decision = false): string {
     const g = this.goals.get(goalId);
     if (!g) return `There's no goal ${goalId}.`;
     const target = to.trim().toLowerCase();
     if (target === 'human' || target === 'you' || target === 'user') {
-      this.emit({ goal: goalId, agent: from, type: 'message.sent', data: { to: 'human', text, urgent } });
-      this.toHuman(g, from, 'question', text);
-      return 'Sent to the human. Their answer will arrive as a message.';
+      this.emit({ goal: goalId, agent: from, type: 'message.sent', data: { to: 'human', text, urgent, ...(decision ? { decision } : {}) } });
+      this.toHuman(g, from, decision ? 'decision' : 'question', text);
+      return decision
+        ? 'Sent to the human for a decision. Their answer (approved, or what to change) will arrive as a message.'
+        : 'Sent to the human. Their answer will arrive as a message.';
     }
     const r = this.resolveRecipients(g, from, to);
     if ('error' in r) return r.error;
@@ -864,7 +900,8 @@ export class Daemon {
       case 'read':
         return { allow: true };
       case 'mcp':
-        return t.server === MCP_SERVER_NAME ? { allow: true } : 'ask';
+        // Ours, and the servers the role names, are what the agent is there to use.
+        return t.server === MCP_SERVER_NAME || (!!t.server && rec.role.mcp.includes(t.server)) ? { allow: true } : 'ask';
       case 'edit': {
         const g = this.goals.get(rec.goal)!;
         const inside = (dir: string) => !!t.path && (t.path === dir || t.path.startsWith(dir.endsWith('/') ? dir : dir + '/'));
@@ -1045,6 +1082,12 @@ export class Daemon {
     const where: string[] = [];
     const notes = join(g.sharedDir, 'notes', `${rec.name}.md`);
     if (existsSync(notes)) where.push(`- Its notes: ${notes}. Read them first.`);
+    if (!rec.worktree && g.git) {
+      // It shared the human's checkout, so what's uncommitted there may be anyone's.
+      where.push(`- It worked in ${g.dir}, on ${g.git.branch === 'HEAD' ? 'a detached HEAD' : g.git.branch}, which teammates share. You do too.`);
+      const dirty = git.statusShort(g.dir);
+      if (dirty.length) where.push(`- Uncommitted changes there (yours or teammates'; git status --short):\n${dirty.slice(0, 30).map(l => `    ${l}`).join('\n')}`);
+    }
     if (rec.worktree && g.git) {
       const commits = git.commitsBetween(g.git, rec.worktree.base, rec.worktree.branch);
       where.push(
@@ -1180,7 +1223,7 @@ export class Daemon {
       case 'goal.start': {
         const request = s('request');
         if (!request) throw new Error('goal.start needs a request.');
-        const goal = this.startGoal({ request, lead: s('lead'), playbook: s('playbook') });
+        const goal = this.startGoal({ request, lead: s('lead'), workflow: s('workflow') ?? s('playbook') });
         return { goal, notice: this.goalNotice(this.goals.get(goal)!) ?? null };
       }
       case 'agent.message': {

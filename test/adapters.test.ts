@@ -10,8 +10,8 @@ import type { SessionSpec } from '../src/adapters/types.ts';
 
 const spec: SessionSpec = {
   goal: 'g', agent: 'architect', model: 'opus', systemPrompt: 'prompt', brief: 'brief', cwd: '/repo', sharedDir: '/shared', gitDirs: [],
-  mcpUrl: 'http://127.0.0.1:7777/mcp/abc', hookUrl: '', agentDir: '/agent',
-  role: { name: 'architect', harness: 'claude-code', model: 'opus', fallback: [], goodAt: '', instructions: '', helper: false, allow: ['Bash(npm test*)'], autoApprove: 'read-only', file: '' },
+  mcpUrl: 'http://127.0.0.1:7777/mcp/abc', hookUrl: '', agentDir: '/agent', mcpServers: [],
+  role: { name: 'architect', harness: 'claude-code', model: 'opus', fallback: [], goodAt: '', instructions: '', helper: false, allow: ['Bash(npm test*)'], autoApprove: 'read-only', mcp: [], worktree: false, file: '' },
   callTool: async () => '',
 };
 

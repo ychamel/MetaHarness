@@ -33,7 +33,7 @@ export function checkRoute(harness: string, model: string, reports: Map<string, 
 
 const mark = (ok: boolean | undefined) => (ok === true ? '✓' : ok === false ? '✗' : '?');
 
-export function doctorLines(reports: HarnessReport[], roles: Role[]): string[] {
+export function doctorLines(reports: HarnessReport[], roles: Role[], mcpDefs: Map<string, unknown> = new Map()): string[] {
   const byId = new Map(reports.map(r => [r.id, r]));
   const lines = ['Harnesses on this machine', ''];
   const found = reports.filter(r => r.path);
@@ -64,6 +64,12 @@ export function doctorLines(reports: HarnessReport[], roles: Role[]): string[] {
         lines.push(`${i === 0 ? head : ' '.repeat(head.length)} ${mark(c.ok)} ${label.padEnd(44)} ${c.ok === true ? '' : c.why}`.trimEnd());
       });
       if (!best) lines.push(`${' '.repeat(head.length)}   ${role.name} can't run here. Add a backup to ${relative(process.cwd(), role.file) || role.file}: fallback: <harness>/<model>`);
+      // MCP servers it names: in MetaHarness's mcp.json, or in the harness that will run it.
+      const runsOn = best ? byId.get(best.harness) : undefined;
+      for (const name of role.mcp) {
+        const where = mcpDefs.has(name) ? 'mcp.json' : runsOn?.mcpNames.includes(name) ? `${runsOn.title}'s own config` : undefined;
+        lines.push(`${' '.repeat(head.length)} ${where ? '✓' : '✗'} mcp ${name.padEnd(40)} ${where ? `from ${where}` : `not configured here: add it to ~/.metaharness/mcp.json, or to ${runsOn?.title ?? 'the harness'}`}`);
+      }
     }
   }
   return lines;

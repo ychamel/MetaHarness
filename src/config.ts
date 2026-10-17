@@ -1,12 +1,16 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import type { Role } from './types.ts';
+import { loadMcpDefs, type McpServerDef } from './mcpservers.ts';
+import type { Role, Workflow } from './types.ts';
 
 export interface Config {
   roles: Map<string, Role>;
   methodology: string;
   helperMethodology: string;
-  playbooks: Map<string, string>;
+  /** From workflows/, and from playbooks/ (their old name). */
+  workflows: Map<string, Workflow>;
+  /** MCP server definitions from mcp.json, for roles' `mcp:` names. */
+  mcp: Map<string, McpServerDef>;
 }
 
 const DEFAULT_METHODOLOGY = `You're part of a team of AI agents from different providers working toward one goal.
@@ -32,6 +36,8 @@ export function parseFrontMatter(text: string): { meta: Record<string, string>; 
   return { meta, body: after < 0 ? '' : t.slice(after + 1).trim() };
 }
 
+const list = (v?: string) => (v ?? '').split(/,(?![^(]*\))/).map(s => s.trim()).filter(Boolean);
+
 function readIf(path: string): string | undefined {
   return existsSync(path) ? readFileSync(path, 'utf8').trim() : undefined;
 }
@@ -47,7 +53,8 @@ export function loadConfig(dirs: string[]): Config {
     roles: new Map(),
     methodology: DEFAULT_METHODOLOGY,
     helperMethodology: DEFAULT_HELPER_METHODOLOGY,
-    playbooks: new Map(),
+    workflows: new Map(),
+    mcp: loadMcpDefs(dirs),
   };
   for (const dir of dirs) {
     cfg.methodology = readIf(join(dir, 'methodology.md')) ?? cfg.methodology;
@@ -59,18 +66,23 @@ export function loadConfig(dirs: string[]): Config {
         name,
         harness: meta.harness ?? 'claude-code',
         model: meta.model ?? '',
-        fallback: (meta.fallback ?? meta.fallbacks ?? '').split(',').map(s => s.trim()).filter(Boolean),
+        fallback: list(meta.fallback ?? meta.fallbacks),
         goodAt: meta.good_at ?? '',
         instructions: body,
         helper: /^(true|yes|1)$/i.test(meta.helper ?? ''),
         allow: (meta.allow ?? '').split(/,(?![^(]*\))/).map(s => s.trim()).filter(Boolean),
         permissionMode: meta.permission_mode || undefined,
         autoApprove: /^(none|no|off|false|ask)$/i.test(meta.auto_approve ?? '') ? 'none' : 'read-only',
+        mcp: list(meta.mcp),
+        workflow: meta.workflow || undefined,
+        worktree: /^(true|yes|1)$/i.test(meta.worktree ?? ''),
         file,
       });
     }
-    for (const file of markdownFiles(join(dir, 'playbooks'))) {
-      cfg.playbooks.set(basename(file, '.md'), readFileSync(file, 'utf8').trim());
+    for (const file of [...markdownFiles(join(dir, 'playbooks')), ...markdownFiles(join(dir, 'workflows'))]) {
+      const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
+      const name = basename(file, '.md');
+      cfg.workflows.set(name, { name, goodAt: meta.good_at ?? '', body, file });
     }
   }
   return cfg;

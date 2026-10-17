@@ -8,7 +8,7 @@ import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, Sessio
  * are turned off, and so are plugins and app connectors, which bring their own skills and tools.
  * Codex's built-in system skills remain; they're part of the harness.
  */
-export function isolationConfig(userMcpServers: string[]): Record<string, unknown> {
+export function isolationConfig(userMcpServers: string[], keep: string[] = []): Record<string, unknown> {
   const cfg: Record<string, unknown> = {
     'features.plugins': false,
     'features.apps': false,
@@ -17,7 +17,7 @@ export function isolationConfig(userMcpServers: string[]): Record<string, unknow
     'features.tool_suggest': false,
   };
   for (const name of userMcpServers) {
-    if (name !== MCP_SERVER_NAME && /^[\w-]+$/.test(name)) cfg[`mcp_servers.${name}.enabled`] = false;
+    if (name !== MCP_SERVER_NAME && !keep.includes(name) && /^[\w-]+$/.test(name)) cfg[`mcp_servers.${name}.enabled`] = false;
   }
   return cfg;
 }
@@ -53,6 +53,16 @@ export function codexRateLimit(r: any): RateLimitInfo | undefined {
   };
 }
 
+/** Config overrides adding the role's servers that MetaHarness has definitions for. */
+export function mcpServerConfig(servers: SessionSpec['mcpServers']): Record<string, unknown> {
+  const cfg: Record<string, unknown> = {};
+  for (const { name, def } of servers) {
+    if (!def || name === MCP_SERVER_NAME || !/^[\w-]+$/.test(name)) continue;
+    for (const key of ['command', 'args', 'env', 'url'] as const) if (def[key] !== undefined) cfg[`mcp_servers.${name}.${key}`] = def[key];
+  }
+  return cfg;
+}
+
 /** USD per million tokens. Codex reports tokens only, so cost comes from this table (if filled in). */
 export type PriceTable = Record<string, { input: number; cachedInput?: number; output: number }>;
 
@@ -73,7 +83,7 @@ export class CodexAdapter implements HarnessAdapter {
   private bin: string;
   private prices: PriceTable;
   private server?: Promise<AppServer>;
-  private isolation?: Promise<Record<string, unknown>>;
+  private userServers?: Promise<string[]>;
 
   constructor(opts: { bin?: string; prices?: PriceTable } = {}) {
     this.bin = opts.bin ?? 'codex';
@@ -87,8 +97,9 @@ export class CodexAdapter implements HarnessAdapter {
       this.server.catch(() => (this.server = undefined));
     }
     const server = await this.server;
-    this.isolation ??= listUserMcpServers(this.bin).then(isolationConfig);
-    const session = new CodexSession(server, spec, events, this.prices[spec.model], await this.isolation);
+    this.userServers ??= listUserMcpServers(this.bin);
+    const config = { ...isolationConfig(await this.userServers, spec.mcpServers.map(s => s.name)), ...mcpServerConfig(spec.mcpServers) };
+    const session = new CodexSession(server, spec, events, this.prices[spec.model], config);
     await session.init(opts.resume);
     return session;
   }
@@ -350,8 +361,8 @@ class CodexSession implements Session {
         return;
       }
       case 'mcpServer/elicitation/request':
-        // Our own server never asks for input; decline anything else rather than guess.
-        this.server.respond(id, { action: p.serverName === MCP_SERVER_NAME ? 'accept' : 'decline', content: null, _meta: null });
+        // Ours and the role's own servers are accepted (Codex asks before their tool calls); anything else is declined.
+        this.server.respond(id, { action: p.serverName === MCP_SERVER_NAME || this.spec.role.mcp.includes(p.serverName) ? 'accept' : 'decline', content: null, _meta: null });
         return;
       default:
         this.server.respondError(id, `MetaHarness doesn't handle ${method} yet.`);

@@ -13,7 +13,7 @@ through plain files, and you can watch and steer all of it.
 
 ## 1. Principles
 
-1. **Guide, don't enforce.** Roles, playbooks and conventions are prose the agents read and
+1. **Guide, don't enforce.** Roles, workflows and conventions are prose the agents read and
    understand. Nothing is schema-validated, and no output is ever rejected and asked for again.
 2. **Smart agents, simple pipes.** The daemon starts agents, delivers messages, keeps a log and
    shows you what's happening. Planning, routing and judging quality are done by agents (and
@@ -35,7 +35,7 @@ through plain files, and you can watch and steer all of it.
 | Piece | What it is | Form |
 |---|---|---|
 | **Role** | A teammate type: which harness and model (plus backups), what it's good at, how it should work | A markdown file with a few lines of front matter |
-| **Playbook** | A suggested way to run a kind of goal, written for the lead agent | Markdown |
+| **Workflow** | A guide for running a kind of task (who to spawn, what runs in parallel, where the human decides), followed by the lead or by a role; workflows can hand on to each other (§17) | Markdown |
 | **Methodology** | House rules every agent gets: how to communicate, hand off, ask for help | One markdown file |
 | **Goal** | One request plus the team working on it | Created with `mh run` or from the UI |
 | **Agent** | A named instance of a role in a goal (`architect`, `impl-1`, `impl-2`…) | Backed by one harness session (resumed or replaced as needed) |
@@ -85,7 +85,7 @@ reach that agent.
 
 ---
 
-## 4. Configuration: roles, methodology, playbooks
+## 4. Configuration: roles, methodology, workflows
 
 Stored in `.metaharness/` in the repo, with a personal set in `~/.metaharness/` that applies
 everywhere.
@@ -156,35 +156,35 @@ You're part of a team of AI agents from different providers working toward one g
 ```
 
 ```markdown
-<!-- .metaharness/playbooks/feature.md — given to the lead -->
-Suggested flow for a feature. Adapt it to the task, and skip steps that don't apply.
-
+<!-- .metaharness/workflows/feature.md — given to the lead (playbooks/ is still read; §17) -->
+---
+good_at: a feature whose approach is clear: design it, then build it
+---
 1. Write the design to shared/design.md. Get a second opinion from a reviewer on a different
-   provider if the design is non-trivial.
-2. Ask the human to look at the design before code is written if it changes architecture.
-3. Spawn implementers for the independent pieces. Give each one a brief that points to the
-   design.
-4. Have the code reviewed by someone other than its author. Send findings back to the
-   implementer.
-5. Ask the documenter to update docs and the reporter to write shared/report.md for the human.
+   provider if it's non-trivial.
+2. If it changes the architecture, ask the human to approve it: `send` to human with
+   `decision: true`, saying what to approve and where it is, then `wait` for the answer.
+3. Continue with the `implementation` workflow.
 ```
 
-That's the whole configuration: three kinds of markdown files.
+That's the whole configuration: markdown files for roles, the methodology and workflows, plus
+optional harness profiles (§16) and MCP server definitions (§17).
 
 ---
 
 ## 5. Agent tools (MCP)
 
-Six tools. All of them accept loose input and answer in plain language.
+Seven tools. All of them accept loose input and answer in plain language.
 
 | Tool | What it does |
 |---|---|
 | `team()` | The roster: agents on this goal, their roles, what they're doing; plus roles you can spawn and what they're good at |
-| `spawn(role, brief, quick?, name?)` | Start a teammate. `brief` is free text. Returns their name. With `quick: true` it starts a helper, waits, and returns the helper's answer directly (§11) |
-| `send(to, text)` | `to` = an agent name, a role, `lead`, `all`, or `human` |
+| `spawn(role, brief, quick?, name?, worktree?, from?)` | Start a teammate. `brief` is free text. Returns their name. With `quick: true` it starts a helper, waits, and returns the helper's answer directly (§11). With `worktree: true` (or `from`) it gets its own worktree (§9) |
+| `send(to, text, urgent?, decision?)` | `to` = an agent name, a role, `lead`, `all`, or `human`. To the human with `decision: true`, it asks for an approval (§17) |
 | `wait(timeout?)` | Pause until a message arrives or one of your spawned agents finishes, then return what happened |
 | `status(text)` | A one-line progress update, shown in the UI and in `team()` |
 | `done(note?)` | "I'm finished." The note goes to whoever spawned you. Your session stays resumable for follow-ups |
+| `workflow(name?)` | Read a workflow, e.g. the one the current one says to continue with; without a name, list them (§17) |
 
 Every tool result also says whether you have unread messages and which shared files changed
 since you last looked, so agents notice them naturally.
@@ -210,7 +210,7 @@ since you last looked, so agents notice them naturally.
 ```
 
 - An agent's starting context is: **role prompt + methodology + the brief its spawner wrote**,
-  plus the playbook if it's the lead. Everything else it reads from the shared folder or asks
+  plus its workflow (the goal's, if it's the lead, or its role's). Everything else it reads from the shared folder or asks
   for.
 - **The spawner writes the brief.** Agents are good at briefing each other when told what a good
   brief contains (the methodology does this).
@@ -274,32 +274,34 @@ there are new messages or file changes, so an agent nobody is messaging sees not
 
 ## 9. Code and git
 
-- Every agent except quick helpers gets its own **git worktree** on a branch `mh/<goal>/<agent>`,
-  under `~/.metaharness/goals/<goal>/worktrees/`, so agents never overwrite each other's files.
-  This is plumbing for safety, not a rule on behaviour. The human's own checkout isn't touched.
-- The **goal branch** is `mh/<goal>/main`, and it's the lead's branch: it starts from the commit
-  the human was on. (Git can't have a branch `mh/<goal>` next to branches under `mh/<goal>/`.)
-- A new agent's branch starts from its spawner's latest commit, or from a teammate's with
-  `spawn(..., from: "impl-1")`, which is how a reviewer gets the code it reviews. Uncommitted
-  work isn't included, so the methodology asks agents to commit before handing off.
-- Agents integrate with git themselves, like a human team would. The lead merges branches into
-  the goal branch, and resolving conflicts is ordinary agent work. When the lead finishes, the
-  human's note says how far the goal branch got and which branches aren't merged into it.
-- Codex sandboxes writes to the working directory, so its writable roots also get the shared
-  `.git` and the worktree's own git directory; without both, commits fail (checked with Codex
-  0.162). Claude Code's commands aren't sandboxed by default.
-- `git.commit` and `git.merge` events come from polling the goal's branch tips every few
-  seconds, so they're best effort: a fast-forward merge is recognised by commits already seen on
-  another branch.
-- A repository with no commits, or a folder that isn't one, gets no worktrees: everyone shares
-  the folder, and the lead is told to run one implementer at a time. If the human's checkout has
-  uncommitted changes, `mh run` warns that the agents won't see them.
+- **The team works in the human's checkout**, on whatever branch is checked out, the way native
+  subagents do (§17). Teammates see each other's changes as they're made; the methodology asks
+  them to agree who edits which files and to commit only their own. `mh run` says where the team
+  works, and warns about uncommitted changes the agents will see.
+- **Worktrees when a workflow asks.** `spawn(..., worktree: true)`, a role with `worktree: true`,
+  or `spawn(..., from: "impl-1")` gives a teammate its own worktree on `mh/<goal>/<agent>`,
+  under `~/.metaharness/goals/<goal>/worktrees/`. It starts from the latest commit, or from the
+  named teammate's branch, which is how a reviewer gets the code it reviews. Uncommitted work
+  isn't included, so the methodology asks agents to commit before handing off.
+- Agents integrate with git themselves, like a human team would. The lead merges worktree
+  branches into the checked-out branch, and resolving conflicts is ordinary agent work. When the
+  lead finishes, the human's note says how many commits the branch gained, what's uncommitted,
+  and which worktree branches aren't merged.
+- Codex sandboxes writes to the working directory, so in a worktree its writable roots also get
+  the shared `.git` and the worktree's own git directory; without both, commits fail (checked
+  with Codex 0.162). Claude Code's commands aren't sandboxed by default.
+- `git.commit` and `git.merge` events come from polling the checked-out branch and the
+  worktree branches every few seconds, so they're best effort: a fast-forward merge is
+  recognised by commits already seen on another branch. Commits on the shared branch aren't
+  attributed to an agent, since anyone in the folder (the human included) could have made them.
+- A folder that isn't a repository, or one with no commits, gets no worktrees: everyone shares
+  it, and a spawn that asks for a worktree is told so.
 - **Parallel agents read each other's code through branches.** All worktrees share one git
   repository, so once impl-2 commits, impl-1 can run `git diff mh/42/impl-2` or merge it right
-  away, with no push or fetch. The methodology asks agents to commit early when someone depends
-  on their code.
-- Agents that don't write code (reporter, researcher) can run in a read-only checkout.
+  away, with no push or fetch.
 - When the goal is finished, you open the PR or ask the lead to.
+- Later, as an option: the whole goal in its own worktree and branch, leaving the human's
+  checkout alone.
 
 ---
 
@@ -333,7 +335,7 @@ For this to feel as good as a native subagent, a quick spawn has to match it on 
 |---|---|
 | A call that returns the answer | `spawn(role, brief, quick: true)` blocks and returns the helper's final answer as the tool result. If it takes longer than a set limit (say 2 minutes), the caller gets the helper's name instead and the answer arrives later as a message, so nobody stays blocked |
 | A fast start | A **warm pool**: a few sessions per helper role, already started and waiting for a brief. Pool size is set per role and can be zero |
-| The parent's working state | The helper runs **in the caller's worktree**, so it sees uncommitted changes. It's read-only by default; a helper that needs to write gets its own worktree from the caller's latest commit |
+| The parent's working state | The helper runs **in the caller's folder**, so it sees uncommitted changes. It's read-only by default; a helper that needs to write gets its own worktree from the caller's latest commit |
 | Low overhead | A shorter methodology for helpers (just "answer the brief, keep it short", none of the team rules). The session is released after answering, or kept warm for the next caller |
 
 Helpers appear in the UI nested under the agent that called them, collapsed by default.
@@ -362,10 +364,10 @@ What you get from it:
   work.
 - **A retrospective at the end of each goal.** A cheap agent reads the event log and the shared
   folder and writes `shared/retro.md`: which handoffs caused confusion, who got stuck, where the
-  money went, and suggested edits to roles or playbooks. You decide what to change.
+  money went, and suggested edits to roles or workflows. You decide what to change.
 
 The loop for improving is just editing markdown. You change a role's `model`, rewrite a
-`good_at` line, or adjust a playbook, then compare the next runs. Trying two models for one role
+`good_at` line, or adjust a workflow, then compare the next runs. Trying two models for one role
 side by side can come later as an optional `variants:` line.
 
 ---
@@ -409,7 +411,7 @@ type Event = {
 | Activity | `agent.text` (streamed) · `agent.tool_call` {tool, summary} · `agent.tool_result` {summary, ok} · `agent.file_edit` {path, diff} | Agent detail stream |
 | Messages | `message.sent` {from, to, text, urgent} · `message.delivered` {via: hook \| tool \| turn \| interrupt} · `message.read` | Graph, sequence view |
 | Shared folder | `shared.write` {path, version} · `shared.read` {path} (best effort) · `shared.clash` | Graph file nodes, folder browser |
-| You | `inbox.item` {kind: approval \| question \| stuck \| crash} · `inbox.resolved` | Inbox, notifications |
+| You | `inbox.item` {kind: approval \| decision \| question \| stuck \| crash} · `inbox.resolved` · `approval.auto` | Inbox, notifications |
 | Usage | `usage` {tokens_in, tokens_out, cost, context_pct?} | Costs, context bars |
 | Git | `git.commit` {branch, sha, summary} · `git.merge` {from, into, sha, fastForward?} (conflicts aren't detected yet) | Git view |
 | Health | `nudge.sent` · `alert` {kind: idle \| ping_pong \| context_full \| cost} | Health flags |
@@ -420,7 +422,7 @@ Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended
 
 | Command | Arguments |
 |---|---|
-| `goal.start` | request, playbook?, lead_role? (or `human`) |
+| `goal.start` | request, workflow?, lead_role? (or `human`) |
 | `goal.pause` · `goal.resume` · `goal.end` | goal |
 | `agent.message` | to (agent \| role \| `lead` \| `all`), text, urgent? |
 | `agent.pause` · `agent.resume` · `agent.stop` | agent |
@@ -482,7 +484,7 @@ VS Code panel works the same way.
 | **Shared folder** | Files, every version, who wrote it, diffs between versions | Tracing handoffs |
 | **Git** | Branch per agent, diffs, merges, conflicts | Code integration |
 | **Costs** | By agent, role and model; spending rate | Spend |
-| **Replay** | Time scrubber over a finished goal; every view replays | Improving roles and playbooks |
+| **Replay** | Time scrubber over a finished goal; every view replays | Improving roles and workflows |
 | **Search** | Across streams, messages and shared files | Finding anything |
 | **Goals** | Current and past goals, with retrospectives | History |
 
@@ -663,21 +665,119 @@ harnesses, the registry, presets, and the UI for all of it.
 
 ---
 
-## 17. Plan
+## 17. Proposal: workflows, specialist roles, one shared folder
+
+**Status: built on 2026-10-18.** §2, §4, §5 and §9 are updated to match; this section keeps the
+reasoning and the details.
+
+Everything here is guidance. Workflows say how a kind of task should go, and the lead and its
+teammates follow them. Nothing in the daemon checks that they do (principle 1).
+
+### Workflows
+
+A **workflow** is a markdown guide for one kind of task, written for whoever runs it. It names
+the roles to use, what runs in parallel, when to loop, and where the human decides. Workflows
+replace playbooks: `.metaharness/workflows/<name>.md`, with `playbooks/` still read for now.
+
+```markdown
+<!-- .metaharness/workflows/feature-explore.md -->
+---
+good_at: features where the right approach isn't clear yet
+---
+1. Spawn 2–4 explorers in parallel, each with a different idea or scope. Each writes
+   shared/explore/<name>.md: the approach, a sketch, the risks, and what it would cost.
+2. Give the designer all the explorations. The designer either asks for another round (new
+   scopes, or a deeper look at one idea) or settles and writes shared/design.md.
+3. Ask the human to approve the design (send to human with decision: true, pointing at
+   shared/design.md). Don't start implementing until they approve; if they ask for changes,
+   go back to step 2.
+4. Once approved, continue with the `implementation` workflow.
+```
+
+- **Choosing one.** `mh run --workflow feature-explore`. Without one, the lead sees the list of
+  workflows and their `good_at` lines, as it sees roles, and picks.
+- **Chaining.** Workflows are separate files that refer to each other by name, as step 4 does.
+  A new tool, `workflow(name)`, returns a workflow's text, and without a name the list. An agent
+  loads the next workflow when it gets there, so only what's needed is in its context.
+- **Decisions for the human.** `send(to: "human", text, decision: true)` puts a *decision* in
+  the Inbox: "approve the design?", with the files it names. `mh approve <id> [note]` or
+  `mh deny <id> <what to change>` answers it, and the answer reaches the asker as a message,
+  which its `wait` returns. Nothing blocks the asker; the workflow tells it to wait.
+
+### Specialist roles
+
+A specialist is a role that brings its own tools and, if needed, its own way of working: a 3D
+modeller with the Blender MCP server, a UI designer with a particular method.
+
+```markdown
+<!-- .metaharness/roles/modeler.md -->
+---
+harness: claude-code
+model: opus
+mcp: blender
+workflow: blender-modeling
+good_at: 3D models and scenes in Blender
+---
+You build 3D assets in Blender through its MCP tools...
+```
+
+- **`mcp:`** names MCP servers the role may use. Agents are otherwise kept away from the user's
+  own MCP servers (§16). Names are resolved on each machine, since servers differ from machine
+  to machine: first in `~/.metaharness/mcp.json` (definitions MetaHarness keeps per machine),
+  then among the servers the role's harness already has configured under that name. `mh doctor`
+  says which names don't resolve here.
+- **`workflow:`** names a workflow the role follows. It goes into that agent's prompt, as the
+  lead's workflow goes into the lead's.
+
+### One shared folder by default; worktrees when a workflow asks
+
+Agents work the way native subagents do: **in one folder, the human's checkout** (the repository
+the daemon runs in), on whatever branch is checked out. They see each other's changes as soon as
+they're made, which is what a designer working next to an architect needs. Most work needs
+nothing more.
+
+- **Worktrees on request.** `spawn(..., worktree: true)` gives a teammate its own worktree on
+  `mh/<goal>/<name>`, starting from the latest commit or from `from`. Workflows say when, e.g.
+  "implementers working in parallel each get a worktree; merge their branches when done". A
+  role can make it its default with `worktree: true`.
+- **Sharing a folder.** The methodology asks agents in the same folder to agree who edits which
+  files, and to commit only their own changes. A workflow that runs several code writers at once
+  gives them worktrees instead.
+- **Merging.** Worktree branches are merged into the checked-out branch by the lead, so the
+  result is where the human is working.
+- **The human's own edits.** The team works in the human's checkout, so `mh run` says so, and
+  warns if there are uncommitted changes the agents will see and may touch.
+- **Later**, as an option: the whole goal in its own worktree and branch (`mh/<goal>/main`, as
+  before), leaving the human's checkout alone.
+- Quick helpers are unchanged: they work in their caller's folder.
+
+### What changes
+
+| Area | Change |
+|---|---|
+| Config | `workflows/` (plus `playbooks/` for now); roles get `mcp:`, `workflow:`, `worktree:` |
+| Tools | `workflow(name?)` (a seventh tool); `send` takes `decision`; `spawn` takes `worktree` |
+| Daemon | Agents start in the goal's folder unless asked for a worktree; decisions in the Inbox; per-role MCP servers for each adapter (Claude Code: added to `--mcp-config`; Codex: those servers left enabled; Antigravity: added to the agent's own `mcp_config.json`) |
+| CLI | `mh run --workflow`; `mh approve`/`mh deny` answer decisions; `mh doctor` checks `mcp:` names |
+| Defaults | `feature-explore` and `implementation` workflows; the methodology's git section rewritten for one shared folder |
+
+---
+
+## 18. Plan
 
 | Step | Scope | Done when |
 |---|---|---|
 | **0 — A small team works** | Daemon, event log, Claude and Codex adapters, the 6 tools, shared folder, roles + methodology, Client API (§13) with the CLI as its first client, **mid-turn message delivery (Claude Code streaming input, Codex `turn/steer`)**, approvals via our MCP tool and Codex approval requests, a Codex price table, a fake adapter for tests, quick spawns (helper runs in the caller's worktree, answer returned inline), native subagents off in Claude Code and Codex, CLI (`mh run`, `mh status`, `mh tail`, `mh send`) | Opus, as lead, designs a real change, briefs a Sol implementer, answers its question, and reviews its code, with all handoffs through shared/ |
 | **1 — Real use** | Antigravity CLI adapter for Gemini (stream-json; test mid-turn delivery first), rate-limit handling, daemon restart recovery (resume sessions from their saved IDs), warm pool for helper roles, native subagents off in Gemini, worktrees, change notices + `shared/.history/`, playbooks, approvals routed to a CLI inbox, nudges, crash resume/respawn, Luna docs + Gemini report roles | Two implementers work in parallel on dependent pieces and adjust to each other's changes; you use it for your own day-to-day work |
 | **2 — UI** | §14 build order 1–2 | You stop needing the CLI |
-| **3 — Improve** | Role×model stats, retrospectives, optional variants, §14 build order 3 (replay, costs, git, search) | A role or playbook gets better because of what a retrospective showed |
+| **3 — Improve** | Role×model stats, retrospectives, optional variants, §14 build order 3 (replay, costs, git, search) | A role or workflow gets better because of what a retrospective showed |
 
 **Sanity check at the end of step 1:** run a handful of real tasks two ways: Opus alone in
 Claude Code, and the team. Compare result quality, cost, time, and how often you had to step in.
 
 ---
 
-## 18. Open questions
+## 19. Open questions
 
 1. Can you act as the lead (spawning and briefing agents from the UI), or is the lead always an agent? Probably both.
 2. Should the shared folder be committed with the code at the end (design docs, reports), or stay outside the repo?

@@ -2,9 +2,9 @@ import { execFileSync } from 'node:child_process';
 import { isAbsolute, join } from 'node:path';
 
 /**
- * Worktree plumbing (design §9). Every coding agent works in its own worktree on
- * mh/<goal>/<agent>. The lead's branch is the goal branch, mh/<goal>/main: git can't have a
- * branch mh/<goal> next to branches under mh/<goal>/, so the goal branch gets a name of its own.
+ * Git plumbing (design §9). The team works in the human's checkout, on whatever branch is checked
+ * out. Agents that ask for a worktree get one on mh/<goal>/<agent>, and the lead merges those
+ * branches back into the checked-out branch.
  */
 
 export function git(cwd: string, ...args: string[]): string {
@@ -24,11 +24,11 @@ export interface GoalGit {
   repo: string;
   /** The shared .git directory every worktree commits into. */
   commonDir: string;
-  /** The goal branch, mh/<goal>/main. The lead works on it and merges the team's branches into it. */
+  /** The branch checked out when the goal started ("HEAD" if detached). The team works on it, and worktree branches merge into it. */
   branch: string;
   /** The commit the goal started from. */
   base: string;
-  /** The repository had uncommitted changes, which the worktrees don't include. */
+  /** The checkout had uncommitted changes, which the agents will see (worktrees don't include them). */
   dirty: boolean;
 }
 
@@ -41,7 +41,6 @@ export interface Worktree {
   base: string;
 }
 
-export const goalBranch = (goal: string) => `mh/${goal}/main`;
 export const agentBranch = (goal: string, agent: string) => `mh/${goal}/${agent}`;
 
 /** Prepares a goal's git state, or explains why the goal can't have worktrees. */
@@ -54,7 +53,7 @@ export function setupGoal(dir: string, goal: string): GoalGit | { reason: string
   return {
     repo,
     commonDir: isAbsolute(common) ? common : join(repo, common),
-    branch: goalBranch(goal),
+    branch: tryGit(repo, 'symbolic-ref', '--quiet', '--short', 'HEAD') ?? 'HEAD',
     base,
     dirty: git(repo, 'status', '--porcelain', '--untracked-files=no') !== '',
   };

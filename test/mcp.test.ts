@@ -63,7 +63,7 @@ test('agents reach their tools over MCP, each under its own identity', async () 
     const text = (r: any) => r.content.map((c: { text: string }) => c.text).join('');
 
     const tools = (await arch.listTools()).tools.map(t => t.name).sort();
-    assert.deepEqual(tools, ['approval', 'done', 'send', 'spawn', 'status', 'team', 'wait']);
+    assert.deepEqual(tools, ['approval', 'done', 'send', 'spawn', 'status', 'team', 'wait', 'workflow']);
 
     assert.match(text(await arch.callTool({ name: 'team', arguments: {} })), /implementer-1 \(implementer/);
     // Alias keys survive the MCP layer and reach the lenient hub.

@@ -21,6 +21,11 @@ Milestone 1 in progress:
   usage and rate limits.
 - Roles can name backups. When a subscription nears its limit, agents are asked to write notes;
   at the limit they wait for a close reset or move to a backup, continuing from a handoff.
+- **Workflows** guide the lead through a kind of task (`feature`, `feature-explore`,
+  `implementation`), hand on to each other, and stop for your approval where they say so.
+  **Specialist roles** can bring their own MCP servers (`mcp: blender`) and workflow.
+- The team works **in your checkout**, like native subagents; worktrees are only for code
+  written in parallel, when a workflow asks for them.
 
 See [TRACKER.md](TRACKER.md).
 
@@ -35,11 +40,11 @@ node src/cli.ts doctor         # which harnesses are here, signed in, with which
 node src/cli.ts daemon         # terminal 1 (add --fake for scripted agents, no model calls)
 node src/cli.ts test codex     # optional: check what works with a harness, on a cheap model
 
-node src/cli.ts run "Add per-user rate limiting to /api/upload"   # terminal 2
+node src/cli.ts run "Add per-user rate limiting to /api/upload" --workflow feature   # terminal 2
 node src/cli.ts tail           # follow everything live
 node src/cli.ts status         # who's doing what
 node src/cli.ts send implementer-1 "Did you add tests?"
-node src/cli.ts approve <id>   # answer a permission request listed by status
+node src/cli.ts approve <id>   # answer a permission request or a decision listed by status
 ```
 
 Run the daemon from the repository the agents should work on: it reads roles from that
@@ -58,6 +63,11 @@ fallback: antigravity/claude-opus-5-5-high, codex/gpt-6-sol
 ---
 ```
 
+A specialist role names the MCP servers it needs (`mcp: blender, figma`). Each name is looked up
+on the machine: in `~/.metaharness/mcp.json` (`{"mcpServers": {...}}`, the format every harness
+uses), else among the servers the role's harness already has. `mh doctor` lists names that
+don't resolve.
+
 Another harness on a transport MetaHarness already speaks is a profile, not code:
 `.metaharness/harnesses/<id>.md` (see DESIGN.md §16).
 
@@ -72,10 +82,11 @@ Another harness on a transport MetaHarness already speaks is a profile, not code
 | `src/store.ts` | Append-only event log (SQLite, built into Node) |
 | `src/server.ts` | Client API: `GET /state`, `GET /events` (with replay), `POST /commands`; `/mcp/<token>` and `/hook/<token>` for agents |
 | `src/harnesses.ts` | Harness profiles: finding each CLI, its login and its models |
+| `src/mcpservers.ts`, `src/readonly.ts` | Roles' MCP servers by name; which shell commands only read |
 | `src/doctor.ts`, `src/probe.ts` | `mh doctor` and `mh test` |
 | `src/git.ts` | Worktrees and branches per agent, and reading new commits for git events |
 | `src/mcp.ts` | The tools as an MCP server, one identity per agent, plus the approval tool |
 | `src/cli.ts` | The `mh` command |
 | `src/adapters/` | `claude.ts` (Claude Code, stream-json), `codex.ts` (Codex app-server), `agy.ts` + `agy-hook.ts` (Antigravity CLI, stream-json and hooks), `fake.ts` (scripted agents for tests) |
-| `.metaharness/` | Roles, methodology and playbooks for this repo |
+| `.metaharness/` | Roles, methodology and workflows for this repo |
 | `test/` | `npm test` runs teams end to end in throwaway repositories (scripted agents, plus a fake `agy` that runs real hooks), with no model calls |

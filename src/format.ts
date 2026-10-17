@@ -51,6 +51,7 @@ export function eventLine(e: MhEvent): string {
     case 'account.limit':
       return `${t}  ${'account'.padEnd(15)}${d.account}: ${d.status}${d.usedPct != null ? `, ${d.usedPct}% used` : ''}${d.resetsAt ? `, resets ${String(d.resetsAt).slice(11, 16)} UTC` : ''}`;
     case 'inbox.item':
+      if (d.kind === 'decision') return `${t}  ${'→ you'.padEnd(15)}decision ${d.id} from ${e.agent}: ${oneLine(d.text, 300)} (mh approve ${d.id}, or mh deny ${d.id} "<what to change>")`;
       return d.kind === 'approval'
         ? `${t}  ${'→ you'.padEnd(15)}approval ${d.id} from ${e.agent}: ${oneLine(d.text, 400)} (mh status shows it in full)`
         : `${t}  ${'→ you'.padEnd(15)}${d.kind} from ${e.agent}: ${oneLine(d.text)}`;

@@ -2,6 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, delimiter, join } from 'node:path';
 import { parseFrontMatter } from './config.ts';
+import { claudeMcpNames } from './mcpservers.ts';
 
 /**
  * Harness profiles (design §16): one harness on one transport. Transports are code (the
@@ -37,6 +38,8 @@ export interface HarnessProfile {
   models?: string[];
   /** A cheap model for `mh test`. */
   probeModel?: string;
+  /** The MCP servers the harness itself has configured, by name (for roles' `mcp:` names). */
+  listMcp?: (bin: string, env: NodeJS.ProcessEnv) => Promise<string[]>;
   /** The profile file, for user profiles. */
   file?: string;
 }
@@ -118,6 +121,7 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
       }
     },
     probeModel: 'haiku',
+    listMcp: async () => claudeMcpNames(process.cwd()),
     models: ['opus', 'sonnet', 'haiku', 'fable', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
   },
   {
@@ -133,6 +137,10 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
     },
     listModels: codexModels,
     probeModel: 'gpt-6-luna',
+    listMcp: async (bin, env) => {
+      const r = await run(bin, ['mcp', 'list', '--json'], env);
+      return r.code === 0 ? (JSON.parse(r.out) as { name: string }[]).map(x => x.name) : [];
+    },
   },
   {
     id: 'antigravity',
@@ -142,6 +150,10 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
     install: 'https://antigravity.google',
     login: 'agy (sign in when it starts)',
     probeModel: 'gemini-3.8-flash-low',
+    listMcp: async (bin, env) => {
+      const r = await run(bin, ['mcp', 'list'], env);
+      return r.code === 0 && !/no mcp servers/i.test(r.out) ? r.out.split('\n').map(l => l.trim().split(/[\s:]+/)[0]).filter(w => /^[\w-]+$/.test(w)) : [];
+    },
     // agy has no status command; its model list only loads when it's signed in.
     listModels: async (bin, env) => {
       const r = await run(bin, ['models'], env, 30_000);
@@ -239,22 +251,26 @@ export interface HarnessReport {
   modelsError?: string;
   install?: string;
   loginCommand?: string;
+  /** MCP servers the harness has configured itself. */
+  mcpNames: string[];
 }
 
 /** Checks one harness: installed, version, signed in, models. Runs only the CLI's own commands. */
 export async function inspect(p: HarnessProfile): Promise<HarnessReport> {
-  const rep: HarnessReport = { id: p.id, title: p.title, transport: p.transport, models: [...(p.models ?? [])], install: p.install, loginCommand: p.login };
+  const rep: HarnessReport = { id: p.id, title: p.title, transport: p.transport, models: [...(p.models ?? [])], install: p.install, loginCommand: p.login, mcpNames: [] };
   rep.path = findBin(p.bin);
   if (!rep.path) return rep;
   const env = { ...process.env, ...p.env };
-  const [version, login, models] = await Promise.all([
+  const [version, login, models, mcp] = await Promise.all([
     run(rep.path, p.versionArgs ?? ['--version'], env, 10_000),
     p.loginStatus?.(rep.path, env).catch((e: Error) => ({ detail: e.message })),
     p.listModels?.(rep.path, env).then(
       m => ({ m }),
       (e: Error) => ({ e: e.message }),
     ),
+    p.listMcp?.(rep.path, env).catch(() => []),
   ]);
+  rep.mcpNames = mcp ?? [];
   if (version.code === 0) rep.version = /\d+\.\d+[\w.+-]*/.exec(version.out)?.[0] ?? version.out.split('\n')[0].trim();
   rep.login = login;
   if (models && 'm' in models) rep.models = [...new Set([...rep.models, ...models.m])];

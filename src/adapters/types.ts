@@ -1,3 +1,4 @@
+import type { McpServerRef } from '../mcpservers.ts';
 import type { Role } from '../types.ts';
 
 /** What a harness can do. The daemon never assumes a feature the manifest doesn't claim. */
@@ -46,6 +47,8 @@ export interface SessionSpec {
   hookUrl: string;
   /** A directory of the agent's own, outside its worktree, for harness config such as hooks. */
   agentDir: string;
+  /** MCP servers the role may use besides ours (its `mcp:` names). Without a `def`, the harness's own config must have one by that name. */
+  mcpServers: McpServerRef[];
   /** In-process access to the same tools (used by the fake adapter and tests). */
   callTool: ToolCaller;
 }

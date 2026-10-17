@@ -14,15 +14,16 @@ const HELP = `mh: run a team of AI agents from different providers on one goal
   mh doctor                          Which harnesses are here, signed in, with which models; can each role run?
   mh test <harness> [--model <m>]    Check what works with a harness here: a short run on a cheap model
   mh daemon [--fake]                 Start the daemon (--fake: scripted agents, no model calls)
-  mh run "<request>" [--lead <role>] [--playbook <name>]
-                                     Start a goal; the lead role defaults to architect
+  mh run "<request>" [--lead <role>] [--workflow <name>]
+                                     Start a goal; the lead role defaults to architect. Without
+                                     --workflow, the lead picks one of .metaharness/workflows/
   mh status [<goal>]                 Show agents and what they're doing
   mh tail [<goal>]                   Follow everything that happens, live
   mh send <to> <message> [--urgent] [--goal <id>]
                                      Message an agent, a role, lead or all
   mh stop <agent> [--goal <id>]      Stop an agent
-  mh approve <item> [<note>]         Approve a permission request from your Inbox
-  mh deny <item> [<reason>]          Deny it; the agent gets the reason
+  mh approve <item> [<note>]         Approve a permission request or a decision from your Inbox
+  mh deny <item> [<reason>]          Deny it; the agent gets the reason (for a decision: what to change)
   mh dismiss <item>                  Clear an Inbox item
 
 Environment: MH_HOME (default ~/.metaharness), MH_PORT (default 7777)`;
@@ -118,7 +119,7 @@ async function printStatus(goalId?: string): Promise<void> {
   if (s.inbox.length) {
     console.log(`\nFor you (${s.inbox.length}):`);
     for (const i of s.inbox) console.log(`  ${i.id}  [${i.kind}] ${i.agent}: ${String(i.text).replace(/\n/g, '\n            ')}`);
-    if (s.inbox.some((i: { kind: string }) => i.kind === 'approval')) console.log('  Answer with: mh approve <id>  or  mh deny <id> [reason]');
+    if (s.inbox.some((i: { kind: string }) => i.kind === 'approval' || i.kind === 'decision')) console.log('  Answer with: mh approve <id> [note]  or  mh deny <id> [reason or what to change]');
   }
 }
 
@@ -188,7 +189,8 @@ async function main(): Promise<void> {
       const { doctorLines } = await import('./doctor.ts');
       console.log('Checking harnesses (this runs each CLI\'s own version, login and model commands)…\n');
       const reports = await Promise.all([...loadProfiles(configDirs()).values()].map(inspect));
-      for (const line of doctorLines(reports, [...loadConfig(configDirs()).roles.values()])) console.log(line);
+      const cfg = loadConfig(configDirs());
+      for (const line of doctorLines(reports, [...cfg.roles.values()], cfg.mcp)) console.log(line);
       return;
     }
     case 'test': {
@@ -205,7 +207,7 @@ async function main(): Promise<void> {
     case 'run': {
       const request = pos.join(' ').trim();
       if (!request) die('Say what the goal is: mh run "<request>"');
-      const r = await command({ cmd: 'goal.start', request, lead: s('lead'), playbook: s('playbook') });
+      const r = await command({ cmd: 'goal.start', request, lead: s('lead'), workflow: s('workflow') ?? s('playbook') });
       console.log(`Started goal ${r.goal}. Follow it with: mh tail ${r.goal}`);
       if (r.notice) console.log(`Note: ${r.notice}`);
       return;

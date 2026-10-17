@@ -39,5 +39,19 @@ export interface Role {
   autoApprove: 'read-only' | 'none';
   /** The harness's own permission mode, e.g. acceptEdits for Claude Code. */
   permissionMode?: string;
+  /** MCP servers this role may use besides MetaHarness's own, by name (resolved on each machine). */
+  mcp: string[];
+  /** A workflow this role follows; it goes into the agent's prompt. */
+  workflow?: string;
+  /** Give agents in this role their own git worktree by default, instead of the shared folder. */
+  worktree: boolean;
+  file: string;
+}
+
+/** A guide for running one kind of task: .metaharness/workflows/<name>.md */
+export interface Workflow {
+  name: string;
+  goodAt: string;
+  body: string;
   file: string;
 }
