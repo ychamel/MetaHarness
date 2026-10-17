@@ -1,6 +1,35 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { promisify } from 'node:util';
 import { MCP_SERVER_NAME } from '../mcp.ts';
 import type { CapabilityManifest, HarnessAdapter, Session, SessionEvents, SessionSpec } from './types.ts';
+
+/**
+ * Config overrides that keep a thread to what MetaHarness gives it: the user's global MCP servers
+ * are turned off, and so are plugins and app connectors, which bring their own skills and tools.
+ * Codex's built-in system skills remain; they're part of the harness.
+ */
+export function isolationConfig(userMcpServers: string[]): Record<string, unknown> {
+  const cfg: Record<string, unknown> = {
+    'features.plugins': false,
+    'features.apps': false,
+    'features.remote_plugin': false,
+    'features.skill_search': false,
+    'features.tool_suggest': false,
+  };
+  for (const name of userMcpServers) {
+    if (name !== MCP_SERVER_NAME && /^[\w-]+$/.test(name)) cfg[`mcp_servers.${name}.enabled`] = false;
+  }
+  return cfg;
+}
+
+async function listUserMcpServers(bin: string): Promise<string[]> {
+  try {
+    const { stdout } = await promisify(execFile)(bin, ['mcp', 'list', '--json'], { timeout: 15_000 });
+    return (JSON.parse(stdout) as { name: string }[]).map(s => s.name);
+  } catch {
+    return [];
+  }
+}
 
 /** USD per million tokens. Codex reports tokens only, so cost comes from this table (if filled in). */
 export type PriceTable = Record<string, { input: number; cachedInput?: number; output: number }>;
@@ -21,6 +50,7 @@ export class CodexAdapter implements HarnessAdapter {
   private bin: string;
   private prices: PriceTable;
   private server?: Promise<AppServer>;
+  private isolation?: Promise<Record<string, unknown>>;
 
   constructor(opts: { bin?: string; prices?: PriceTable } = {}) {
     this.bin = opts.bin ?? 'codex';
@@ -34,7 +64,8 @@ export class CodexAdapter implements HarnessAdapter {
       this.server.catch(() => (this.server = undefined));
     }
     const server = await this.server;
-    const session = new CodexSession(server, spec, events, this.prices[spec.model]);
+    this.isolation ??= listUserMcpServers(this.bin).then(isolationConfig);
+    const session = new CodexSession(server, spec, events, this.prices[spec.model], await this.isolation);
     await session.init();
     return session;
   }
@@ -126,15 +157,17 @@ class CodexSession implements Session {
   private spec: SessionSpec;
   private ev: SessionEvents;
   private price?: PriceTable[string];
+  private isolation: Record<string, unknown>;
   private turnId: string | null = null;
   private running = false;
   private stopped = false;
 
-  constructor(server: AppServer, spec: SessionSpec, ev: SessionEvents, price?: PriceTable[string]) {
+  constructor(server: AppServer, spec: SessionSpec, ev: SessionEvents, price: PriceTable[string] | undefined, isolation: Record<string, unknown>) {
     this.server = server;
     this.spec = spec;
     this.ev = ev;
     this.price = price;
+    this.isolation = isolation;
   }
 
   async init(): Promise<void> {
@@ -145,6 +178,7 @@ class CodexSession implements Session {
       sandbox: 'workspace-write',
       developerInstructions: this.spec.systemPrompt,
       config: {
+        ...this.isolation,
         [`mcp_servers.${MCP_SERVER_NAME}.url`]: this.spec.mcpUrl,
         [`mcp_servers.${MCP_SERVER_NAME}.tool_timeout_sec`]: 900,
         // All delegation goes through MetaHarness (design §11).

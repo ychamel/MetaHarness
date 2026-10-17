@@ -37,7 +37,9 @@ export function eventLine(e: MhEvent): string {
     case 'agent.crashed':
       return `${t}  ${who}${e.type.slice(6)}: ${oneLine(d.reason)}`;
     case 'inbox.item':
-      return `${t}  ${'→ you'.padEnd(15)}${d.kind} from ${e.agent}: ${oneLine(d.text)}`;
+      return d.kind === 'approval'
+        ? `${t}  ${'→ you'.padEnd(15)}approval ${d.id} from ${e.agent}: ${oneLine(d.text, 400)} (mh status shows it in full)`
+        : `${t}  ${'→ you'.padEnd(15)}${d.kind} from ${e.agent}: ${oneLine(d.text)}`;
     case 'usage':
     case 'agent.tool_result':
     case 'agent.session':

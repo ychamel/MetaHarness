@@ -72,13 +72,22 @@ test('agents reach their tools over MCP, each under its own identity', async () 
     assert.ok(d.store.since(goal).some(e => e.type === 'message.delivered' && e.agent === 'implementer-1'));
 
     // The approval tool parks the request in the human Inbox until it's answered.
-    const pending = impl.callTool({ name: 'approval', arguments: { tool_name: 'Bash', input: { command: 'npm install left-pad' } } });
+    // The whole command reaches the human, however long, and the agent's status line is left alone.
+    await impl.callTool({ name: 'status', arguments: { text: 'Running the tests' } });
+    const longCommand = `npm install left-pad && ${'echo filler && '.repeat(40)}rm -rf ./dist  # END-OF-COMMAND`;
+    const pending = impl.callTool({ name: 'approval', arguments: { tool_name: 'Bash', input: { command: longCommand } } });
     await new Promise(r => setTimeout(r, 50));
     const item = d.humanInbox.find(i => i.kind === 'approval');
     assert.ok(item, 'approval request reached the Inbox');
-    assert.match(item!.text, /Bash: npm install left-pad/);
+    assert.equal(item!.text, `Bash: ${longCommand}`);
+    const waiting = d.snapshot(goal).goals[0].agents.find(a => a.name === 'implementer-1')!;
+    assert.equal(waiting.awaitingApproval, 1);
+    assert.equal(waiting.status, 'Running the tests');
     assert.match(d.resolveInbox(item!.id, 'deny', 'Not now'), /Denied/);
     assert.deepEqual(JSON.parse(text(await pending)), { behavior: 'deny', message: 'Not now' });
+    const after = d.snapshot(goal).goals[0].agents.find(a => a.name === 'implementer-1')!;
+    assert.equal(after.awaitingApproval, 0);
+    assert.equal(after.status, 'Running the tests');
 
     const bad = await fetch(`${d.mcpBase}/mcp/deadbeef`, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } });
     assert.equal(bad.status, 404);

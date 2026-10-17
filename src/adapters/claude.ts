@@ -39,6 +39,8 @@ export function claudeArgs(spec: SessionSpec, sessionId: string): string[] {
     '--append-system-prompt', spec.systemPrompt,
     '--mcp-config', JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { type: 'http', url: spec.mcpUrl } } }),
     '--strict-mcp-config',
+    // Leave out user-level settings (plugins, hooks, permission rules); the role decides instead.
+    '--setting-sources', 'project,local',
     '--add-dir', spec.sharedDir,
     // All delegation goes through MetaHarness (design §11).
     '--disallowedTools', 'Agent',

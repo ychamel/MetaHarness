@@ -65,9 +65,10 @@ function summarizeInput(input: unknown): string {
   if (input && typeof input === 'object') {
     const o = input as Record<string, unknown>;
     const main = o.command ?? o.file_path ?? o.path ?? o.url ?? o.pattern;
-    if (main !== undefined) return String(main).slice(0, 300);
+    // The human decides from this text, so keep it whole (up to a sanity limit).
+    if (main !== undefined) return String(main).slice(0, 8000);
   }
-  return JSON.stringify(input ?? {}).slice(0, 300);
+  return JSON.stringify(input ?? {}).slice(0, 8000);
 }
 
 /**

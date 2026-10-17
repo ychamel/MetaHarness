@@ -46,6 +46,8 @@ export interface AgentRec {
   /** Callers blocked in a quick spawn, waiting for this agent's answer. */
   doneWaiters: ((note: string) => void)[];
   doneNote?: string;
+  /** Permission requests waiting in the human's Inbox. */
+  pendingApprovals: number;
 }
 
 export interface GoalRec {
@@ -189,7 +191,7 @@ export class Daemon {
     const rec: AgentRec = {
       goal: goalId, name, role, harness, model: role.model, parent: o.parent, brief: o.brief,
       quick: !!o.quick, isLead: !!o.isLead, cwd, state: 'starting', status: '', lastText: '',
-      adapter, inbox: [], waiters: [], doneWaiters: [],
+      adapter, inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0,
     };
     g.agents.set(name, rec);
     this.emit({
@@ -311,11 +313,10 @@ export class Daemon {
   requestApproval(rec: AgentRec, tool: string, detail: string): Promise<ApprovalDecision> {
     const g = this.goals.get(rec.goal)!;
     const item = this.toHuman(g, rec.name, 'approval', `${tool}: ${detail}`);
-    const before = rec.status;
-    this.status(rec, `Waiting for your approval: ${tool}`);
+    rec.pendingApprovals++;
     return new Promise(resolve => {
       this.approvals.set(item.id, d => {
-        if (rec.status === `Waiting for your approval: ${tool}`) this.status(rec, before);
+        rec.pendingApprovals--;
         resolve(d);
       });
     });
@@ -578,6 +579,7 @@ export class Daemon {
           cost: a.cost ?? null,
           contextPct: a.contextPct ?? null,
           unread: a.inbox.length,
+          awaitingApproval: a.pendingApprovals,
           nativeSession: a.session?.nativeId ?? null,
         })),
       })),

@@ -84,7 +84,7 @@ async function printStatus(goalId?: string): Promise<void> {
         const name = ('  '.repeat(depth) + a.name).padEnd(22);
         const what = `${a.role}${a.quick ? ' (helper)' : ''}`.padEnd(20);
         const where = `${a.harness} · ${a.model}`.padEnd(28);
-        const unread = a.unread ? ` [${a.unread} unread]` : '';
+        const unread = (a.unread ? ` [${a.unread} unread]` : '') + (a.awaitingApproval ? ' [needs your approval]' : '');
         const cost = a.cost == null ? '     —' : `$${a.cost.toFixed(3)}`;
         console.log(`  ${name}${what}${where}${a.state.padEnd(9)}${cost}  ${a.status}${unread}`);
         walk(a.name, depth + 1);
@@ -94,7 +94,7 @@ async function printStatus(goalId?: string): Promise<void> {
   }
   if (s.inbox.length) {
     console.log(`\nFor you (${s.inbox.length}):`);
-    for (const i of s.inbox) console.log(`  ${i.id}  [${i.kind}] ${i.agent}: ${i.text}`);
+    for (const i of s.inbox) console.log(`  ${i.id}  [${i.kind}] ${i.agent}: ${String(i.text).replace(/\n/g, '\n            ')}`);
     if (s.inbox.some((i: { kind: string }) => i.kind === 'approval')) console.log('  Answer with: mh approve <id>  or  mh deny <id> [reason]');
   }
 }
