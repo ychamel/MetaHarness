@@ -24,6 +24,28 @@ export interface Agent {
   nativeSession: string | null;
   limitedUntil: number | null;
   doneNote: string | null;
+  tokens: Tokens | null;
+  costSplit: CostSplit | null;
+  /** harness: reported by the harness; prices: estimated from the settings' prices. */
+  costSource: 'harness' | 'prices' | null;
+  /** When it last called its model, and until when its prompt cache stays warm (ms). */
+  lastCallAt: number | null;
+  cacheMinutes: number;
+  cacheUntil: number | null;
+}
+
+export interface Tokens {
+  tokensIn: number;
+  tokensOut: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface CostSplit {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
 }
 
 export interface Goal {
@@ -40,6 +62,8 @@ export interface Goal {
   notice: string | null;
   cost: number | null;
   agents: Agent[];
+  /** What the approvals gatekeeper spent on this goal. */
+  gatekeeperCost: number | null;
 }
 
 export interface InboxItem {

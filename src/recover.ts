@@ -1,3 +1,5 @@
+import { addSplit, addTokens, tokensOf, type Tokens } from './costs.ts';
+import type { CostSplit, Usage } from './adapters/types.ts';
 import type { AgentState, MhEvent } from './types.ts';
 
 /**
@@ -33,6 +35,14 @@ export interface AgentReplay {
   nativeSession?: string;
   cost?: number;
   costBefore?: number;
+  costSource?: 'harness' | 'prices';
+  tokens?: Tokens;
+  tokensBefore?: Tokens;
+  costSplit?: CostSplit;
+  splitBefore?: CostSplit;
+  /** When it last called its model (ms), from its last usage report. */
+  lastCallAt?: number;
+  cacheMinutes?: number;
   contextPct?: number;
   /** While rate limited: when it was due to continue, in ms since the epoch. */
   limitedUntil?: number;
@@ -92,6 +102,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
   if (g.branch && g.base) g.refs.set(g.branch, g.base);
   const pending = new Map<string, PendingMessage & { to: string }>();
   const sessions = new Map<string, number>();
+  const sessionTokens = new Map<string, Tokens>();
 
   for (const e of events) {
     const a = e.agent ? g.agents.get(e.agent) : undefined;
@@ -117,7 +128,12 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
       case 'agent.session':
         if (!a) break;
         // A later session starts its cost from zero (see the daemon's restart and move).
-        if (sessions.has(a.name)) a.costBefore = a.cost;
+        if (sessions.has(a.name)) {
+          a.costBefore = a.cost;
+          a.tokensBefore = a.tokens;
+          a.splitBefore = a.costSplit;
+        }
+        sessionTokens.delete(a.name);
         sessions.set(a.name, (sessions.get(a.name) ?? 0) + 1);
         a.nativeSession = str(x.nativeSession) || a.nativeSession;
         break;
@@ -145,11 +161,22 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
       case 'agent.limited':
         if (a) a.limitedUntil = Date.parse(str(x.until)) || undefined;
         break;
-      case 'usage':
+      case 'usage': {
         if (!a) break;
-        if (typeof x.costUsd === 'number') a.cost = (a.costBefore ?? 0) + x.costUsd;
+        const cost = typeof x.costUsd === 'number' ? x.costUsd : typeof x.estCostUsd === 'number' ? x.estCostUsd : undefined;
+        if (cost !== undefined) {
+          a.cost = (a.costBefore ?? 0) + cost;
+          a.costSource = typeof x.costUsd === 'number' ? 'harness' : 'prices';
+        }
         if (typeof x.contextPct === 'number') a.contextPct = x.contextPct;
+        const session = tokensOf(x as Usage, sessionTokens.get(a.name));
+        sessionTokens.set(a.name, session);
+        a.tokens = addTokens(a.tokensBefore, session);
+        if (x.costSplit) a.costSplit = addSplit(a.splitBefore, x.costSplit as CostSplit);
+        if (typeof x.cacheMinutes === 'number') a.cacheMinutes = x.cacheMinutes;
+        a.lastCallAt = Date.parse(e.ts) || a.lastCallAt;
         break;
+      }
       case 'gatekeeper.usage':
         if (typeof x.total === 'number') g.gatekeeperCost = x.total;
         break;

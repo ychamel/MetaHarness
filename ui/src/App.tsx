@@ -11,7 +11,7 @@ import { Workflows } from './pages/Workflows.tsx';
 import { Guidelines } from './pages/Guidelines.tsx';
 import { Tools } from './pages/Tools.tsx';
 
-type Page = 'home' | 'goal' | 'roles' | 'workflows' | 'guidelines' | 'tools';
+type Page = 'home' | 'goal' | 'roles' | 'workflows' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
 
 /** Where you are, kept in the address so a reload or a shared link comes back to it. */
 interface Place {
@@ -210,6 +210,7 @@ function Shell() {
               const r = config?.roles.find(x => x.name === role);
               go({ page: 'roles', item: r ? `${r.scope}/${r.name}` : undefined });
             }}
+            onHarnesses={() => go({ page: 'harnesses', item: undefined })}
           />
         )}
         {place.page === 'roles' && <Roles {...setup('roles')} />}

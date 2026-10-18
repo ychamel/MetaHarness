@@ -34,6 +34,30 @@ export interface RateLimitInfo {
   note?: string;
 }
 
+/** A session's token totals so far, its cost if the harness reports one, and how full its context is. */
+export interface Usage {
+  tokensIn?: number;
+  tokensOut?: number;
+  /** Input read from the provider's prompt cache. */
+  cacheRead?: number;
+  /** Input written to the prompt cache (Anthropic charges extra for it). */
+  cacheWrite?: number;
+  costUsd?: number;
+  /** The cost split by kind of token, when the harness knows it (Claude Code's per-model costs). */
+  costSplit?: CostSplit;
+  contextPct?: number;
+  /** How long the provider keeps this session's prompt cache, when the harness says (Claude Code: 5 or 60). */
+  cacheMinutes?: number;
+}
+
+/** Dollars by kind of token. */
+export interface CostSplit {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
 export type ToolCaller = (tool: string, args: unknown) => Promise<string>;
 
 export interface SessionSpec {
@@ -75,8 +99,8 @@ export interface SessionEvents {
   text(text: string): void;
   toolCall(tool: string, summary: string): void;
   toolResult(summary: string, ok: boolean): void;
-  /** Totals so far for this session. */
-  usage(u: { tokensIn?: number; tokensOut?: number; costUsd?: number; contextPct?: number }): void;
+  /** Totals so far for this session. tokensIn is input not read from the prompt cache. */
+  usage(u: Usage): void;
   exited(reason: 'stopped' | 'crashed', detail?: string): void;
   /** The account's rate-limit state changed, or a turn was refused because of it. */
   rateLimit(info: RateLimitInfo): void;

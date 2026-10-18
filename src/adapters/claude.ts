@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { APPROVAL_TOOL, MCP_SERVER_NAME } from '../mcp.ts';
 import { claudeMcpDef } from '../mcpservers.ts';
-import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest } from './types.ts';
+import type { CapabilityManifest, CostSplit, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest, Usage } from './types.ts';
 
 /**
  * Claude Code in streaming mode: one long-lived `claude -p` process per agent, NDJSON in and out.
@@ -108,6 +108,15 @@ class ClaudeSession implements Session {
   private stderrTail = '';
   private costSoFar = 0;
   private toolNames = new Map<string, string>();
+  /** Totals as of the last turn's end, from Claude Code's per-model usage. */
+  private settled: Tokens = { tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0 };
+  private split?: CostSplit;
+  /** This turn's model calls so far, by message ID (a message repeats per content block). */
+  private calls = new Map<string, Tokens>();
+  /** Dollars per input token, learned from the last turn's cost, for pricing the running one. */
+  private price?: number;
+  private cacheMinutes?: number;
+  private contextWindow?: number;
 
   constructor(bin: string, env: Record<string, string>, spec: SessionSpec, ev: SessionEvents, resume?: string) {
     this.ev = ev;
@@ -190,6 +199,7 @@ class ClaudeSession implements Session {
         this.running = true;
         this.ev.turnStarted();
       }
+      this.onCall(m.message);
       for (const b of (m.message?.content ?? []) as Block[]) {
         if (b.type === 'text' && b.text?.trim()) this.ev.text(b.text);
         if (b.type === 'tool_use' && b.name) {
@@ -220,21 +230,81 @@ class ClaudeSession implements Session {
     }
   }
 
+  /**
+   * A model call in the running turn. Its input and cache counts are final; its output count
+   * is only what had streamed, so the turn's end corrects it.
+   */
+  private onCall(msg: any): void {
+    const u = msg?.usage;
+    if (!u || !msg.id) return;
+    const t: Tokens = { tokensIn: u.input_tokens ?? 0, tokensOut: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0 };
+    const prev = this.calls.get(msg.id);
+    if (prev && prev.tokensOut >= t.tokensOut && prev.cacheWrite === t.cacheWrite) return;
+    this.calls.set(msg.id, t);
+    const c = u.cache_creation;
+    if (c) this.cacheMinutes = c.ephemeral_1h_input_tokens > 0 ? 60 : c.ephemeral_5m_input_tokens > 0 ? 5 : this.cacheMinutes;
+    const running = sum([...this.calls.values()]);
+    const used = t.tokensIn + t.cacheRead + t.cacheWrite + t.tokensOut;
+    this.ev.usage({
+      ...add(this.settled, running),
+      costUsd: this.costSoFar + (this.price ? weigh(running, this.cacheMinutes) * this.price : 0),
+      ...(this.split ? { costSplit: this.split } : {}),
+      ...(this.contextWindow ? { contextPct: Math.round((100 * used) / this.contextWindow) } : {}),
+      ...(this.cacheMinutes ? { cacheMinutes: this.cacheMinutes } : {}),
+    });
+  }
+
   private reportUsage(m: any): void {
     // total_cost_usd covers this process's turns so far; keep the running maximum to be safe.
     if (typeof m.total_cost_usd === 'number') this.costSoFar = Math.max(this.costSoFar, m.total_cost_usd);
-    const models = Object.values(m.modelUsage ?? {}) as { contextWindow?: number }[];
-    const window = models.find(x => x.contextWindow)?.contextWindow;
+    this.calls.clear();
+    // modelUsage: this process's totals by model, each with its cost.
+    const models = Object.values(m.modelUsage ?? {}) as { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; costUSD?: number; contextWindow?: number }[];
+    this.contextWindow = models.find(x => x.contextWindow)?.contextWindow ?? this.contextWindow;
+    if (models.length) {
+      const per = models.map(x => ({ t: { tokensIn: x.inputTokens ?? 0, tokensOut: x.outputTokens ?? 0, cacheRead: x.cacheReadInputTokens ?? 0, cacheWrite: x.cacheCreationInputTokens ?? 0 }, cost: x.costUSD ?? 0 }));
+      this.settled = sum(per.map(p => p.t));
+      this.split = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      for (const p of per) {
+        const w = weigh(p.t, this.cacheMinutes);
+        if (!w || !p.cost) continue;
+        const each = p.cost / w;
+        const s = splitOf(p.t, each, this.cacheMinutes);
+        for (const k of Object.keys(s) as (keyof CostSplit)[]) this.split[k] += s[k];
+      }
+      // The model that did most of the work prices the next turn while it runs.
+      const main = per.sort((a, b) => b.cost - a.cost)[0];
+      if (main?.cost) this.price = main.cost / weigh(main.t, this.cacheMinutes);
+    }
     const last = (m.usage?.iterations ?? []).at(-1) ?? m.usage ?? {};
     const used = (last.input_tokens ?? 0) + (last.cache_read_input_tokens ?? 0) + (last.cache_creation_input_tokens ?? 0) + (last.output_tokens ?? 0);
     this.ev.usage({
+      ...this.settled,
       costUsd: this.costSoFar,
-      tokensIn: m.usage?.input_tokens,
-      tokensOut: m.usage?.output_tokens,
-      contextPct: window && used ? Math.round((100 * used) / window) : undefined,
+      ...(this.split ? { costSplit: this.split } : {}),
+      contextPct: this.contextWindow && used ? Math.round((100 * used) / this.contextWindow) : undefined,
+      ...(this.cacheMinutes ? { cacheMinutes: this.cacheMinutes } : {}),
     });
   }
 }
+
+type Tokens = Required<Pick<Usage, 'tokensIn' | 'tokensOut' | 'cacheRead' | 'cacheWrite'>>;
+
+const add = (a: Tokens, b: Tokens): Tokens => ({ tokensIn: a.tokensIn + b.tokensIn, tokensOut: a.tokensOut + b.tokensOut, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite });
+const sum = (ts: Tokens[]): Tokens => ts.reduce(add, { tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0 });
+
+/**
+ * Anthropic's price ratios to input: output 5×, cache reads 0.1×, cache writes 1.25× (5-minute
+ * cache) or 2× (1-hour). Claude Code reports each model's cost but not its parts; these split it.
+ */
+const writeRatio = (cacheMinutes?: number) => (cacheMinutes === 60 ? 2 : 1.25);
+const weigh = (t: Tokens, cacheMinutes?: number) => t.tokensIn + 5 * t.tokensOut + 0.1 * t.cacheRead + writeRatio(cacheMinutes) * t.cacheWrite;
+const splitOf = (t: Tokens, each: number, cacheMinutes?: number): CostSplit => ({
+  input: t.tokensIn * each,
+  output: 5 * t.tokensOut * each,
+  cacheRead: 0.1 * t.cacheRead * each,
+  cacheWrite: writeRatio(cacheMinutes) * t.cacheWrite * each,
+});
 
 /** How a refused turn reads when Claude Code has no rate_limit_event for it. */
 const LIMIT_ERROR = /usage limit|rate limit|limit reached|out of (extra )?usage/i;

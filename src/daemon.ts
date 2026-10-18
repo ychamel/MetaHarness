@@ -7,7 +7,9 @@ import { resolveName } from './fuzzy.ts';
 import { Hub } from './hub.ts';
 import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
-import type { ApprovalDecision, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest } from './adapters/types.ts';
+import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest } from './adapters/types.ts';
+import { addSplit, addTokens, priceSplit, splitTotal, tokenCount, tokensOf, type Tokens } from './costs.ts';
+import { modelSettings } from './settings.ts';
 import { Gatekeeper, type GatekeeperLimits, type Judgement } from './gatekeeper.ts';
 import type { ApprovalMode } from './settings.ts';
 import { MCP_SERVER_NAME } from './mcp.ts';
@@ -63,6 +65,19 @@ export interface AgentRec {
   cost?: number;
   /** Spend by the agent's earlier sessions, before it moved to another harness. */
   costBefore?: number;
+  /** harness: the harness reported it; prices: estimated from the settings' prices. */
+  costSource?: 'harness' | 'prices';
+  /** Tokens by kind, all sessions; and the earlier sessions' share. */
+  tokens?: Tokens;
+  tokensBefore?: Tokens;
+  /** Spend by kind of token, when known. */
+  costSplit?: CostSplit;
+  splitBefore?: CostSplit;
+  /** When it last called its model (ms), and how long the provider keeps its prompt cache then. */
+  lastCallAt?: number;
+  cacheMinutes?: number;
+  /** The lastCallAt its spawner was last told about, so each idle spell is reminded once. */
+  cacheReminded?: number;
   contextPct?: number;
   lastText: string;
   adapter: HarnessAdapter;
@@ -623,6 +638,7 @@ export class Daemon {
   private sessionEvents(rec: AgentRec, gen: number): SessionEvents {
     const base = { goal: rec.goal, agent: rec.name };
     const live = () => rec.gen === gen;
+    let sessionTokens: Tokens | undefined;
     return {
       turnStarted: () => {
         if (live()) rec.toolsRunning = 0;
@@ -642,11 +658,13 @@ export class Daemon {
       text: text => {
         if (!live()) return;
         rec.lastText = text;
+        rec.lastCallAt = Date.now();
         this.emit({ ...base, type: 'agent.text', data: { text } });
       },
       toolCall: (tool, summary) => {
         if (!live()) return;
         rec.toolsRunning++;
+        rec.lastCallAt = Date.now();
         this.noteGitActor(rec, summary);
         this.noteSharedTouch(rec, summary);
         this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } });
@@ -659,9 +677,27 @@ export class Daemon {
       },
       usage: u => {
         if (!live()) return;
-        if (u.costUsd !== undefined) rec.cost = (rec.costBefore ?? 0) + u.costUsd;
+        const session = tokensOf(u, sessionTokens);
+        // More tokens means another model call, which refreshes the prompt cache.
+        if (tokenCount(session) > tokenCount(sessionTokens)) rec.lastCallAt = Date.now();
+        sessionTokens = session;
+        rec.tokens = addTokens(rec.tokensBefore, session);
+        if (u.cacheMinutes) rec.cacheMinutes = u.cacheMinutes;
         if (u.contextPct !== undefined) rec.contextPct = u.contextPct;
-        this.emit({ ...base, type: 'usage', data: { ...u } });
+        // The harness's cost when it reports one, else the settings' prices for its tokens.
+        const prices = modelSettings(this.config.settings, rec.harness, rec.model).prices;
+        const split = u.costSplit ?? (prices ? priceSplit(session, prices) : undefined);
+        let est: number | undefined;
+        if (u.costUsd !== undefined) {
+          rec.cost = (rec.costBefore ?? 0) + u.costUsd;
+          rec.costSource = 'harness';
+        } else if (split) {
+          est = splitTotal(split);
+          rec.cost = (rec.costBefore ?? 0) + est;
+          rec.costSource = 'prices';
+        }
+        if (split) rec.costSplit = addSplit(rec.splitBefore, split);
+        this.emit({ ...base, type: 'usage', data: { ...u, ...(split ? { costSplit: split } : {}), ...(est !== undefined ? { estCostUsd: est } : {}) } });
       },
       rateLimit: info => live() && this.onRateLimit(rec, info),
       exited: (reason, detail) => {
@@ -684,6 +720,13 @@ export class Daemon {
       },
       pull: () => (live() ? this.takeForTurn(rec, 'tool_result') : undefined),
     };
+  }
+
+  /** A new session starts its totals from zero: what the earlier ones spent is kept apart. */
+  private carryOver(rec: AgentRec): void {
+    rec.costBefore = rec.cost;
+    rec.tokensBefore = rec.tokens;
+    rec.splitBefore = rec.costSplit;
   }
 
   /** Which agent an MCP token belongs to. */
@@ -1200,7 +1243,7 @@ export class Daemon {
       if (this.accountLimited(rec.harness, rec.model)) return void this.hitLimit(rec);
       const entries = rec.inbox.splice(0);
       this.markDelivered(rec, entries, 'resume');
-      rec.costBefore = rec.cost;
+      this.carryOver(rec);
       return void this.startSession(rec, this.forAgent(rec, entries));
     }
     if (s.busy()) {
@@ -1275,7 +1318,7 @@ export class Daemon {
       rec.gen++;
       rec.session = undefined;
       rec.resumeId = s.nativeId;
-      rec.costBefore = rec.cost;
+      this.carryOver(rec);
       void s.stop().catch(() => {});
       this.setState(rec, 'paused');
     }
@@ -1354,7 +1397,7 @@ export class Daemon {
     this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.interrupted', data: { how: 'restart' } });
     rec.gen++;
     rec.session = undefined;
-    rec.costBefore = rec.cost;
+    this.carryOver(rec);
     void s.stop().catch(() => {});
     this.startSession(rec, this.forAgent(rec, entries) + PAUSED_NOTE, s.nativeId);
     return true;
@@ -1547,7 +1590,7 @@ export class Daemon {
     rec.session = undefined;
     rec.resumeId = undefined;
     rec.interrupting = false;
-    rec.costBefore = rec.cost;
+    this.carryOver(rec);
     clearTimeout(rec.limitTimer);
     rec.limitedUntil = undefined;
     // Its wait() calls belong to the old session; the new one makes its own.
@@ -1846,7 +1889,8 @@ export class Daemon {
     const rec: AgentRec = {
       goal: g.id, name: a.name, role, harness: a.harness, model: a.model, parent: a.parent, brief: a.brief,
       quick: a.quick, isLead: a.name === g.lead, cwd: a.cwd, worktree, state: a.state, status: a.status,
-      cost: a.cost, costBefore: a.costBefore, contextPct: a.contextPct, lastText: a.lastText,
+      cost: a.cost, costBefore: a.costBefore, costSource: a.costSource, tokens: a.tokens, tokensBefore: a.tokensBefore, costSplit: a.costSplit, splitBefore: a.splitBefore,
+      lastCallAt: a.lastCallAt, cacheMinutes: a.cacheMinutes, contextPct: a.contextPct, lastText: a.lastText,
       adapter: this.adapters[a.harness], resumeId: a.nativeSession, gen: 0, token, systemPrompt: '', doneNote: a.doneNote,
       inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(), toolsRunning: 0, lastToolEnd: 0,
     };
@@ -1860,7 +1904,7 @@ export class Daemon {
     if (!INTERRUPTED.includes(rec.state) && rec.state !== 'limited') return this.pump(rec);
     // Cut off: it continues its session, told why. One that never had a session starts over.
     const first = rec.resumeId ? this.restartNote(g, rec) : this.firstMessage(rec);
-    rec.costBefore = rec.cost;
+    this.carryOver(rec);
     if (rec.state === 'limited' && (a.limitedUntil ?? 0) > Date.now()) {
       // Its messages follow once the session is up.
       rec.pendingBrief = first;
@@ -2072,8 +2116,28 @@ export class Daemon {
         nativeSession: a.session?.nativeId ?? a.resumeId ?? null,
         limitedUntil: a.limitedUntil ?? null,
         doneNote: a.doneNote ?? null,
+        ...this.spendView(a),
       })),
+      gatekeeperCost: g.gatekeeperCost.size ? this.gatekeeperCost(g) : null,
     };
+  }
+
+  /** What an agent spent, by kind of token, and how long its prompt cache stays warm. */
+  private spendView(a: { harness: string; model: string; tokens?: Tokens; costSplit?: CostSplit; costSource?: string; lastCallAt?: number; cacheMinutes?: number }) {
+    const minutes = this.cacheLifetime(a);
+    return {
+      tokens: a.tokens ?? null,
+      costSplit: a.costSplit ?? null,
+      costSource: a.costSource ?? null,
+      lastCallAt: a.lastCallAt ?? null,
+      cacheMinutes: minutes,
+      cacheUntil: a.lastCallAt ? a.lastCallAt + minutes * 60_000 : null,
+    };
+  }
+
+  /** The settings' cache lifetime for the model, else what the harness reported, else the default. */
+  cacheLifetime(a: { harness: string; model: string; cacheMinutes?: number }): number {
+    return modelSettings(this.config.settings, a.harness, a.model).cacheMinutes ?? a.cacheMinutes ?? this.config.settings.defaultCacheMinutes;
   }
 
   /** A goal not loaded here, as the log left it. */
@@ -2101,7 +2165,9 @@ export class Daemon {
         status: a.status, brief: a.brief, quick: a.quick, branch: a.worktree?.branch ?? null, worktree: a.worktree?.path ?? null,
         cwd: a.cwd, cost: a.cost ?? null, contextPct: a.contextPct ?? null, unread: a.undelivered.length, awaitingApproval: 0,
         nativeSession: a.nativeSession ?? null, limitedUntil: null, doneNote: a.doneNote ?? null,
+        ...this.spendView(a),
       })),
+      gatekeeperCost: r.gatekeeperCost || null,
     };
   }
 

@@ -433,6 +433,14 @@ All of this is passive and never constrains an agent.
 What you get from it:
 
 - **Live cost and activity** per agent, role, model and goal.
+- **Where the money goes** (the goal's Costs tab): tokens by kind (input, cache reads, cache
+  writes, output) per agent, role and model, in dollars or tokens. Adapters report a session's
+  totals; the daemon carries them across sessions. Claude Code reports each model's cost, and
+  its split by kind follows Anthropic's price ratios (output 5×, cache reads 0.1×, cache writes
+  1.25× for a 5-minute cache or 2× for a 1-hour one, which the stream says). It reports input
+  and cache counts call by call, so a long turn's cost shows while it runs, priced at the rate
+  the last turn worked out to. Codex, Antigravity and ACP report tokens only; their cost comes
+  from the prices in `settings.json` (per `harness/model` or model), marked as estimated.
 - **Per role×model numbers** across goals: cost, time, how often its outputs drew review
   findings or follow-up questions, how often it needed nudging, and your optional 👍/👎 on its
   work.

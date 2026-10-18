@@ -109,6 +109,7 @@ class AcpSession implements Session {
   private terminals = new Map<string, Terminal>();
   private nextTerminal = 1;
   private firstPrompt = true;
+  private totals: { tokensIn?: number; tokensOut?: number; cacheRead?: number; cacheWrite?: number } = {};
   /** Requests from the agent it has since cancelled: their late answers are dropped. */
   private cancelledRequests = new Set<number | string>();
 
@@ -178,9 +179,17 @@ class AcpSession implements Session {
       const r = await this.request('session/prompt', { sessionId: this.nativeId, prompt });
       const u = r?.usage;
       if (u && typeof u === 'object') {
-        const tokensIn = num(u.inputTokens ?? u.input_tokens ?? u.input);
-        const tokensOut = num(u.outputTokens ?? u.output_tokens ?? u.output);
-        if (tokensIn !== undefined || tokensOut !== undefined) this.ev.usage({ tokensIn, tokensOut });
+        // A prompt's usage is that turn's; the daemon wants the session's totals.
+        const turn = {
+          tokensIn: num(u.inputTokens ?? u.input_tokens ?? u.input),
+          tokensOut: num(u.outputTokens ?? u.output_tokens ?? u.output),
+          cacheRead: num(u.cachedReadTokens ?? u.cache_read_input_tokens),
+          cacheWrite: num(u.cachedWriteTokens ?? u.cache_creation_input_tokens),
+        };
+        if (turn.tokensIn !== undefined || turn.tokensOut !== undefined) {
+          for (const k of ['tokensIn', 'tokensOut', 'cacheRead', 'cacheWrite'] as const) if (turn[k] !== undefined) this.totals[k] = (this.totals[k] ?? 0) + turn[k]!;
+          this.ev.usage({ ...this.totals });
+        }
       }
       if (r?.stopReason === 'refusal') this.ev.text(`(${this.opts.id} refused to continue)`);
       else if (r?.stopReason === 'max_tokens' || r?.stopReason === 'max_turn_requests') this.ev.text(`(${this.opts.id} stopped: ${r.stopReason})`);

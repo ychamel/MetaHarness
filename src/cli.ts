@@ -175,15 +175,13 @@ async function main(): Promise<void> {
       const { loadProfiles, findBin } = await import('./harnesses.ts');
       const { startServer } = await import('./server.ts');
       const fake = opt.fake === true;
-      const pricesFile = [join(process.cwd(), '.metaharness', 'prices.json'), join(HOME, 'prices.json')].find(existsSync);
-      const prices = pricesFile ? JSON.parse(readFileSync(pricesFile, 'utf8')) : {};
       // One adapter per profile MetaHarness can drive and that is installed here.
       const adapters: Record<string, import('./adapters/types.ts').HarnessAdapter> = { fake: new FakeAdapter(demoScripts) };
       for (const p of loadProfiles(configDirs()).values()) {
         const bin = p.transport && findBin(p.bin);
         if (!bin) continue;
         if (p.transport === 'claude-stream') adapters[p.id] = new ClaudeAdapter({ id: p.id, bin, env: p.env });
-        else if (p.transport === 'codex-app-server') adapters[p.id] = new CodexAdapter({ bin, prices });
+        else if (p.transport === 'codex-app-server') adapters[p.id] = new CodexAdapter({ bin });
         else if (p.transport === 'agy-stream') adapters[p.id] = new AgyAdapter({ id: p.id, bin });
         else if (p.transport === 'acp') adapters[p.id] = new AcpAdapter({ id: p.id, bin, args: p.args ?? [], env: p.env, openCommand: p.openCommand });
       }

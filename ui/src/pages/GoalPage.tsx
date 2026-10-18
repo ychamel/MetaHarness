@@ -14,14 +14,16 @@ import { Activity } from '../views/Activity.tsx';
 const Graph = lazy(() => import('../views/Graph.tsx'));
 const Sequence = lazy(() => import('../views/Sequence.tsx'));
 const Timeline = lazy(() => import('../views/Timeline.tsx'));
+const Costs = lazy(() => import('../views/Costs.tsx'));
 
-export type GoalTab = 'story' | 'files' | 'graph' | 'sequence' | 'timeline' | 'log';
+export type GoalTab = 'story' | 'files' | 'graph' | 'sequence' | 'timeline' | 'costs' | 'log';
 const TABS: [GoalTab, string, string][] = [
   ['story', 'Story', 'What happened, the important parts first'],
   ['files', 'Files', 'The shared folder: designs, reviews, reports'],
   ['graph', 'Graph', 'Who talks to whom'],
   ['sequence', 'Sequence', 'Messages over time'],
   ['timeline', 'Timeline', 'Who was busy when'],
+  ['costs', 'Costs', 'Where the money went, by agent, role, model and kind of token'],
   ['log', 'Log', 'Every event, as it happened'],
 ];
 
@@ -44,6 +46,7 @@ interface Props {
   onSpawn: (parent?: string) => void;
   onNewGoal: () => void;
   onEditRole: (role: string) => void;
+  onHarnesses: () => void;
 }
 
 export function GoalPage(p: Props) {
@@ -112,6 +115,7 @@ export function GoalPage(p: Props) {
             {p.tab === 'graph' && <Graph goal={goal} events={events} selected={agent?.name} onSelect={p.onAgent} />}
             {p.tab === 'sequence' && <Sequence goal={goal} events={events} onSelect={p.onAgent} />}
             {p.tab === 'timeline' && <Timeline goal={goal} events={events} onSelect={p.onAgent} />}
+            {p.tab === 'costs' && <Costs goal={goal} onSelect={p.onAgent} onSetup={p.onHarnesses} />}
             {p.tab === 'log' && <Activity events={events} agents={goal.agents.map(a => a.name)} onSelectAgent={p.onAgent} />}
           </Suspense>
         </section>

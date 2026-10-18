@@ -337,7 +337,12 @@ class AgySession implements Session {
   private result(r: any): void {
     if (r.conversation_id) this.nativeId = r.conversation_id;
     const u = r.usage ?? {};
-    this.ev.usage({ tokensIn: u.input_tokens, tokensOut: (u.output_tokens ?? 0) + (u.thinking_tokens ?? 0) });
+    const cached = u.cached_input_tokens ?? u.cache_read_input_tokens;
+    this.ev.usage({
+      tokensIn: u.input_tokens !== undefined && cached !== undefined ? Math.max(0, u.input_tokens - cached) : u.input_tokens,
+      cacheRead: cached,
+      tokensOut: (u.output_tokens ?? 0) + (u.thinking_tokens ?? 0),
+    });
     if (r.status && r.status !== 'SUCCESS') {
       const why = String(r.error ?? r.status);
       if (LIMIT_ERROR.test(why)) this.ev.rateLimit({ status: 'limited' });

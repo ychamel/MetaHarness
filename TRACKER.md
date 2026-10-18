@@ -243,7 +243,8 @@ Findings from the run:
 - A real move to a backup at a real rate limit (tested with scripted agents only)
 - Antigravity approvals that reach the human (tested with the fake `agy`; live runs only hit
   allowed and refused tools)
-- Codex cost needs `.metaharness/prices.json`; without it, cost shows as "—"
+- Codex, Antigravity and ACP cost needs prices in `settings.json` (the old `prices.json` still
+  works); without them, cost shows as "—" and the Costs tab says which models lack a price
 
 ## Resuming work
 

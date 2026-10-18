@@ -77,9 +77,6 @@ export function mcpServerConfig(servers: SessionSpec['mcpServers']): Record<stri
   return cfg;
 }
 
-/** USD per million tokens. Codex reports tokens only, so cost comes from this table (if filled in). */
-export type PriceTable = Record<string, { input: number; cachedInput?: number; output: number }>;
-
 /**
  * Codex through its app-server: one shared `codex app-server` process speaking JSON-RPC over
  * stdio, one thread per agent. Messages reach a running turn with turn/steer.
@@ -95,13 +92,11 @@ export class CodexAdapter implements HarnessAdapter {
     reportsRateLimits: true,
   };
   private bin: string;
-  private prices: PriceTable;
   private server?: Promise<AppServer>;
   private userServers?: Promise<string[]>;
 
-  constructor(opts: { bin?: string; prices?: PriceTable } = {}) {
+  constructor(opts: { bin?: string } = {}) {
     this.bin = opts.bin ?? 'codex';
-    this.prices = opts.prices ?? {};
   }
 
   nativeCommand(sessionId: string): string {
@@ -117,7 +112,7 @@ export class CodexAdapter implements HarnessAdapter {
     const server = await this.server;
     this.userServers ??= listUserMcpServers(this.bin);
     const config = { ...isolationConfig(await this.userServers, spec.mcpServers.map(s => s.name)), ...mcpServerConfig(spec.mcpServers) };
-    const session = new CodexSession(server, spec, events, this.prices[spec.model], config);
+    const session = new CodexSession(server, spec, events, config);
     await session.init(opts.resume);
     return session;
   }
@@ -210,7 +205,6 @@ class CodexSession implements Session {
   private server: AppServer;
   private spec: SessionSpec;
   private ev: SessionEvents;
-  private price?: PriceTable[string];
   private isolation: Record<string, unknown>;
   private turnId: string | null = null;
   /** Settles once the latest turn/start has answered, so a message sent meanwhile can steer that turn. */
@@ -219,11 +213,10 @@ class CodexSession implements Session {
   private stopped = false;
   private fileChanges = new Map<string, string[]>();
 
-  constructor(server: AppServer, spec: SessionSpec, ev: SessionEvents, price: PriceTable[string] | undefined, isolation: Record<string, unknown>) {
+  constructor(server: AppServer, spec: SessionSpec, ev: SessionEvents, isolation: Record<string, unknown>) {
     this.server = server;
     this.spec = spec;
     this.ev = ev;
-    this.price = price;
     this.isolation = isolation;
   }
 
@@ -359,15 +352,13 @@ class CodexSession implements Session {
         const total = u.total ?? {};
         const last = u.last ?? {};
         const window = u.modelContextWindow;
-        let costUsd: number | undefined;
-        if (this.price) {
-          const cached = total.cachedInputTokens ?? 0;
-          costUsd = (((total.inputTokens ?? 0) - cached) * this.price.input + cached * (this.price.cachedInput ?? this.price.input) + (total.outputTokens ?? 0) * this.price.output) / 1e6;
-        }
+        // Codex counts cached input inside inputTokens; MetaHarness keeps them apart. No cost: the
+        // daemon prices tokens from the settings.
+        const cached = total.cachedInputTokens ?? 0;
         this.ev.usage({
-          tokensIn: total.inputTokens,
+          tokensIn: total.inputTokens !== undefined ? total.inputTokens - cached : undefined,
+          cacheRead: total.cachedInputTokens,
           tokensOut: total.outputTokens,
-          costUsd,
           contextPct: window && last.totalTokens ? Math.round((100 * last.totalTokens) / window) : undefined,
         });
         break;
