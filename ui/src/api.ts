@@ -59,9 +59,9 @@ export const api = {
 };
 
 /** Follows a goal's events from the start; reconnects by itself (EventSource) and never repeats one. */
-export function followEvents(goal: string, onEvent: (e: MhEvent) => void, onStatus: (connected: boolean) => void): () => void {
-  let last = 0;
-  const es = new EventSource(`/events?goal=${encodeURIComponent(goal)}&since=0&token=${encodeURIComponent(current)}`);
+export function followEvents(goal: string, onEvent: (e: MhEvent) => void, onStatus: (connected: boolean) => void, since = 0): () => void {
+  let last = since;
+  const es = new EventSource(`/events?goal=${encodeURIComponent(goal)}&since=${since}&token=${encodeURIComponent(current)}`);
   es.onopen = () => onStatus(true);
   es.onerror = () => onStatus(false);
   es.onmessage = m => {

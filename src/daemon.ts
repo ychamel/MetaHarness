@@ -7,10 +7,11 @@ import { resolveName } from './fuzzy.ts';
 import { Hub } from './hub.ts';
 import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
-import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest } from './adapters/types.ts';
+import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest, Usage } from './adapters/types.ts';
 import { addSplit, addTokens, priceSplit, splitTotal, tokenCount, tokensOf, type Tokens } from './costs.ts';
 import { modelSettings, readSettingsFile, writeSettingsFile } from './settings.ts';
 import { Gatekeeper, type GatekeeperLimits, type Judgement } from './gatekeeper.ts';
+import { Assistant, assistantDecision } from './assistant.ts';
 import type { ApprovalMode } from './settings.ts';
 import { MCP_SERVER_NAME } from './mcp.ts';
 import { readOnlyCommand } from './readonly.ts';
@@ -249,6 +250,9 @@ type Spender = { harness: string; model: string; tokens?: Tokens; cost?: number;
 
 /** The name the gatekeeper's session goes by in the log; no teammate can be called this. */
 export const GATEKEEPER = '(gatekeeper)';
+/** The app's assistant: its name, and the event stream its conversation goes to. */
+export const ASSISTANT = '(assistant)';
+export const ASSISTANT_STREAM = 'assistant';
 
 const FINISHED: AgentState[] = ['ended', 'crashed'];
 
@@ -294,6 +298,8 @@ export class Daemon {
   readonly guardDir: string;
   private autoClean: boolean;
   readonly gatekeeperLimits?: GatekeeperLimits;
+  /** The app's assistant: answers the human's questions, reads only. */
+  readonly assistant: Assistant;
 
   constructor(o: DaemonOptions) {
     this.home = o.home;
@@ -312,6 +318,24 @@ export class Daemon {
     this.guardDir = installGuard(o.home);
     this.autoClean = o.autoClean ?? true;
     this.gatekeeperLimits = o.gatekeeperLimits;
+    let assistantRoute = { harness: '', model: '' };
+    let assistantSpent = 0;
+    this.assistant = new Assistant({
+      start: (brief, events) => {
+        assistantSpent = 0;
+        const role = this.config.roles.get(this.config.settings.assistant)!;
+        const place = { id: ASSISTANT_STREAM, dir: this.repo, sharedDir: join(this.home, 'assistant', 'shared') };
+        return this.startSideSession(ASSISTANT, role, place, brief, events, 'Use the MetaHarness tools.', r => {
+          assistantRoute = r;
+          this.assistantLog('assistant.started', { role: role.name, ...r });
+        });
+      },
+      log: (type, data) => this.assistantLog(type, data),
+      usage: u => {
+        const cost = this.sideCost(assistantRoute, u);
+        if (cost !== undefined && cost !== assistantSpent) this.assistantLog('assistant.usage', { costUsd: (assistantSpent = cost) });
+      },
+    });
     if (o.settings) Object.assign(this.config.settings, o.settings);
     this.settingsOverride = o.settings;
   }
@@ -796,42 +820,39 @@ export class Daemon {
     return this.approvalMode(rec) !== 'ask' && rec.role.name !== this.config.settings.gatekeeper && this.config.roles.has(this.config.settings.gatekeeper);
   }
 
-  /** Roles a team can spawn: all but the gatekeeper. */
+  /** Roles a team can spawn: all but the gatekeeper and the assistant. */
   teamRoles(): Role[] {
-    return [...this.config.roles.values()].filter(r => r.name !== this.config.settings.gatekeeper);
+    const { gatekeeper, assistant } = this.config.settings;
+    return [...this.config.roles.values()].filter(r => r.name !== gatekeeper && r.name !== assistant);
   }
+
+  /** Logs to the assistant's conversation, which the app follows as its own event stream. */
+  assistantLog(type: string, data: Record<string, unknown>): void {
+    const e = this.emit({ goal: ASSISTANT_STREAM, agent: ASSISTANT, type, data: { conv: this.assistant.conv, ...data } });
+    if (this.assistantFrom?.conv !== e.data.conv) this.assistantFrom = { conv: String(e.data.conv), seq: e.seq - 1 };
+  }
+
+  /** Where the current conversation starts in the assistant's stream, so the app reads only it. */
+  private assistantFrom?: { conv: string; seq: number };
 
   /** The goal's gatekeeper: a session of the gatekeeper role, started on its first request. */
   private gatekeeperFor(g: GoalRec): Gatekeeper {
     if (g.gatekeeper) return g.gatekeeper;
     const role = this.config.roles.get(this.config.settings.gatekeeper)!;
     const log = (type: string, data: Record<string, unknown>) => this.emit({ goal: g.id, agent: GATEKEEPER, type, data });
+    let route = { harness: role.harness, model: role.model };
     g.gatekeeper = new Gatekeeper(
       {
-        start: async (brief, events) => {
-          const picked = this.pickRoute(role);
-          if ('error' in picked) throw new Error(picked.error);
-          const { harness, model } = picked.route;
-          const token = randomBytes(16).toString('hex');
-          this.tokens.set(token, { goal: g.id, agent: GATEKEEPER });
-          log('gatekeeper.started', { role: role.name, harness, model, ...(picked.note ? { note: picked.note } : {}) });
-          const agentDir = join(this.home, 'goals', g.id, 'agents', GATEKEEPER);
-          mkdirSync(agentDir, { recursive: true });
-          return this.adapters[harness].start(
-            {
-              goal: g.id, agent: GATEKEEPER, role: { ...role, permissionMode: 'default', approvals: 'ask' }, model,
-              systemPrompt: role.instructions, brief, cwd: g.dir, sharedDir: g.sharedDir, gitDirs: [],
-              mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${token}` : '', hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${token}` : '',
-              agentDir, mcpServers: [], sharedCheckout: true, deniedCommands: deniedCommandPrefixes(true),
-              callTool: async () => 'The gatekeeper has no MetaHarness tools. Answer ALLOW, DENY or ASK.',
-            },
-            events,
-          );
-        },
+        start: (brief, events) =>
+          this.startSideSession(GATEKEEPER, role, g, brief, events, 'The gatekeeper has no MetaHarness tools. Answer ALLOW, DENY or ASK.', r => {
+            route = r;
+            log('gatekeeper.started', { role: role.name, ...r });
+          }),
         usage: (u, session) => {
-          if (u.costUsd === undefined) return;
-          g.gatekeeperCost.set(session, u.costUsd);
-          log('gatekeeper.usage', { ...u, total: this.gatekeeperCost(g) });
+          const cost = this.sideCost(route, u);
+          if (cost === undefined) return;
+          g.gatekeeperCost.set(session, cost);
+          log('gatekeeper.usage', { ...u, costUsd: cost, total: this.gatekeeperCost(g) });
         },
         log,
       },
@@ -840,20 +861,60 @@ export class Daemon {
     return g.gatekeeper;
   }
 
+  /**
+   * A session that isn't a teammate (the gatekeeper, the assistant): its role's first route that
+   * can run, in `place`, with its own token for MCP and hooks, asking before anything but reads.
+   */
+  private async startSideSession(
+    name: string, role: Role, place: { id: string; dir: string; sharedDir: string }, brief: string, events: SessionEvents, noTools: string,
+    started: (route: { harness: string; model: string; note?: string }) => void,
+  ): Promise<Session> {
+    const picked = this.pickRoute(role);
+    if ('error' in picked) throw new Error(picked.error);
+    const { harness, model } = picked.route;
+    const token = randomBytes(16).toString('hex');
+    this.tokens.set(token, { goal: place.id, agent: name });
+    started({ harness, model, ...(picked.note ? { note: picked.note } : {}) });
+    const agentDir = join(this.home, place.id === ASSISTANT_STREAM ? 'assistant' : join('goals', place.id, 'agents', name));
+    mkdirSync(agentDir, { recursive: true });
+    mkdirSync(place.sharedDir, { recursive: true });
+    return this.adapters[harness].start(
+      {
+        goal: place.id, agent: name, role: { ...role, permissionMode: 'default', approvals: 'ask' }, model,
+        systemPrompt: role.instructions, brief, cwd: place.dir, sharedDir: place.sharedDir, gitDirs: [],
+        mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${token}` : '', hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${token}` : '',
+        agentDir, mcpServers: [], sharedCheckout: true, deniedCommands: deniedCommandPrefixes(true),
+        callTool: async () => noTools,
+      },
+      events,
+    );
+  }
+
+  /** A side session's spend so far: what its harness reports, else its tokens at the settings' prices. */
+  private sideCost(route: { harness: string; model: string }, u: Usage): number | undefined {
+    if (u.costUsd !== undefined) return u.costUsd;
+    const prices = modelSettings(this.config.settings, route.harness, route.model).prices;
+    return prices ? splitTotal(priceSplit(tokensOf(u), prices)) : undefined;
+  }
+
   private gatekeeperCost(g: GoalRec): number {
     return [...g.gatekeeperCost.values()].reduce((a, b) => a + b, 0);
   }
 
-  /** The adapter a session runs on, teammate or gatekeeper. */
+  /** The adapter a session runs on: a teammate's, or the gatekeeper's or assistant's role's first runnable route. */
   adapterFor(goal: string, agent: string): HarnessAdapter | undefined {
-    if (agent !== GATEKEEPER) return this.agent(goal, agent)?.adapter;
-    const r = this.pickRoute(this.config.roles.get(this.config.settings.gatekeeper) ?? ({} as Role));
-    return 'error' in r ? undefined : this.adapters[r.route.harness];
+    const side = agent === GATEKEEPER ? this.config.settings.gatekeeper : agent === ASSISTANT ? this.config.settings.assistant : undefined;
+    if (!side) return this.agent(goal, agent)?.adapter;
+    const role = this.config.roles.get(side);
+    const r = role && this.pickRoute(role);
+    return !r || 'error' in r ? undefined : this.adapters[r.route.harness];
   }
 
   /** What a tool call by a session that isn't a teammate (the gatekeeper) may do. */
   outsiderDecision(agent: string, t: ToolRequest): ApprovalDecision {
-    return agent === GATEKEEPER ? Gatekeeper.decide(t) : { allow: false, message: 'MetaHarness does not know this agent.' };
+    if (agent === GATEKEEPER) return Gatekeeper.decide(t);
+    if (agent === ASSISTANT) return assistantDecision(t);
+    return { allow: false, message: 'MetaHarness does not know this agent.' };
   }
 
   /** Answers or dismisses an Inbox item. Approvals unblock the agent that asked. */
@@ -2365,14 +2426,55 @@ export class Daemon {
         this.reloadConfig();
         return { result: `Saved ${file}.`, file, config: this.configView() };
       }
-      case 'gatekeeper.create': {
-        // The built-in gatekeeper, written out so it can be edited like any role.
-        const r = this.config.roles.get(this.config.settings.gatekeeper)!;
+      case 'role.builtin': {
+        // A built-in role (the gatekeeper, the assistant), written out so it can be edited like any other.
+        const name = s('role') === 'assistant' ? this.config.settings.assistant : this.config.settings.gatekeeper;
+        const r = this.config.roles.get(name)!;
         const file = saveRole(scopesOf(this.configDirs), {
           scope: b.scope, name: r.name, harness: r.harness, model: r.model, fallback: r.fallback, goodAt: r.goodAt, instructions: r.instructions, helper: true,
         });
         this.reloadConfig();
         return { result: `Saved ${file}.`, file, config: this.configView() };
+      }
+      case 'role.update': {
+        // Some of a role's fields; the rest stay as its file has them.
+        const name = s('name');
+        const cur = this.configView().roles.filter(r => r.name === name).at(-1);
+        if (!cur) throw new Error(`There's no role file called ${name}. Built-in roles are written out with role.builtin first.`);
+        const changes = (b.changes && typeof b.changes === 'object' ? b.changes : {}) as Record<string, unknown>;
+        const file = saveRole(scopesOf(this.configDirs), { ...cur, ...changes, name: cur.name, scope: cur.scope, previous: { name: cur.name, scope: cur.scope } });
+        this.reloadConfig();
+        return { result: `Saved ${file}. Agents started from now on use it.`, file, config: this.configView() };
+      }
+      case 'assistant.ask': {
+        const text = s('text');
+        if (!text) throw new Error('assistant.ask needs "text".');
+        this.assistant.ask(text, s('context'));
+        return { conv: this.assistant.conv };
+      }
+      case 'assistant.reset':
+        await this.assistant.reset();
+        return { conv: this.assistant.conv };
+      case 'assistant.state': {
+        const role = this.config.roles.get(this.config.settings.assistant);
+        const r = role && this.pickRoute(role);
+        const from = this.assistantFrom?.conv === this.assistant.conv ? this.assistantFrom.seq : (this.store.since(ASSISTANT_STREAM).at(-1)?.seq ?? 0);
+        return { conv: this.assistant.conv, since: from, busy: this.assistant.busy(), role: role?.name ?? null, route: r && !('error' in r) ? r.route : null, error: r && 'error' in r ? r.error : null };
+      }
+      case 'assistant.apply':
+      case 'assistant.dismiss': {
+        const p = this.assistant.proposals.get(s('id') ?? '');
+        if (!p) throw new Error(`There's no proposal ${s('id')}.`);
+        if (p.status !== 'open') throw new Error(`That proposal was already ${p.status}.`);
+        if (b.cmd === 'assistant.dismiss') {
+          p.status = 'dismissed';
+          this.assistantLog('assistant.proposal_done', { id: p.id, status: p.status });
+          return { result: 'Dismissed.' };
+        }
+        const r = await this.command(p.command);
+        p.status = 'applied';
+        this.assistantLog('assistant.proposal_done', { id: p.id, status: p.status, result: r.result ?? null });
+        return r;
       }
       case 'harness.check': {
         const p = loadProfiles(this.configDirs).get(s('harness') ?? '');
@@ -2386,7 +2488,7 @@ export class Daemon {
         return await this.harnessModels(harness, b.refresh === true);
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, config.get, settings.save, gatekeeper.create, role.save, role.delete, workflow.save, workflow.delete, guide.save, mcp.save.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, guide.save, mcp.save.`);
     }
   }
 
@@ -2477,6 +2579,7 @@ export class Daemon {
 
   async close(): Promise<void> {
     clearInterval(this.pollTimer);
+    await this.assistant.stop();
     for (const g of this.goals.values()) {
       await g.gatekeeper?.stop();
       for (const a of g.agents.values()) {

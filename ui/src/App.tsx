@@ -7,6 +7,7 @@ import { ConfirmProvider, useToast } from './components/common.tsx';
 import { Home } from './pages/Home.tsx';
 import { GoalPage, type GoalTab } from './pages/GoalPage.tsx';
 import { Harnesses } from './pages/Harnesses.tsx';
+import { AssistantPanel } from './components/AssistantPanel.tsx';
 import { Settings } from './pages/Settings.tsx';
 import { Roles } from './pages/Roles.tsx';
 import { Workflows } from './pages/Workflows.tsx';
@@ -57,6 +58,8 @@ function Shell() {
   const [place, setPlace] = useState<Place>(readHash);
   const [dialog, setDialog] = useState<{ kind: 'goal'; workflow?: string } | { kind: 'spawn'; parent?: string }>();
   const { toast, say } = useToast();
+  const [asking, setAsking] = useState(false);
+  const refreshGoal = useRef<() => Promise<void>>(undefined);
 
   // Back and forward move between places.
   useEffect(() => {
@@ -96,6 +99,7 @@ function Shell() {
   const onGoalPage = place.page === 'goal';
   const { snapshot, events, connected, error, refresh } = useGoal(token && !authFailed && onGoalPage ? goalId : undefined);
   const goal = snapshot?.goals.find(g => g.id === goalId);
+  refreshGoal.current = refresh;
 
   // A browser notification when an agent starts waiting on you, if you've allowed them.
   const needs = goals.reduce((n, g) => n + (g.needs ?? 0), 0);
@@ -147,6 +151,8 @@ function Shell() {
     async (body: Record<string, unknown>) => {
       const r = (await command(body)) as { config?: ConfigView } | undefined;
       if (r?.config) setConfig(r.config);
+      // Prices and cache lifetimes change what the goal page shows.
+      if (r?.config) void refreshGoal.current?.();
       return r?.config;
     },
     [command],
@@ -193,6 +199,7 @@ function Shell() {
         <RailButton icon={ICONS.home} label="Home" on={place.page === 'home'} badge={needs} onClick={() => go({ page: 'home', item: undefined })} />
         <RailButton icon={ICONS.goal} label="Goal" on={onGoalPage} dot={current?.status === 'running'} disabled={!goals.length} onClick={() => go({ page: 'goal', goal: goalId, item: undefined })} />
         <RailButton icon={ICONS.plus} label="New goal" onClick={() => setDialog({ kind: 'goal' })} />
+        <RailButton icon={ICONS.ask} label="Ask" on={asking} onClick={() => setAsking(a => !a)} />
         <div className="rail-sep" />
         <div className="rail-group">Setup</div>
         <RailButton icon={ICONS.roles} label="Roles" on={place.page === 'roles'} onClick={() => go({ page: 'roles', item: undefined })} />
@@ -242,9 +249,9 @@ function Shell() {
           <Settings
             config={config}
             onSave={saveConfig}
-            onGatekeeper={async (scope, exists) => {
-              const name = config?.settings.effective.gatekeeper ?? 'gatekeeper';
-              const next = exists ? config : await saveConfig({ cmd: 'gatekeeper.create', scope });
+            onBuiltinRole={async (which, scope, exists) => {
+              const name = config?.settings.effective[which] ?? which;
+              const next = exists ? config : await saveConfig({ cmd: 'role.builtin', role: which, scope });
               const r = next?.roles.find(x => x.name === name);
               if (r) go({ page: 'roles', item: `${r.scope}/${r.name}` });
             }}
@@ -268,6 +275,21 @@ function Shell() {
           }}
         />
       )}
+      <AssistantPanel
+        open={asking}
+        onClose={() => setAsking(false)}
+        onApplied={() => {
+          loadConfig();
+          void refresh();
+        }}
+        context={
+          onGoalPage && goal
+            ? `goal ${goal.id} ("${goal.request.split('\n')[0].slice(0, 60)}")${place.agent ? `, agent ${place.agent}` : ''}${place.tab ? `, its ${place.tab} tab` : ''}`
+            : place.page !== 'home' && place.page !== 'goal'
+              ? `the ${place.page} page${place.item ? ` (${place.item})` : ''}`
+              : undefined
+        }
+      />
       {toast}
     </div>
   );
@@ -300,6 +322,7 @@ const ICONS = {
     </>,
   ),
   plus: svg(<path d="M12 5v14M5 12h14" />),
+  ask: svg(<path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9 10h.01M12 10h.01M15 10h.01" />),
   roles: svg(
     <>
       <circle cx="9" cy="8" r="3.2" />

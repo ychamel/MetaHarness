@@ -89,10 +89,42 @@ export function loadConfig(dirs: string[]): Config {
       cfg.workflows.set(name, { name, goodAt: meta.good_at ?? '', body, file });
     }
   }
-  // Approvals need a judge even when nobody wrote one.
+  // Approvals need a judge, and the app an assistant, even when nobody wrote one.
   if (!cfg.roles.has(cfg.settings.gatekeeper)) cfg.roles.set(cfg.settings.gatekeeper, { ...BUILTIN_GATEKEEPER, name: cfg.settings.gatekeeper });
+  if (!cfg.roles.has(cfg.settings.assistant)) cfg.roles.set(cfg.settings.assistant, { ...BUILTIN_ASSISTANT, name: cfg.settings.assistant });
   return cfg;
 }
+
+export const ASSISTANT_INSTRUCTIONS = `You're the assistant in MetaHarness's web app. MetaHarness runs teams of AI coding agents
+from different harnesses (Claude Code, Codex, Antigravity and others) toward a goal the human
+sets: a lead spawns teammates, they message each other, share a folder, and ask the human for
+approvals and decisions. You answer the human's questions about their goals and help them set
+MetaHarness up.
+
+- Look things up with your MetaHarness tools before answering: goals, a goal's team and
+  outcome, its events (search them), an agent's brief and result, shared files, costs, and the
+  configuration. The guide tool has the user guide for setup questions.
+- You only read. To change the setup (a role's model or backups, prices, approvals, a
+  workflow), call propose: the human sees the change and applies it with one click. Never
+  claim you changed something.
+- You can't message or steer the team.
+- Be short and specific: name agents, files and numbers. Say where you found it.`;
+
+/** The app's assistant when the configuration has no role by that name: Codex's luna, with backups. */
+const BUILTIN_ASSISTANT: Role = {
+  name: 'assistant',
+  harness: 'codex',
+  model: 'gpt-6-luna',
+  fallback: ['claude-code/haiku', 'antigravity/gemini-3.8-flash-high'],
+  goodAt: "answering the human's questions about runs, and helping with setup",
+  instructions: ASSISTANT_INSTRUCTIONS,
+  helper: true,
+  allow: [],
+  autoApprove: 'read-only',
+  mcp: [],
+  worktree: false,
+  file: '(built in)',
+};
 
 export const GATEKEEPER_INSTRUCTIONS = `You decide whether commands from a team of AI coding agents may run, so the human only sees
 the ones that need them. Each request names the agent, its task, where it works and the command.

@@ -35,6 +35,8 @@ export interface Settings {
   approvals: ApprovalMode;
   /** The role that judges approvals. */
   gatekeeper: string;
+  /** The role that answers the human's questions in the app. */
+  assistant: string;
   /** Tell an agent's spawner when its prompt cache is about to expire. */
   cacheReminders: boolean;
   /** How long before expiry the reminder goes out, in seconds. */
@@ -50,6 +52,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   approvals: 'gatekeeper',
   gatekeeper: 'gatekeeper',
+  assistant: 'assistant',
   cacheReminders: true,
   cacheRemindSec: 60,
   cacheRemindMinTokens: 30_000,
@@ -97,6 +100,7 @@ function readModel(v: unknown): ModelSettings {
 function apply(s: Settings, raw: Record<string, unknown>): void {
   if (typeof raw.approvals === 'string' && APPROVAL_MODES.includes(raw.approvals as ApprovalMode)) s.approvals = raw.approvals as ApprovalMode;
   if (typeof raw.gatekeeper === 'string' && raw.gatekeeper.trim()) s.gatekeeper = raw.gatekeeper.trim();
+  if (typeof raw.assistant === 'string' && raw.assistant.trim()) s.assistant = raw.assistant.trim();
   if (typeof raw.cacheReminders === 'boolean') s.cacheReminders = raw.cacheReminders;
   for (const k of ['cacheRemindSec', 'cacheRemindMinTokens', 'defaultCacheMinutes'] as const) if (num(raw[k]) !== undefined) s[k] = num(raw[k])!;
   if (raw.models && typeof raw.models === 'object') {

@@ -661,3 +661,26 @@ details.advanced > summary { cursor: pointer; font-size: 12.5px; color: var(--te
 .ok-text { color: var(--done); }
 .add-model { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .add-model input { width: 260px; }
+
+/* ---------- assistant ---------- */
+
+.assistant {
+  position: fixed; z-index: 40; top: 0; right: 0; bottom: 0; width: min(460px, 100vw); display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow);
+}
+.assistant-head { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.assistant-body { flex: 1; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.assistant-empty { display: grid; gap: 10px; }
+.suggestions { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.suggestions .btn { text-align: left; white-space: normal; }
+.bubble { padding: 8px 11px; border-radius: 10px; background: var(--panel-2); font-size: 13.5px; max-width: 100%; overflow-wrap: anywhere; }
+.bubble.you { align-self: flex-end; background: var(--accent-soft); white-space: pre-wrap; max-width: 85%; }
+.tool-line { display: flex; gap: 5px; min-width: 0; padding-left: 4px; white-space: nowrap; }
+.tool-line .ellipsis { flex: 1; min-width: 0; }
+.proposal { border: 1px solid var(--accent); border-radius: 10px; padding: 9px 11px; display: grid; gap: 6px; font-size: 13.5px; }
+.proposal-head { font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); }
+.proposal .actions { display: flex; gap: 6px; }
+.thinking { padding-left: 4px; }
+.assistant-input { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px; border-top: 1px solid var(--line); }
+.assistant-input textarea { flex: 1; resize: none; }
+@media (max-width: 720px) { .assistant { bottom: 56px; } }

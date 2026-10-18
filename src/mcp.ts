@@ -2,7 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import type { Daemon } from './daemon.ts';
+import { ASSISTANT, type Daemon } from './daemon.ts';
+import { buildAssistantServer } from './assistanttools.ts';
 import { TOOL_DOCS, TOOL_NAMES } from './hub.ts';
 
 /** The name harnesses see us under; Claude Code calls our tools mcp__metaharness__<tool>. */
@@ -89,7 +90,7 @@ export async function handleMcp(d: Daemon, token: string, req: IncomingMessage, 
     res.writeHead(405, { allow: 'POST' }).end();
     return;
   }
-  const server = buildServer(d, who.goal, who.agent);
+  const server = who.agent === ASSISTANT ? buildAssistantServer(d) : buildServer(d, who.goal, who.agent);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on('close', () => {
     void transport.close();

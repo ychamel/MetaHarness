@@ -242,6 +242,7 @@ export type ApprovalMode = 'ask' | 'gatekeeper' | 'harness';
 export interface Settings {
   approvals: ApprovalMode;
   gatekeeper: string;
+  assistant: string;
   cacheReminders: boolean;
   cacheRemindSec: number;
   cacheRemindMinTokens: number;

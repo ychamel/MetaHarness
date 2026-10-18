@@ -12,8 +12,8 @@ const MODES: [ApprovalMode, string, string][] = [
 ];
 
 interface Props extends Pick<SetupProps, 'config' | 'onSave'> {
-  /** Opens the gatekeeper role in Roles, writing out the built-in one first if there's no file. */
-  onGatekeeper: (scope: Scope, exists: boolean) => void;
+  /** Opens the gatekeeper's or assistant's role in Roles, writing out the built-in one first if there's no file. */
+  onBuiltinRole: (which: 'gatekeeper' | 'assistant', scope: Scope, exists: boolean) => void;
 }
 
 /** How MetaHarness behaves: approvals and prompt-cache reminders (settings.json). */
@@ -22,10 +22,10 @@ export function Settings({ config, ...p }: Props) {
   return <SettingsForm config={config} {...p} />;
 }
 
-function SettingsForm({ config, onSave, onGatekeeper }: Props & { config: ConfigView }) {
+function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: ConfigView }) {
   const eff = config.settings.effective;
   const [scope, setScope] = useState<Scope>(config.scopes.some(s => s.scope === 'repo') ? 'repo' : 'personal');
-  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes }), [eff]);
+  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes }), [eff]);
   const { draft, set, dirty, revert } = useDraft<Draft>(saved);
   const [busy, setBusy] = useState(false);
   const from = (k: keyof Draft) => [...config.settings.files].reverse().find(f => f.values[k] !== undefined)?.scope;
@@ -33,7 +33,6 @@ function SettingsForm({ config, onSave, onGatekeeper }: Props & { config: Config
     const s = from(k);
     return s ? `from ${s === 'repo' ? 'this repository' : 'your personal'} settings` : 'the default';
   };
-  const gk = config.roles.find(r => r.name === draft.gatekeeper);
 
   const save = async () => {
     setBusy(true);
@@ -75,25 +74,27 @@ function SettingsForm({ config, onSave, onGatekeeper }: Props & { config: Config
                 Either way, MetaHarness itself still refuses pushes and history rewrites, runs read-only commands without asking, and lets each role’s <i>allow</i> list through. A role can choose its own mode.
               </div>
               {draft.approvals !== 'ask' && (
-                <div className="grid-2">
-                  <Field label="Gatekeeper role" hint={gk ? `${gk.harness} · ${gk.model || 'its default model'}${gk.fallback.length ? `, backups ${gk.fallback.join(', ')}` : ''}` : 'Built in: Claude haiku, with Codex and Antigravity backups.'}>
-                    <select value={draft.gatekeeper} onChange={e => set('gatekeeper', e.target.value)}>
-                      {!config.roles.some(r => r.name === draft.gatekeeper) && <option value={draft.gatekeeper}>{draft.gatekeeper} (built in)</option>}
-                      {config.roles.map(r => (
-                        <option key={`${r.scope}/${r.name}`} value={r.name}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <div className="field">
-                    <span className="field-label">&nbsp;</span>
-                    <button className="btn small" onClick={() => onGatekeeper(scope, !!gk)}>
-                      {gk ? 'Edit the gatekeeper role' : 'Make a gatekeeper role to change its model or rules'}
-                    </button>
-                  </div>
-                </div>
+                <RolePick
+                  config={config}
+                  label="Gatekeeper role"
+                  value={draft.gatekeeper}
+                  builtIn="Built in: Claude haiku, with Codex and Antigravity backups."
+                  onChange={v => set('gatekeeper', v)}
+                  onEdit={exists => onBuiltinRole('gatekeeper', scope, exists)}
+                />
               )}
+            </Section>
+
+            <Section title="Assistant" hint={where('assistant')}>
+              <div className="hint">The Ask panel answers questions about your goals and helps with setup. It only reads; changes it suggests wait for you to apply them. Each conversation starts fresh.</div>
+              <RolePick
+                config={config}
+                label="Assistant role"
+                value={draft.assistant}
+                builtIn="Built in: Codex gpt-6-luna, with Claude haiku and Antigravity backups."
+                onChange={v => set('assistant', v)}
+                onEdit={exists => onBuiltinRole('assistant', scope, exists)}
+              />
             </Section>
 
             <Section title="Prompt caches" hint={where('cacheReminders')}>
@@ -118,6 +119,31 @@ function SettingsForm({ config, onSave, onGatekeeper }: Props & { config: Config
           </div>
           <EditorFooter dirty={dirty} isNew={false} saving={busy} onSave={() => void save()} onRevert={revert} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Which role fills a built-in job (gatekeeper, assistant), and a way to edit it. */
+function RolePick({ config, label, value, builtIn, onChange, onEdit }: { config: ConfigView; label: string; value: string; builtIn: string; onChange: (v: string) => void; onEdit: (exists: boolean) => void }) {
+  const role = config.roles.find(r => r.name === value);
+  return (
+    <div className="grid-2">
+      <Field label={label} hint={role ? `${role.harness} · ${role.model || 'its default model'}${role.fallback.length ? `, backups ${role.fallback.join(', ')}` : ''}` : builtIn}>
+        <select value={value} onChange={e => onChange(e.target.value)}>
+          {!role && <option value={value}>{value} (built in)</option>}
+          {config.roles.map(r => (
+            <option key={`${r.scope}/${r.name}`} value={r.name}>
+              {r.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <div className="field">
+        <span className="field-label">&nbsp;</span>
+        <button className="btn small" onClick={() => onEdit(!!role)}>
+          {role ? `Edit the ${value} role` : `Make a ${value} role to choose its model`}
+        </button>
       </div>
     </div>
   );

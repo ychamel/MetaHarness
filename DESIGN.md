@@ -610,6 +610,23 @@ Message any agent, the lead, or everyone (urgent messages interrupt) · pause, r
 agent or the whole goal · spawn an agent yourself · take over as lead · approve or deny with a
 reply · open an agent's session in its native harness.
 
+### The assistant
+
+An **Ask** panel, open from anywhere in the app, answers questions about goals and setup ("where
+did the money go?", "what did the reviewer find?", "how do I add a harness?"). It's a session
+of the **assistant role**: built in on Codex `gpt-6-luna` with Claude haiku and Antigravity
+backups, or a `roles/assistant.md` the Settings page writes out to change it. It reads only:
+its MetaHarness tools list goals, show a goal's team and outcome, search its events, read an
+agent's brief and the shared files, give costs and the configuration, and search the user
+guide; its harness may read files and run read-only commands, nothing else. A setup change it
+suggests (`propose`: a role's fields, settings, a workflow, the guidelines, an MCP server) shows
+in the panel with Apply and Dismiss; nothing changes until the human applies it. It can't
+reach the team. Each conversation is a fresh session: "New conversation", or a daemon
+restart, starts over with nothing carried across. Each question carries what the human is
+looking at (the goal, agent and tab). Its conversation is its own event stream (`assistant`).
+Checked live on luna against the Evolution run's log: about 30 seconds for a question that
+took seven lookups.
+
 ### Build order
 
 1. **Find and talk to any agent:** team tree, agent detail, messaging and controls, Inbox.

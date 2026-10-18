@@ -232,8 +232,11 @@ Findings from the run:
       per role), checked live on haiku; costs by kind of token with a Costs tab; prompt-cache
       clocks and reminders; Harnesses and Settings pages (`settings.json`, `settings.save`,
       `harness.check`, `gatekeeper.create`). Checked in headless Chrome on a scripted team
-- [ ] A user-facing assistant in the app (questions about the run, help with setup): to
-      brainstorm
+- [x] **The assistant** (2026-10-18): Ask panel; assistant role (built in on Codex luna with
+      backups, editable); read-only MCP tools (goals, goal, events, agent, files, costs,
+      config, guide) and propose/apply for setup changes; fresh session per conversation.
+      Checked live on luna against a copy of the Evolution run's log, and in headless Chrome
+- [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,
       replay, search
