@@ -317,9 +317,19 @@ there are new messages or file changes, so an agent nobody is messaging sees not
   --hard`, `--amend`, `branch -f`, rebasing a shared branch). A `pre-push` hook refuses every
   push: agents commit, the human pushes. The repository's own hooks still run (each hook hands
   on to `core.hooksPath` or `.git/hooks`). Before anything runs, `git push`, deleting branches,
-  tags or refs, and `git worktree remove/prune` are refused with an explanation, and Claude
-  Code gets them as `--disallowedTools` so a role's allow list can't open them. Needs git 2.28;
-  the daemon warns otherwise.
+  tags or refs, dropping stashes and `git worktree remove/prune` are refused with an
+  explanation, and Claude Code gets them as `--disallowedTools` so a role's allow list can't
+  open them. Needs git 2.28; the daemon warns otherwise.
+- **No discarding in the shared checkout.** `git reset --hard` resets the files before it moves
+  the branch, so the hook refusing the move comes too late for them (seen live: the files were
+  reset, the branch wasn't). In the human's checkout, where uncommitted changes may be a
+  teammate's, commands that discard them are refused before they run: `reset --hard/--keep/
+  --merge`, `checkout --`/`.`/`-f`, `restore` (but `--staged`), `clean` (but `-n`), `switch -f`.
+  In an agent's own worktree they're allowed. Commands Codex wraps in `bash -lc '…'` are read
+  inside. Codex in the shared checkout runs with `approvalPolicy: untrusted`, so every command
+  that isn't plainly safe comes to the policy (its own rule files can't be set per session,
+  and `~/.codex/rules` would change the human's own Codex); in a worktree its sandbox is
+  enough. Harnesses that only learn "declined" (ACP, Codex) get the reason as a notice.
 - Agents integrate with git themselves, like a human team would. The lead merges worktree
   branches into the checked-out branch, and resolving conflicts is ordinary agent work. When the
   lead finishes, the human's note says how many commits the branch gained, what's uncommitted,

@@ -159,13 +159,17 @@ Findings from the run:
       the agent whose tool call named the file in the last two minutes; the owner is the first
       writer, and a write by anyone else is a clash both are told about. Versions, owners and
       open conflicts survive a restart
-- [ ] Not yet run live: the git guard on each harness (does Codex's `shell_environment_policy.set`
-      reach its commands? does Antigravity's shell inherit the environment?), dependency
-      copies, conflict events, shared-folder notices and clashes, cleanup at a real goal's end
-      (all covered by scripted tests)
-- [ ] Codex runs commands in its sandbox without asking, so `git clean`, `git restore .` and
-      the like (which lose uncommitted work but no commits) reach no policy of ours; consider
-      Codex's own exec-policy rules
+- [x] **Git guard live on all four harnesses** (2026-10-18, scratch repository, cheap models):
+      each printed MetaHarness's `core.hooksPath`, committed in the checkout, and had `git reset
+      --hard HEAD~1` refused before it ran (Claude Code by its own deny list, Antigravity by its
+      hook, Codex and OpenCode by the policy), leaving the checkout clean. The first run showed
+      `reset --hard` resets the files before the hook refuses the branch move, so commands that
+      discard uncommitted changes are now refused up front in the shared checkout; Codex there
+      runs with `approvalPolicy: untrusted` (its rule files can't be set per session), gets the
+      checkout's `.git` as a writable root so it can commit at all, and has its `bash -lc '…'`
+      commands read inside. Refusal reasons reach ACP and Codex agents as notices
+- [ ] Not yet run live: dependency copies, conflict events, shared-folder notices and clashes,
+      cleanup at a real goal's end (all covered by scripted tests)
 - [x] Resume agents after a daemon restart (`src/recover.ts`, `Daemon.recover`): goals whose
       lead hasn't finished are rebuilt from the log; agents cut off mid-turn resume their native
       sessions with a restart note, their team's state and missed messages; done or idle agents
@@ -178,7 +182,8 @@ Findings from the run:
       The fast-forward merge in the checkout was named after the lead
 - [ ] Warm pool for quick-helper roles
 - [ ] Idle nudges, and detecting two agents waiting on each other
-- [ ] Comparison run: ~10 real tasks, Opus alone vs the team (quality, cost, time, interventions)
+- [ ] Test each workflow on its own, once more workflows and roles exist (quality, cost, time,
+      interventions). A single-model baseline comparison is dropped for now (2026-10-18)
 
 ## Milestone 2: UI
 

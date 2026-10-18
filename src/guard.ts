@@ -109,13 +109,21 @@ export function guardProblem(): string | undefined {
   }
 }
 
+const DISCARDS =
+  "That would throw away uncommitted changes in the human's checkout, which may be a teammate's work. " +
+  'Leave other changes alone; to undo your own, edit the files back, or commit and then git revert.';
+
 /**
  * Shell commands MetaHarness refuses for agents before they run, with the reason: what the hooks
- * would refuse anyway, said up front, plus removing worktrees, which no hook sees.
+ * would refuse anyway, said up front; removing worktrees, which no hook sees; and, in the human's
+ * shared checkout, commands that discard uncommitted changes. (`git reset --hard` resets the files
+ * before it moves the branch, so the hook refusing the move comes too late for them.)
  */
-export function refusedGitCommand(command: string): string | undefined {
+export function refusedGitCommand(command: string, o: { sharedCheckout?: boolean } = {}): string | undefined {
   for (const segment of command.split(/&&|\|\||[;|\n]/)) {
-    const words = segment.trim().split(/\s+/);
+    // A shell running a script (`bash -lc 'git …'`, as Codex sends commands) counts as the script.
+    const script = segment.trim().replace(/^(?:\S*\/)?(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*-\w*c\w*\s+/, '');
+    const words = script.split(/\s+/).map(w => w.replace(/^['"]+|['"]+$/g, '')).filter(Boolean);
     // git as the command: after any VAR=value assignments and wrappers like env, sudo or command.
     let at = 0;
     while (at < words.length && (/^\w+=/.test(words[at]) || ['env', 'sudo', 'command', 'exec', 'nohup', 'time'].includes(words[at]))) at++;
@@ -134,12 +142,23 @@ export function refusedGitCommand(command: string): string | undefined {
     if (sub === 'worktree' && ['remove', 'prune'].includes(rest[0] ?? '')) {
       return "Agents don't remove worktrees: MetaHarness removes them itself when the goal ends.";
     }
+    // Every worktree shares the stash.
+    if (sub === 'stash' && ['drop', 'clear'].includes(rest[0] ?? '')) return "Agents don't drop stashes: every worktree shares them. Ask the human.";
+    if (!o.sharedCheckout) continue;
+    const has = (...flags: string[]) => rest.some(w => flags.includes(w));
+    if (sub === 'reset' && has('--hard', '--keep', '--merge')) return DISCARDS;
+    if (sub === 'checkout' && (has('--', '.', '-f', '--force') || rest.some(w => /^-[a-zA-Z]*f/.test(w)))) return DISCARDS;
+    if (sub === 'restore' && !(has('--staged', '-S') && !has('--worktree', '-W'))) return DISCARDS;
+    if (sub === 'clean' && !has('-n', '--dry-run')) return DISCARDS;
+    if (sub === 'switch' && has('-f', '--force', '--discard-changes')) return DISCARDS;
   }
   return undefined;
 }
 
-/** For Claude Code's own deny list, so a role's allow list can't open these up. */
-export const CLAUDE_DISALLOWED = [
-  'Bash(git push:*)', 'Bash(git branch -d:*)', 'Bash(git branch -D:*)', 'Bash(git branch --delete:*)',
-  'Bash(git worktree remove:*)', 'Bash(git worktree prune:*)', 'Bash(git update-ref -d:*)', 'Bash(git tag -d:*)',
-];
+/** Command prefixes for a harness's own deny list (Claude Code), so a role's allow list can't open them. */
+export function deniedCommandPrefixes(sharedCheckout: boolean): string[] {
+  const always = ['git push', 'git branch -d', 'git branch -D', 'git branch --delete', 'git worktree remove', 'git worktree prune', 'git update-ref -d', 'git tag -d', 'git stash drop', 'git stash clear'];
+  const checkout = ['git reset --hard', 'git reset --keep', 'git reset --merge', 'git checkout --', 'git checkout .', 'git checkout -f', 'git restore', 'git clean', 'git switch -f', 'git switch --discard-changes'];
+  return sharedCheckout ? [...always, ...checkout] : always;
+}
+

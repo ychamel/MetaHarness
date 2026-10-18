@@ -58,6 +58,10 @@ export interface SessionSpec {
   callTool: ToolCaller;
   /** Environment for the commands the agent runs: the git guard (src/guard.ts). */
   env?: Record<string, string>;
+  /** It works in the human's checkout, shared with teammates, rather than its own worktree. */
+  sharedCheckout?: boolean;
+  /** Command prefixes it may never run, for the harness's own deny list (src/guard.ts). */
+  deniedCommands?: string[];
 }
 
 /** Callbacks an adapter uses to report what its harness is doing. */

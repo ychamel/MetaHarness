@@ -153,6 +153,22 @@ test('commands that would push or delete branches and worktrees are refused befo
   for (const c of ['git status', 'git branch', 'git branch -v', 'git branch new-thing', 'git commit -m "push the button"', 'git log --oneline', 'git worktree list', 'echo git push']) {
     assert.equal(refusedGitCommand(c), undefined, c);
   }
+  // In the human's checkout, which teammates share, discarding uncommitted changes is refused too;
+  // in an agent's own worktree it's its own business.
+  const discards = ['git reset --hard', 'git reset --hard HEAD~1', 'git checkout -- src/a.ts', 'git checkout .', 'git checkout -f main', 'git restore src/a.ts', 'git restore --staged --worktree a', 'git clean -fd', 'git switch --discard-changes main'];
+  for (const c of discards) {
+    assert.match(refusedGitCommand(c, { sharedCheckout: true }) ?? '', /uncommitted changes in the human's checkout/, c);
+    assert.equal(refusedGitCommand(c, { sharedCheckout: false }), undefined, c);
+  }
+  for (const c of ['git reset', 'git reset HEAD a.ts', 'git restore --staged a.ts', 'git clean -n', 'git checkout -b feature', 'git switch main', 'git stash', 'git stash pop']) {
+    assert.equal(refusedGitCommand(c, { sharedCheckout: true }), undefined, c);
+  }
+  assert.ok(refusedGitCommand('git stash drop'), 'every worktree shares the stash');
+  // Codex sends commands wrapped in a shell.
+  assert.ok(refusedGitCommand(`/bin/bash -lc 'git reset --hard HEAD~1'`, { sharedCheckout: true }));
+  assert.ok(refusedGitCommand(`/bin/bash -lc 'npm test && git push origin main'`));
+  assert.ok(refusedGitCommand(`sh -c "git branch -D old"`));
+  assert.equal(refusedGitCommand(`/bin/bash -lc 'git add c.txt && git commit -m "Add c"'`, { sharedCheckout: true }), undefined);
 });
 
 test('merge conflicts become events, and an agent that calls done mid-conflict is told', async () => {

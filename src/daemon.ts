@@ -13,7 +13,7 @@ import { readOnlyCommand } from './readonly.ts';
 import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } from './recover.ts';
 import { SharedFolder } from './shared.ts';
 import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
-import { guardEnv, installGuard, refusedGitCommand } from './guard.ts';
+import { deniedCommandPrefixes, guardEnv, installGuard, refusedGitCommand } from './guard.ts';
 
 export interface InboxEntry {
   id: string;
@@ -436,8 +436,11 @@ export class Daemon {
           cwd: rec.cwd, sharedDir: g.sharedDir, mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${rec.token}` : '',
           hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${rec.token}` : '', agentDir: this.agentDir(rec),
           mcpServers: rec.role.mcp.map(name => ({ name, def: this.config.mcp.get(name) })),
-          gitDirs: rec.worktree && g.git ? [g.git.commonDir, rec.worktree.gitDir] : [],
+          // Committing writes to the shared .git (and a worktree's own git directory).
+          gitDirs: !g.git || rec.quick ? [] : rec.worktree ? [g.git.commonDir, rec.worktree.gitDir] : [g.git.commonDir],
           env: g.git ? guardEnv(this.guardDir, rec.worktree?.branch, g.git.repo) : undefined,
+          sharedCheckout: this.sharedCheckout(rec),
+          deniedCommands: deniedCommandPrefixes(this.sharedCheckout(rec)),
           callTool: (tool, args) => this.hub.call(rec.goal, rec.name, tool, args),
         },
         this.sessionEvents(rec, gen),
@@ -641,8 +644,10 @@ export class Daemon {
       decide: async t => {
         if (!live()) return { allow: false, message: 'This session was replaced.' };
         const verdict = this.policyVerdict(rec, t);
-        if (verdict !== 'ask') return { allow: verdict.allow, message: verdict.reason };
-        return this.requestApproval(rec, t.tool, t.detail);
+        const d = verdict !== 'ask' ? { allow: verdict.allow, message: verdict.reason } : await this.requestApproval(rec, t.tool, t.detail);
+        // These harnesses (ACP, Codex) only learn "declined", so the reason follows as a notice.
+        if (!d.allow && d.message && live()) this.notice(rec, `MetaHarness refused ${t.tool}: ${t.detail.replace(/\s+/g, ' ').slice(0, 160)}. ${d.message}`);
+        return d;
       },
       pull: () => (live() ? this.takeForTurn(rec, 'tool_result') : undefined),
     };
@@ -655,7 +660,7 @@ export class Daemon {
 
   /** Puts a permission request in the human's Inbox and resolves when they decide. */
   requestApproval(rec: AgentRec, tool: string, detail: string): Promise<ApprovalDecision> {
-    const refused = tool === 'Bash' ? refusedGitCommand(detail) : undefined;
+    const refused = tool === 'Bash' ? refusedGitCommand(detail, { sharedCheckout: this.sharedCheckout(rec) }) : undefined;
     if (refused) {
       this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.refused', data: { tool, detail: detail.slice(0, 2000), why: refused } });
       return Promise.resolve({ allow: false, message: refused });
@@ -1171,6 +1176,11 @@ export class Daemon {
 
   /* ---------------- hooks (design §16: the middle rung of each ladder) ---------------- */
 
+  /** Whether an agent works in the human's checkout, which teammates share, rather than its own worktree. */
+  private sharedCheckout(rec: AgentRec): boolean {
+    return !rec.worktree && !!this.goals.get(rec.goal)?.git;
+  }
+
   /** A directory of the agent's own, outside its worktree, for harness config such as hooks. */
   agentDir(rec: AgentRec): string {
     const dir = join(this.home, 'goals', rec.goal, 'agents', rec.name);
@@ -1223,7 +1233,7 @@ export class Daemon {
         return inside(rec.cwd) || inside(g.sharedDir) ? { allow: true } : 'ask';
       }
       case 'shell': {
-        const refused = refusedGitCommand(t.detail);
+        const refused = refusedGitCommand(t.detail, { sharedCheckout: this.sharedCheckout(rec) });
         if (refused) return { allow: false, reason: refused };
         return roleAllows(rec.role, t.detail) ? { allow: true } : 'ask';
       }

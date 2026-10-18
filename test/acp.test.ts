@@ -93,6 +93,8 @@ test('ACP: permission requests go through the approval policy', async t => {
   const said = await until(d, goal, e => e.type === 'agent.text' && /^push:/.test(String(e.data.text)), 'the answers');
   assert.equal(said.data.text, 'push:reject status:once edit:once', 'push refused, read-only command and an edit in its folder allowed, never "always"');
   assert.ok(d.store.since(goal).some(e => e.type === 'approval.refused' && /git push/.test(String(e.data.detail))));
+  // ACP has no room for the reason, so it follows as a notice: the agent's next prompt.
+  await until(d, goal, e => e.type === 'agent.text' && /Got: \[MetaHarness\] MetaHarness refused Bash: git push origin main\. Agents commit but don't push/.test(String(e.data.text)), 'the reason');
   assert.equal(d.humanInbox.filter(i => i.kind === 'approval').length, 0, 'nothing needed the human');
 });
 

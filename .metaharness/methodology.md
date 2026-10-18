@@ -24,6 +24,9 @@ You're part of a team of AI agents from different providers working toward one g
 - Commit, but don't push: the human pushes. Shared branches only grow: don't delete branches or
   worktrees, or rewrite commits on a branch that isn't yours (git refuses it). MetaHarness
   removes merged branches and worktrees when the goal ends.
+- In the human's checkout, never discard uncommitted changes (`git reset --hard`, `git checkout
+  -- .`, `git restore`, `git clean`): they may be a teammate's. Undo your own by editing the
+  files back, or commit and `git revert`.
 - If a merge stops on conflicts, resolve them and commit, or abort it; don't call `done` with a
   merge half-way.
 - When a workflow says the human decides, `send` to human with `decision: true`, then `wait`

@@ -199,6 +199,7 @@ class CodexSession implements Session {
   private turnStarting: Promise<unknown> = Promise.resolve();
   private running = false;
   private stopped = false;
+  private fileChanges = new Map<string, string[]>();
 
   constructor(server: AppServer, spec: SessionSpec, ev: SessionEvents, price: PriceTable[string] | undefined, isolation: Record<string, unknown>) {
     this.server = server;
@@ -213,7 +214,9 @@ class CodexSession implements Session {
       ...(resume ? { threadId: resume } : {}),
       model: this.spec.model || null,
       cwd: this.spec.cwd,
-      approvalPolicy: 'on-request',
+      // In the human's shared checkout, every command that isn't plainly safe comes to
+      // MetaHarness's policy first; elsewhere the sandbox is enough.
+      approvalPolicy: this.spec.sharedCheckout ? 'untrusted' : 'on-request',
       sandbox: 'workspace-write',
       developerInstructions: this.spec.systemPrompt,
       config: {
@@ -313,6 +316,8 @@ class CodexSession implements Session {
       }
       case 'item/started':
         if (p.item?.type === 'commandExecution') this.ev.toolCall('Bash', String(p.item.command ?? '').slice(0, 160));
+        // Its paths, for when the change asks for approval.
+        else if (p.item?.type === 'fileChange') this.fileChanges.set(String(p.item.id), (p.item.changes ?? []).map((c: { path?: string }) => String(c.path ?? '')).filter(Boolean));
         break;
       case 'item/completed': {
         const it = p.item ?? {};
@@ -356,13 +361,18 @@ class CodexSession implements Session {
     switch (method) {
       case 'item/commandExecution/requestApproval':
       case 'execCommandApproval': {
-        const d = await this.ev.approval('Bash', String(p.command ?? p.reason ?? 'run a command'));
+        const command = Array.isArray(p.command) ? p.command.join(' ') : String(p.command ?? p.reason ?? 'run a command');
+        const d = await this.ev.decide({ kind: 'shell', tool: 'Bash', detail: command });
         this.server.respond(id, { decision: d.allow ? 'accept' : 'decline' });
         return;
       }
       case 'item/fileChange/requestApproval':
       case 'applyPatchApproval': {
-        const d = await this.ev.approval('Edit', String(p.reason ?? p.grantRoot ?? 'change files'));
+        // Writing outside its roots goes to the human; edits to known files go through the edit policy.
+        const paths = p.grantRoot ? [] : (this.fileChanges.get(String(p.itemId ?? '')) ?? []);
+        let d: { allow: boolean } = { allow: true };
+        for (const path of paths) if (d.allow) d = await this.ev.decide({ kind: 'edit', tool: 'Edit', detail: path, path });
+        if (!paths.length) d = await this.ev.approval('Edit', String(p.reason ?? p.grantRoot ?? 'change files'));
         this.server.respond(id, { decision: d.allow ? 'accept' : 'decline' });
         return;
       }
