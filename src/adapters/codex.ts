@@ -38,6 +38,8 @@ type Window = { usedPercent?: number; resetsAt?: number | null; windowDurationMi
 /**
  * A Codex rate-limit snapshot: a primary and a secondary window, each with the percent used and
  * a reset time in seconds. Updates can be sparse, so only what's present is reported.
+ * Only rateLimitReachedType means refused: past 100% of the plan's window, Codex carries on with
+ * the account's credits (seen live: agents kept working 35 minutes after a 100% snapshot).
  */
 export function codexRateLimit(r: any): RateLimitInfo | undefined {
   if (!r || typeof r !== 'object') return undefined;
@@ -45,8 +47,20 @@ export function codexRateLimit(r: any): RateLimitInfo | undefined {
   const top = windows.sort((a, b) => b.usedPercent! - a.usedPercent!)[0];
   if (!top && !r.rateLimitReachedType) return undefined;
   const mins = top?.windowDurationMins;
+  const over = (top?.usedPercent ?? 0) >= 100;
+  const credits = r.credits && typeof r.credits === 'object' ? (r.credits as { hasCredits?: boolean; unlimited?: boolean; balance?: string | null }) : undefined;
+  const note = r.rateLimitReachedType
+    ? `refused: ${String(r.rateLimitReachedType).replace(/_/g, ' ')}`
+    : over
+      ? credits?.unlimited
+        ? "past the plan's limit; credits are unlimited"
+        : credits?.hasCredits
+          ? `past the plan's limit, running on credits${credits.balance ? ` (balance ${credits.balance})` : ''}`
+          : "past the plan's limit"
+      : undefined;
   return {
-    status: r.rateLimitReachedType ? 'limited' : 'ok',
+    status: r.rateLimitReachedType ? 'limited' : over ? 'warning' : 'ok',
+    ...(note ? { note } : {}),
     usedPct: top?.usedPercent,
     resetsAt: top?.resetsAt ? top.resetsAt * 1000 : undefined,
     window: r.limitName ?? (mins ? (mins % 1440 === 0 ? `${mins / 1440}d` : mins % 60 === 0 ? `${mins / 60}h` : `${mins}m`) : undefined),

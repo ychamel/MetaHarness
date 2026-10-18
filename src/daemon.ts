@@ -195,6 +195,7 @@ export interface AccountRec {
   usedPct?: number;
   resetsAt?: number;
   window?: string;
+  note?: string;
   /** Agents (goal/name) already asked to write their notes in this window. */
   warned: Set<string>;
 }
@@ -1331,8 +1332,10 @@ export class Daemon {
     const prev = this.accounts.get(id);
     const a: AccountRec = prev ?? { id, status: 'ok', warned: new Set() };
     // Updates can be partial (a refused turn may say only "limited"), so keep what's known.
+    const statusChanged = a.status !== info.status;
     const changed =
-      a.status !== info.status ||
+      statusChanged ||
+      (info.note !== undefined && info.note !== a.note) ||
       (info.resetsAt !== undefined && info.resetsAt !== a.resetsAt) ||
       (info.usedPct !== undefined && Math.floor(info.usedPct / 5) !== Math.floor((a.usedPct ?? -5) / 5));
     a.status = info.status;
@@ -1343,11 +1346,13 @@ export class Daemon {
       a.resetsAt = info.resetsAt;
     }
     if (info.window !== undefined) a.window = info.window;
+    // A note lasts until the status changes or a new one comes.
+    if (info.note !== undefined || statusChanged) a.note = info.note;
     this.accounts.set(a.id, a);
     if (changed) {
       this.emit({
         goal: rec.goal, agent: rec.name, type: 'account.limit',
-        data: { account: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ? new Date(a.resetsAt).toISOString() : null, window: a.window ?? null },
+        data: { account: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ? new Date(a.resetsAt).toISOString() : null, window: a.window ?? null, note: a.note ?? null },
       });
     }
     const agents = this.agentsOn(a.id);
@@ -1779,6 +1784,7 @@ export class Daemon {
       this.accounts.set(id, {
         id, status: e.data.status as RateLimitInfo['status'], resetsAt, warned: new Set(),
         usedPct: typeof e.data.usedPct === 'number' ? e.data.usedPct : undefined, window: typeof e.data.window === 'string' ? e.data.window : undefined,
+        note: typeof e.data.note === 'string' ? e.data.note : undefined,
       });
     }
   }
@@ -1897,7 +1903,7 @@ export class Daemon {
       // What a client offers when starting a goal or spawning an agent.
       roles: [...this.config.roles.values()].map(r => ({ name: r.name, harness: r.harness, model: r.model, goodAt: r.goodAt, helper: r.helper, worktree: r.worktree })),
       workflows: [...this.config.workflows.values()].map(w => ({ name: w.name, goodAt: w.goodAt })),
-      accounts: [...this.accounts.values()].map(a => ({ id: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ?? null, window: a.window ?? null })),
+      accounts: [...this.accounts.values()].map(a => ({ id: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ?? null, window: a.window ?? null, note: a.note ?? null })),
       harnesses,
     };
   }

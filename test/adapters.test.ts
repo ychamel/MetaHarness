@@ -56,6 +56,10 @@ test('rate-limit reports from Claude Code and Codex become one shape', () => {
   assert.deepEqual(codexRateLimit(snap), { status: 'ok', usedPct: 85, resetsAt: 1_800_500_000_000, window: '7d' });
   assert.equal(codexRateLimit({ ...snap, rateLimitReachedType: 'rate_limit_reached' })?.status, 'limited');
   assert.equal(codexRateLimit({}), undefined, 'a sparse update with nothing in it says nothing');
+  // Past 100% Codex runs on credits: a warning, not a refusal.
+  const over = codexRateLimit({ primary: { usedPercent: 100, windowDurationMins: 300 }, credits: { hasCredits: true, unlimited: false, balance: '12.50' } });
+  assert.equal(over?.status, 'warning');
+  assert.match(over?.note ?? '', /running on credits \(balance 12\.50\)/);
 });
 
 test('a user profile can put a known transport on another binary and provider', async () => {

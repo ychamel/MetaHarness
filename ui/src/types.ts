@@ -67,7 +67,7 @@ export interface Snapshot {
   inbox: InboxItem[];
   roles: { name: string; harness: string; model: string; goodAt: string; helper: boolean; worktree: boolean }[];
   workflows: { name: string; goodAt: string }[];
-  accounts: { id: string; status: string; usedPct: number | null; resetsAt: number | null; window: string | null }[];
+  accounts: { id: string; status: string; usedPct: number | null; resetsAt: number | null; window: string | null; note?: string | null }[];
   harnesses: Record<string, Manifest>;
 }
 

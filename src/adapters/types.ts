@@ -30,6 +30,8 @@ export interface RateLimitInfo {
   resetsAt?: number;
   /** Which window, e.g. five_hour or seven_day. */
   window?: string;
+  /** Anything else the human should know, e.g. that the plan's limit is passed and credits are paying. */
+  note?: string;
 }
 
 export type ToolCaller = (tool: string, args: unknown) => Promise<string>;

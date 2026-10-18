@@ -160,7 +160,7 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
                     <i style={{ width: `${Math.min(100, a.usedPct)}%` }} />
                   </span>
                 )}
-                <span className="muted small">{[a.usedPct != null && `${a.usedPct}% used`, a.window, a.resetsAt && `resets ${clock(a.resetsAt)}`].filter(Boolean).join(' · ')}</span>
+                <span className="muted small">{[a.usedPct != null && `${a.usedPct}% used`, a.window, a.resetsAt && `resets ${clock(a.resetsAt)}`, a.note].filter(Boolean).join(' · ')}</span>
               </div>
             ))}
           </div>
