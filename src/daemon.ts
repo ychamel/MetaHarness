@@ -10,6 +10,7 @@ import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
 import type { ApprovalDecision, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest } from './adapters/types.ts';
 import { MCP_SERVER_NAME } from './mcp.ts';
 import { readOnlyCommand } from './readonly.ts';
+import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } from './recover.ts';
 
 export interface InboxEntry {
   id: string;
@@ -49,6 +50,8 @@ export interface AgentRec {
   lastText: string;
   adapter: HarnessAdapter;
   session?: Session;
+  /** A native session to resume the next time the agent needs one (after the daemon restarted). */
+  resumeId?: string;
   /** Bumped whenever the agent gets a new session; events from older sessions are ignored. */
   gen: number;
   /** The agent's MCP credential. It survives a move to another harness. */
@@ -84,6 +87,10 @@ export interface GoalRec {
   /** Last seen tip of each goal branch, and the branch each reported commit was made on, for git events. */
   refs: Map<string, string>;
   seenOn: Map<string, string>;
+  /** The last agent in the human's checkout to run a git command that commits, so its commits are named after it. */
+  gitActor?: { agent: string; at: number };
+  /** The workflow the lead was given, if any. */
+  workflow?: string;
   status: 'running' | 'ended';
   agents: Map<string, AgentRec>;
   counters: Map<string, number>;
@@ -154,6 +161,11 @@ type SpawnResult =
 
 const FINISHED: AgentState[] = ['ended', 'crashed'];
 
+/** A shell command that runs git to make commits: commit, merge and the like. */
+const GIT_COMMITS = /\bgit\b[^|;&\n]*?\s(?:commit|merge|cherry-pick|revert|pull|rebase|am)\b/;
+/** How long after such a command a new commit in the checkout is put down to that agent. */
+const GIT_ACTOR_MS = 120_000;
+
 export class Daemon {
   readonly home: string;
   readonly repo: string;
@@ -220,7 +232,7 @@ export class Daemon {
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const g: GoalRec = {
       id, request: o.request, dir: o.dir ?? this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
-      refs: new Map(), seenOn: new Map(),
+      refs: new Map(), seenOn: new Map(), workflow,
       status: 'running', agents: new Map(), counters: new Map(), leadDone, resolveLeadDone,
     };
     const gs = git.setupGoal(g.dir, id);
@@ -325,7 +337,7 @@ export class Daemon {
       data: {
         role: role.name, harness, model, brief: o.brief, quick: !!o.quick, cwd,
         worktree: worktree?.path ?? null, branch: worktree?.branch ?? null, base: worktree?.base ?? null,
-        ...(note ? { note } : {}),
+        ...(startedFrom ? { startedFrom } : {}), ...(note ? { note } : {}),
       },
     });
 
@@ -343,10 +355,11 @@ export class Daemon {
    * Starts (or resumes) a native session for an agent. Events from any earlier session of the
    * same agent are ignored from here on.
    */
-  private startSession(rec: AgentRec, brief: string, resume?: string): void {
+  private startSession(rec: AgentRec, brief: string, resume = rec.resumeId): void {
     const g = this.goals.get(rec.goal)!;
     const gen = ++rec.gen;
     rec.pendingBrief = undefined;
+    rec.resumeId = undefined;
     rec.adapter
       .start(
         {
@@ -520,7 +533,11 @@ export class Daemon {
         rec.lastText = text;
         this.emit({ ...base, type: 'agent.text', data: { text } });
       },
-      toolCall: (tool, summary) => live() && void this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } }),
+      toolCall: (tool, summary) => {
+        if (!live()) return;
+        this.noteGitActor(rec, summary);
+        this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } });
+      },
       toolResult: (summary, ok) => live() && void this.emit({ ...base, type: 'agent.tool_result', data: { summary, ok } }),
       usage: u => {
         if (!live()) return;
@@ -682,7 +699,7 @@ export class Daemon {
       const old = g.refs.get(branch);
       g.refs.set(branch, sha);
       if (!old || old === sha) continue;
-      const owner = [...g.agents.values()].find(a => a.worktree?.branch === branch)?.name;
+      const owner = [...g.agents.values()].find(a => a.worktree?.branch === branch)?.name ?? (branch === gg.branch ? this.checkoutActor(g) : undefined);
       // Name a merge after the branch its commit was made on. Several branches can point at the
       // same commit (a reviewer's starts at the implementer's tip), so asking git is a last resort.
       const merged = (from: string, sha: string, fastForward?: boolean) =>
@@ -708,6 +725,18 @@ export class Daemon {
       }
       if (fastForwarded) merged(fastForwarded, fastForwarded, true);
     }
+  }
+
+  /** Remembers who in the human's checkout last ran a git command that makes commits. */
+  private noteGitActor(rec: AgentRec, command: string): void {
+    if (rec.worktree || rec.quick || !GIT_COMMITS.test(command)) return;
+    const g = this.goals.get(rec.goal);
+    if (g?.git) g.gitActor = { agent: rec.name, at: Date.now() };
+  }
+
+  /** Who made a commit just seen in the human's checkout: the agent that ran git there lately, if any (else the human, unnamed). */
+  private checkoutActor(g: GoalRec): string | undefined {
+    return g.gitActor && Date.now() - g.gitActor.at < GIT_ACTOR_MS ? g.gitActor.agent : undefined;
   }
 
   status(rec: AgentRec, text: string): void {
@@ -804,7 +833,16 @@ export class Daemon {
       return;
     }
     const s = rec.session;
-    if (!s || rec.state === 'paused' || rec.state === 'limited' || FINISHED.includes(rec.state)) return;
+    if (rec.state === 'paused' || rec.state === 'limited' || FINISHED.includes(rec.state)) return;
+    if (!s) {
+      // Recovered after a restart without a running turn: resume its session with the messages.
+      if (!rec.resumeId) return;
+      if (this.accountLimited(rec.harness, rec.model)) return void this.hitLimit(rec);
+      const entries = rec.inbox.splice(0);
+      this.markDelivered(rec, entries, 'resume');
+      rec.costBefore = rec.cost;
+      return void this.startSession(rec, formatForAgent(entries));
+    }
     if (s.busy()) {
       // An interrupted turn is ending; its messages go in the next turn.
       if (rec.interrupting) return;
@@ -1014,6 +1052,7 @@ export class Daemon {
     this.setState(rec, rec.session?.busy() ? 'working' : 'idle');
     if (rec.pendingBrief !== undefined) return this.startSession(rec, rec.pendingBrief);
     if (rec.session && !rec.session.busy()) this.notice(rec, `The limit on your ${account} account should have reset. Carry on where you left off.`);
+    else this.pump(rec);
   }
 
   /** Moves an agent to another harness or model: a new session, started from a handoff. */
@@ -1023,6 +1062,7 @@ export class Daemon {
     const brief = rec.pendingBrief ?? this.handoff(rec, from, reason);
     rec.gen++;
     rec.session = undefined;
+    rec.resumeId = undefined;
     rec.interrupting = false;
     rec.costBefore = rec.cost;
     clearTimeout(rec.limitTimer);
@@ -1174,6 +1214,145 @@ export class Daemon {
     return `Stopped ${name}.`;
   }
 
+  /* ---------------- restart recovery ---------------- */
+
+  /**
+   * Rebuilds the goals still running when the last daemon stopped, from the event log, and
+   * resumes their agents' native sessions. Agents cut off mid-turn continue at once, told what
+   * happened; the rest resume when a message reaches them. Goals in another directory, or with
+   * agents on a harness this daemon can't run, are left alone. Call once the server is up.
+   */
+  recover(): { goal: string; request: string; resumed: string[]; later: string[]; skipped?: string }[] {
+    const out: ReturnType<Daemon['recover']> = [];
+    for (const start of this.store.ofType('goal.started')) {
+      if (this.goals.has(start.goal) || start.data.dir !== this.repo) continue;
+      const r = replayGoal(this.store.since(start.goal));
+      if (!r || goalOver(r)) continue;
+      const missing = [...new Set([...r.agents.values()].filter(a => !FINISHED.includes(a.state) && !this.adapters[a.harness]).map(a => a.harness))];
+      if (missing.length) {
+        out.push({ goal: r.id, request: r.request, resumed: [], later: [], skipped: `this daemon can't run ${missing.join(', ')}` });
+        continue;
+      }
+      out.push({ goal: r.id, request: r.request, ...this.restoreGoal(r) });
+    }
+    this.restoreAccounts();
+    if (this.gitPollMs > 0 && [...this.goals.values()].some(g => g.git)) this.gitTimer ??= setInterval(() => this.refreshGit(), this.gitPollMs).unref();
+    return out;
+  }
+
+  private restoreGoal(r: GoalReplay): { resumed: string[]; later: string[] } {
+    let resolveLeadDone!: (note: string) => void;
+    const leadDone = new Promise<string>(res => (resolveLeadDone = res));
+    const g: GoalRec = {
+      id: r.id, request: r.request, dir: r.dir, lead: r.lead, createdAt: r.createdAt, sharedDir: r.sharedDir,
+      refs: r.refs, seenOn: r.seenOn, workflow: r.workflow, status: 'running', agents: new Map(), counters: r.counters,
+      leadDone, resolveLeadDone,
+    };
+    mkdirSync(g.sharedDir, { recursive: true });
+    // The branch and base the goal started on, not whatever is checked out now.
+    const gs = r.base ? git.setupGoal(g.dir, g.id) : { reason: 'there was no git repository when it started' };
+    if ('reason' in gs) g.gitNote = gs.reason;
+    else g.git = { ...gs, branch: r.branch ?? gs.branch, base: r.base ?? gs.base };
+    this.goals.set(g.id, g);
+    for (const a of r.agents.values()) g.agents.set(a.name, this.restoreAgent(g, a));
+
+    for (const i of r.inbox) {
+      // The session that asked is gone; if the agent still needs it, it asks again.
+      if (i.kind === 'approval') {
+        this.emit({ goal: g.id, agent: i.agent, type: 'inbox.resolved', data: { id: i.id, decision: 'dismiss', reply: null, why: 'the daemon restarted' } });
+        continue;
+      }
+      this.humanInbox.push({ id: i.id, goal: g.id, agent: i.agent, kind: i.kind as HumanInboxItem['kind'], text: i.text, ts: i.ts });
+    }
+
+    const resumed: string[] = [];
+    const later: string[] = [];
+    for (const rec of g.agents.values()) {
+      if (FINISHED.includes(rec.state)) continue;
+      for (const m of r.agents.get(rec.name)!.undelivered) rec.inbox.push({ id: m.id, kind: 'message', from: m.from, text: m.text, urgent: m.urgent, ts: m.ts });
+      (INTERRUPTED.includes(rec.state) || rec.state === 'limited' || rec.inbox.length ? resumed : later).push(rec.name);
+    }
+    this.emit({ goal: g.id, type: 'goal.recovered', data: { resumed, later } });
+    for (const name of resumed) this.resumeAgent(g, g.agents.get(name)!, r.agents.get(name)!);
+    return { resumed, later };
+  }
+
+  private restoreAgent(g: GoalRec, a: AgentReplay): AgentRec {
+    const role: Role = this.config.roles.get(a.role) ?? {
+      name: a.role, harness: a.harness, model: a.model, fallback: [], goodAt: '', instructions: '', helper: a.quick,
+      allow: [], autoApprove: 'read-only', mcp: [], worktree: false, file: '(no longer in the config)',
+    };
+    let worktree: git.Worktree | undefined;
+    if (a.worktree && existsSync(a.worktree.path)) {
+      try {
+        worktree = { ...a.worktree, gitDir: git.git(a.worktree.path, 'rev-parse', '--absolute-git-dir') };
+      } catch {
+        // Not a worktree any more; the agent works without one.
+      }
+    }
+    const token = randomBytes(16).toString('hex');
+    this.tokens.set(token, { goal: g.id, agent: a.name });
+    const rec: AgentRec = {
+      goal: g.id, name: a.name, role, harness: a.harness, model: a.model, parent: a.parent, brief: a.brief,
+      quick: a.quick, isLead: a.name === g.lead, cwd: a.cwd, worktree, state: a.state, status: a.status,
+      cost: a.cost, costBefore: a.costBefore, contextPct: a.contextPct, lastText: a.lastText,
+      adapter: this.adapters[a.harness], resumeId: a.nativeSession, gen: 0, token, systemPrompt: '', doneNote: a.doneNote,
+      inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0,
+    };
+    rec.systemPrompt = this.buildPrompt(g, rec, g.workflow, a.startedFrom ?? 'its start point');
+    return rec;
+  }
+
+  /** Continues an agent that was busy (or had messages waiting) when the daemon stopped. */
+  private resumeAgent(g: GoalRec, rec: AgentRec, a: AgentReplay): void {
+    // Done or idle with messages waiting: they resume it, as any message would.
+    if (!INTERRUPTED.includes(rec.state) && rec.state !== 'limited') return this.pump(rec);
+    // Cut off: it continues its session, told why. One that never had a session starts over.
+    const first = rec.resumeId ? this.restartNote(g, rec) : this.firstMessage(rec);
+    rec.costBefore = rec.cost;
+    if (rec.state === 'limited' && (a.limitedUntil ?? 0) > Date.now()) {
+      // Its messages follow once the session is up.
+      rec.pendingBrief = first;
+      rec.limitedUntil = a.limitedUntil;
+      rec.limitTimer = setTimeout(() => this.limitOver(rec), a.limitedUntil! - Date.now() + this.limits.marginMs).unref();
+      return;
+    }
+    if (rec.state === 'limited') this.setState(rec, 'starting');
+    const entries = rec.inbox.splice(0);
+    this.markDelivered(rec, entries, 'resume');
+    this.startSession(rec, [first, formatForAgent(entries)].filter(Boolean).join('\n'));
+  }
+
+  /** What an agent cut off by a restart is told when its session resumes. */
+  private restartNote(g: GoalRec, rec: AgentRec): string {
+    const cut = (t: string, n: number) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
+    const team = [...g.agents.values()]
+      .filter(a => a !== rec && !a.quick)
+      .map(a => `- ${a.name} (${a.role.name}): ${a.state}${a.parent === rec.name && a.doneNote !== undefined ? `. It finished: ${cut(a.doneNote, 400)}` : ''}`);
+    return [
+      '[MetaHarness] MetaHarness restarted while you were working, so your last turn was cut off. A command or tool call ' +
+        "you were in may not have finished, and a `wait` or `spawn` you were in returned nothing. Check where your work stands " +
+        '(files, git status), then carry on.',
+      ...(team.length ? ['', 'Your team now:', ...team] : []),
+    ].join('\n');
+  }
+
+  /** Rate limits still in force, from the log, so new spawns and resumes avoid them. */
+  private restoreAccounts(): void {
+    for (const e of this.store.ofType('account.limit')) {
+      const id = String(e.data.account ?? '');
+      const resetsAt = Date.parse(String(e.data.resetsAt ?? '')) || undefined;
+      if (!id || e.data.status === 'ok' || !resetsAt || resetsAt <= Date.now()) {
+        this.accounts.delete(id);
+        continue;
+      }
+      this.accounts.set(id, {
+        id, status: e.data.status as RateLimitInfo['status'], resetsAt, warned: new Set(),
+        usedPct: typeof e.data.usedPct === 'number' ? e.data.usedPct : undefined, window: typeof e.data.window === 'string' ? e.data.window : undefined,
+      });
+    }
+  }
+
   /* ---------------- client API ---------------- */
 
   snapshot(goalId?: string) {
@@ -1203,7 +1382,7 @@ export class Daemon {
           contextPct: a.contextPct ?? null,
           unread: a.inbox.length,
           awaitingApproval: a.pendingApprovals,
-          nativeSession: a.session?.nativeId ?? null,
+          nativeSession: a.session?.nativeId ?? a.resumeId ?? null,
           limitedUntil: a.limitedUntil ?? null,
         })),
       })),
@@ -1263,6 +1442,9 @@ export class Daemon {
       for (const a of g.agents.values()) {
         for (const w of a.waiters) clearTimeout(w.timer);
         clearTimeout(a.limitTimer);
+        // What the stopping sessions report isn't the agents' doing: the log keeps their state,
+        // so the next daemon can resume them (recover).
+        a.gen++;
         if (a.session && !FINISHED.includes(a.state)) await a.session.stop().catch(() => {});
       }
     }

@@ -49,10 +49,20 @@ Findings from the run:
       Replayed on the worktree run's 7 approvals: 4 would no longer ask; the 3 left are real
       writes (`git merge`, `cat >` into shared/, a Python edit of README), and the methodology
       now points agents to their edit tools for those
-- [ ] **Exit-test run** (next): branch `exit-test` in `test_meta` (from the color-history goal
-      branch) has role backups, a reporter on Antigravity, and `.metaharness/requests/themes.md`,
-      a goal whose two implementers start together on a model and a UI piece while the model's
-      API is still moving
+- [x] **Exit-test run** ✅ (2026-10-18, goal `9b3e7f3d`, branch `exit-test-2` in `test_meta`,
+      request `.metaharness/requests/themes.md`, workflow `feature`). An earlier run of the same
+      request (goal `80b3d7a6`, old one-worktree-per-agent code) finished with 84/84 tests but
+      never changed the model's API, so nothing had to be followed. This time the human sent the
+      model implementer a new requirement right after its first commit (named colors: `colors`
+      become `{ hex, name }` objects). It was injected mid-turn; the model implementer
+      committed the change within 20 s and told the UI implementer and the architect what
+      changed and the hash; the UI implementer, half-way through, merged it, adapted the cycler
+      and history labels, settled the label format with the architect, and merged again for the
+      tests. Both pieces were reviewed by Opus (approved), merged into the human's branch by the
+      architect, follow-ups applied, report written on Antigravity: 91/91 tests, 7 commits,
+      about 10 minutes, $1.73 on Claude, 2 approvals (both harmless: `node -e`, `node --test &&
+      git log`), 2 read-only commands approved by the daemon
+
 - [x] First turn counts as busy from the start in every adapter, so early messages join it
       (Codex could otherwise start a second turn before `turn/start` answered)
 - [x] **Workflows, specialist roles, one shared folder** (DESIGN.md §17): workflow files (with
@@ -61,8 +71,15 @@ Findings from the run:
       name per machine) and `workflow:`; the team works in the human's checkout, with worktrees
       from `spawn(worktree: true)`, a role's `worktree: true`, or `from`. Default workflows
       `feature`, `feature-explore`, `implementation`; new roles `explorer`, `designer`
-- [ ] Not yet run live: a workflow chain with a human decision; a role with its own MCP server
-      (blender is configured here for Claude Code and Codex)
+- [ ] Not yet run live: a workflow chain with a human decision (the exit-test run chained
+      `feature` → `implementation`, but the architect judged no approval was needed); a role
+      with its own MCP server (blender is configured here for Claude Code and Codex)
+- [x] From the exit-test run: commits and merges in the human's checkout were logged with no
+      agent. They're now named after the agent in the checkout whose command last ran a
+      committing git command (within two minutes); anything else stays unnamed (the human)
+- [x] From the exit-test run: the Codex implementer twice messaged a placeholder hash
+      ("912HEAD", "9FINAL") before its commit landed, then corrected it. The methodology now
+      says to message after the commit finishes, with the hash git printed. Not yet seen live
 - [ ] Clean up worktrees when a goal is over (`mh clean`?); they're kept for now
 - [ ] Dependencies in fresh worktrees: agents are told to install them; consider linking
       `node_modules` and the like
@@ -89,7 +106,16 @@ Findings from the run:
 - [ ] Antigravity isolation from the user's own global plugins and MCP servers (like
       `--strict-mcp-config`); none are set up on this machine yet
 - [ ] Change notices when shared files change, plus `shared/.history/`
-- [ ] Resume agents after a daemon restart, from their saved native session IDs
+- [x] Resume agents after a daemon restart (`src/recover.ts`, `Daemon.recover`): goals whose
+      lead hasn't finished are rebuilt from the log; agents cut off mid-turn resume their native
+      sessions with a restart note, their team's state and missed messages; done or idle agents
+      resume when messaged; stale approvals are dropped; open questions, rate limits and git
+      refs carry over. `close()` no longer logs agents as ended, so Ctrl-C and restart work.
+      `mh daemon --no-resume` skips it. Run live on 2026-10-18 in a scratch repository: the
+      daemon was stopped while a Claude haiku lead waited and a Codex luna implementer was in
+      `sleep 45`; the next daemon resumed both native sessions, the implementer checked its
+      state, re-ran the cut-off command, committed and finished, and the lead merged ($0.11).
+      The fast-forward merge in the checkout was named after the lead
 - [ ] Warm pool for quick-helper roles
 - [ ] Idle nudges, and detecting two agents waiting on each other
 - [ ] Comparison run: ~10 real tasks, Opus alone vs the team (quality, cost, time, interventions)
@@ -105,8 +131,6 @@ Findings from the run:
 
 ## Not yet verified live
 
-- Two implementers who have to adjust to each other's changes mid-task (the run above kept
-  them apart with contracts)
 - A quick spawn running on a real harness
 - How Claude Code reports cost across several turns of one session (we keep the running maximum),
   and across a resumed session (counted as new spend on top of the old)
@@ -118,7 +142,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 33 tests, about ten seconds, no model calls
+npm install && npm test        # 36 tests, about ten seconds, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

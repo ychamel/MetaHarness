@@ -261,6 +261,7 @@ there are new messages or file changes, so an agent nobody is messaging sees not
 | Agent ends its session without calling `done` | Marked *ended*; its last message is forwarded to the spawner as the note |
 | `done()` with no note | Fine; its last message is used |
 | Agent goes quiet for a long time | A gentle nudge ("still working? post a status"). Still silent → tell the spawner and you |
+| The daemon stops or restarts | The log keeps each agent's state and native session. The next daemon, started in the same repository, rebuilds the goals whose lead hasn't finished: agents cut off mid-turn resume their sessions with a note about the restart, how their team stands and any messages they missed; finished or idle agents resume when a message reaches them. Approvals the old sessions were waiting on are dropped (the agent asks again); the human's open questions stay in the Inbox |
 | Session crashes | Resume it. If that fails, start a fresh agent with the same role, the original brief, and "you're continuing X's work, see shared/ and the worktree" |
 | Handoff written in an odd place or shape | Nothing breaks; the reader is an agent and the message says where to look |
 | Lots of spawns or a messaging ping-pong | Shown in the UI. You can set an optional alert. It is never blocked automatically |
@@ -406,7 +407,7 @@ type Event = {
 
 | Group | Events | Feeds |
 |---|---|---|
-| Goal | `goal.started` · `goal.paused` · `goal.resumed` · `goal.ended` | Header, goal list |
+| Goal | `goal.started` · `goal.paused` · `goal.resumed` · `goal.recovered` {resumed, later} · `goal.ended` | Header, goal list |
 | Agent lifecycle | `agent.spawned` {role, harness, model, parent, brief, quick, worktree, branch, native_session} · `agent.state` · `agent.status` {text} · `agent.done` {note} · `agent.ended` · `agent.crashed` · `agent.resumed` · `agent.respawned` | Team tree, cards |
 | Activity | `agent.text` (streamed) · `agent.tool_call` {tool, summary} · `agent.tool_result` {summary, ok} · `agent.file_edit` {path, diff} | Agent detail stream |
 | Messages | `message.sent` {from, to, text, urgent} · `message.delivered` {via: hook \| tool \| turn \| interrupt} · `message.read` | Graph, sequence view |

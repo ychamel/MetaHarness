@@ -15,6 +15,8 @@ export function eventLine(e: MhEvent): string {
       return `${t}  ${'goal'.padEnd(15)}started: ${oneLine(d.request)}`;
     case 'goal.ended':
       return `${t}  ${'goal'.padEnd(15)}ended: ${oneLine(d.reason)}`;
+    case 'goal.recovered':
+      return `${t}  ${'goal'.padEnd(15)}picked up after a daemon restart: ${d.resumed.length ? `${d.resumed.join(', ')} continue` : 'nobody was mid-task'}${d.later.length ? `; ${d.later.join(', ')} resume when messaged` : ''}`;
     case 'agent.spawned':
       return `${t}  ${who}spawned by ${e.parent} as ${d.role} (${d.harness} · ${d.model})${d.quick ? ', quick helper' : ''}`;
     case 'agent.state':

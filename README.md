@@ -37,7 +37,8 @@ Code, Codex or Antigravity CLI, signed in.
 ```sh
 npm install                    # the MCP SDK, plus TypeScript for type-checking
 node src/cli.ts doctor         # which harnesses are here, signed in, with which models; can each role run?
-node src/cli.ts daemon         # terminal 1 (add --fake for scripted agents, no model calls)
+node src/cli.ts daemon         # terminal 1 (add --fake for scripted agents, no model calls).
+                               # Restarted, it picks up the goals left running (--no-resume: don't)
 node src/cli.ts test codex     # optional: check what works with a harness, on a cheap model
 
 node src/cli.ts run "Add per-user rate limiting to /api/upload" --workflow feature   # terminal 2
@@ -80,6 +81,7 @@ Another harness on a transport MetaHarness already speaks is a profile, not code
 | `src/daemon.ts` | Goals, agents, message delivery, the human inbox |
 | `src/hub.ts` | The six agent tools: `team`, `spawn`, `send`, `wait`, `status`, `done` |
 | `src/store.ts` | Append-only event log (SQLite, built into Node) |
+| `src/recover.ts` | Rebuilding goals from the log when the daemon restarts |
 | `src/server.ts` | Client API: `GET /state`, `GET /events` (with replay), `POST /commands`; `/mcp/<token>` and `/hook/<token>` for agents |
 | `src/harnesses.ts` | Harness profiles: finding each CLI, its login and its models |
 | `src/mcpservers.ts`, `src/readonly.ts` | Roles' MCP servers by name; which shell commands only read |

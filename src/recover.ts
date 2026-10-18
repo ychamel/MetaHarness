@@ -1,0 +1,179 @@
+import type { AgentState, MhEvent } from './types.ts';
+
+/**
+ * Rebuilding a goal from its event log after the daemon restarts (design §11: the log is the
+ * source of truth). This file only folds events into plain data; the daemon turns that back
+ * into live agents and resumes their native sessions.
+ */
+
+export interface PendingMessage {
+  id: string;
+  from: string;
+  text: string;
+  urgent: boolean;
+  ts: string;
+}
+
+export interface AgentReplay {
+  name: string;
+  role: string;
+  harness: string;
+  model: string;
+  parent: string;
+  brief: string;
+  quick: boolean;
+  cwd: string;
+  worktree?: { path: string; branch: string; base: string };
+  startedFrom?: string;
+  state: AgentState;
+  status: string;
+  lastText: string;
+  doneNote?: string;
+  /** The latest native session, which a restart resumes. */
+  nativeSession?: string;
+  cost?: number;
+  costBefore?: number;
+  contextPct?: number;
+  /** While rate limited: when it was due to continue, in ms since the epoch. */
+  limitedUntil?: number;
+  /** Messages sent to it that it never received. */
+  undelivered: PendingMessage[];
+}
+
+export interface InboxReplay {
+  id: string;
+  agent: string;
+  kind: string;
+  text: string;
+  ts: string;
+}
+
+export interface GoalReplay {
+  id: string;
+  request: string;
+  dir: string;
+  sharedDir: string;
+  createdAt: string;
+  workflow?: string;
+  branch?: string;
+  base?: string;
+  /** The goal ended (its lead couldn't start). */
+  ended: boolean;
+  lead: string;
+  agents: Map<string, AgentReplay>;
+  counters: Map<string, number>;
+  /** Inbox items the human hasn't answered. */
+  inbox: InboxReplay[];
+  /** The last tip reported for each branch, and the branch each reported commit was seen on. */
+  refs: Map<string, string>;
+  seenOn: Map<string, string>;
+}
+
+const str = (v: unknown) => (typeof v === 'string' ? v : '');
+
+/** Folds one goal's events, oldest first. Undefined if the log doesn't start the goal. */
+export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
+  const start = events.find(e => e.type === 'goal.started');
+  if (!start) return undefined;
+  const d = start.data;
+  const g: GoalReplay = {
+    id: start.goal, request: str(d.request), dir: str(d.dir), sharedDir: str(d.sharedDir), createdAt: start.ts,
+    workflow: str(d.workflow) || undefined, branch: str(d.branch) || undefined, base: str(d.base) || undefined,
+    ended: false, lead: '', agents: new Map(), counters: new Map(), inbox: [], refs: new Map(), seenOn: new Map(),
+  };
+  if (g.branch && g.base) g.refs.set(g.branch, g.base);
+  const pending = new Map<string, PendingMessage & { to: string }>();
+  const sessions = new Map<string, number>();
+
+  for (const e of events) {
+    const a = e.agent ? g.agents.get(e.agent) : undefined;
+    const x = e.data;
+    switch (e.type) {
+      case 'goal.ended':
+        g.ended = true;
+        break;
+      case 'agent.spawned': {
+        const role = str(x.role);
+        g.counters.set(role, (g.counters.get(role) ?? 0) + 1);
+        const wt = str(x.worktree) ? { path: str(x.worktree), branch: str(x.branch), base: str(x.base) } : undefined;
+        g.agents.set(e.agent!, {
+          name: e.agent!, role, harness: str(x.harness), model: str(x.model), parent: e.parent ?? 'human',
+          brief: str(x.brief), quick: x.quick === true, cwd: str(x.cwd) || g.dir, worktree: wt,
+          startedFrom: str(x.startedFrom) || undefined, state: 'starting', status: '', lastText: '', undelivered: [],
+        });
+        if (!g.lead && (e.parent ?? 'human') === 'human') g.lead = e.agent!;
+        if (wt) g.refs.set(wt.branch, wt.base);
+        break;
+      }
+      case 'agent.session':
+        if (!a) break;
+        // A later session starts its cost from zero (see the daemon's restart and move).
+        if (sessions.has(a.name)) a.costBefore = a.cost;
+        sessions.set(a.name, (sessions.get(a.name) ?? 0) + 1);
+        a.nativeSession = str(x.nativeSession) || a.nativeSession;
+        break;
+      case 'agent.moved': {
+        if (!a) break;
+        const to = x.to as { harness?: string; model?: string } | undefined;
+        a.harness = to?.harness ?? a.harness;
+        a.model = to?.model ?? a.model;
+        // The new harness can't resume the old one's session.
+        a.nativeSession = undefined;
+        break;
+      }
+      case 'agent.state':
+        if (a) a.state = x.state as AgentState;
+        break;
+      case 'agent.status':
+        if (a) a.status = str(x.text);
+        break;
+      case 'agent.text':
+        if (a) a.lastText = str(x.text);
+        break;
+      case 'agent.done':
+        if (a) a.doneNote = str(x.note);
+        break;
+      case 'agent.limited':
+        if (a) a.limitedUntil = Date.parse(str(x.until)) || undefined;
+        break;
+      case 'usage':
+        if (!a) break;
+        if (typeof x.costUsd === 'number') a.cost = (a.costBefore ?? 0) + x.costUsd;
+        if (typeof x.contextPct === 'number') a.contextPct = x.contextPct;
+        break;
+      case 'message.sent':
+        if (str(x.id) && str(x.to) && x.to !== 'human') {
+          pending.set(str(x.id), { id: str(x.id), to: str(x.to), from: e.agent ?? 'human', text: str(x.text), urgent: x.urgent === true, ts: e.ts });
+        }
+        break;
+      case 'message.delivered':
+        pending.delete(str(x.id));
+        break;
+      case 'inbox.item':
+        g.inbox.push({ id: str(x.id), agent: e.agent ?? '', kind: str(x.kind), text: str(x.text), ts: e.ts });
+        break;
+      case 'inbox.resolved':
+        g.inbox = g.inbox.filter(i => i.id !== x.id);
+        break;
+      case 'git.commit':
+        g.refs.set(str(x.branch), str(x.sha));
+        g.seenOn.set(str(x.sha), str(x.branch));
+        break;
+      case 'git.merge':
+        g.refs.set(str(x.into), str(x.sha));
+        break;
+    }
+  }
+  for (const m of pending.values()) g.agents.get(m.to)?.undelivered.push(m);
+  return g;
+}
+
+/** A goal is over once its lead has finished; there's nothing to resume after that. */
+export function goalOver(g: GoalReplay): boolean {
+  if (g.ended) return true;
+  const lead = g.agents.get(g.lead);
+  return !lead || lead.doneNote !== undefined || ['done', 'ended', 'crashed'].includes(lead.state);
+}
+
+/** Agents that were in the middle of something when the daemon stopped. */
+export const INTERRUPTED: AgentState[] = ['starting', 'working', 'waiting'];

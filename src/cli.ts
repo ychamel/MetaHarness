@@ -13,7 +13,8 @@ const HELP = `mh: run a team of AI agents from different providers on one goal
 
   mh doctor                          Which harnesses are here, signed in, with which models; can each role run?
   mh test <harness> [--model <m>]    Check what works with a harness here: a short run on a cheap model
-  mh daemon [--fake]                 Start the daemon (--fake: scripted agents, no model calls)
+  mh daemon [--fake] [--no-resume]   Start the daemon (--fake: scripted agents, no model calls). It picks
+                                     up goals left running here, unless --no-resume
   mh run "<request>" [--lead <role>] [--workflow <name>]
                                      Start a goal; the lead role defaults to architect. Without
                                      --workflow, the lead picks one of .metaharness/workflows/
@@ -46,7 +47,7 @@ function parse(argv: string[]) {
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--') && !['fake', 'urgent'].includes(key)) {
+      if (next !== undefined && !next.startsWith('--') && !['fake', 'urgent', 'no-resume'].includes(key)) {
         opt[key] = next;
         i++;
       } else opt[key] = true;
@@ -178,6 +179,11 @@ async function main(): Promise<void> {
       console.log(`MetaHarness daemon on ${BASE}${fake ? ', running scripted agents' : ''}. Data in ${HOME}.`);
       console.log(`Roles: ${[...d.config.roles.keys()].join(', ') || 'none (add .metaharness/roles/<name>.md)'}`);
       if (!fake) console.log(`Harnesses: ${Object.keys(adapters).filter(h => h !== 'fake').join(', ') || 'none found'}. mh doctor shows what each role can use.`);
+      for (const r of opt['no-resume'] === true ? [] : d.recover()) {
+        const what = `goal ${r.goal} (${r.request.replace(/\s+/g, ' ').slice(0, 60)})`;
+        if (r.skipped) console.log(`Left ${what} as it was: ${r.skipped}.`);
+        else console.log(`Picked up ${what}: ${r.resumed.length ? `${r.resumed.join(', ')} continue` : 'nobody was mid-task'}${r.later.length ? `; ${r.later.join(', ')} resume when messaged` : ''}.`);
+      }
       const shutdown = () => void d.close().then(() => process.exit(0));
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);

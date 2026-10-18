@@ -43,6 +43,15 @@ export class EventStore {
     const rows = goal
       ? this.db.prepare('SELECT * FROM events WHERE goal = ? AND seq > ? ORDER BY seq').all(goal, afterSeq)
       : this.db.prepare('SELECT * FROM events WHERE seq > ? ORDER BY seq').all(afterSeq);
+    return this.rows(rows);
+  }
+
+  /** Events of one type across all goals, oldest first. */
+  ofType(type: string): MhEvent[] {
+    return this.rows(this.db.prepare('SELECT * FROM events WHERE type = ? ORDER BY seq').all(type));
+  }
+
+  private rows(rows: unknown[]): MhEvent[] {
     return rows.map(row => {
       const r = row as Record<string, string | number | null>;
       const ev: MhEvent = {

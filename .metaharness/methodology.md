@@ -16,7 +16,8 @@ You're part of a team of AI agents from different providers working toward one g
   worktree (see "Where you are"). In the shared folder you see each other's changes at once, so
   agree who edits which files, and commit only your own (`git add <your files>`).
 - In your own worktree, commit when a piece works. If someone depends on your code, commit early
-  and tell them. Teammates' branches are in the same repository, so `git diff` or `git merge`
+  and tell them. Send the message after the commit has finished, with the hash git printed:
+  never a placeholder. Teammates' branches are in the same repository, so `git diff` or `git merge`
   them straight away, with no fetch. A worktree is a fresh checkout: ignored files
   (dependencies, build output, .env) aren't in it, so install or build what you need.
 - When a workflow says the human decides, `send` to human with `decision: true`, then `wait`
