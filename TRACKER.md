@@ -1,6 +1,6 @@
 # Tracker
 
-Where MetaHarness stands against the plan in [DESIGN.md §18](DESIGN.md). Update this file when a
+Where MetaHarness stands against the plan in [DESIGN.md §19](DESIGN.md). Update this file when a
 step lands. Last updated 2026-10-19.
 
 ## Milestone 0: a small team works ✅
@@ -196,6 +196,28 @@ Findings from the run:
       or helpers of its own that still work. Once per stuck spell; the human gets a `stalled`
       Inbox item (reply goes to the lead) when the lead has finished, or the whole team stays
       stuck another `stallMinutes` after the lead was told. Scripted tests only; not seen live
+- [x] **Rules** (2026-10-19, DESIGN.md §18, `src/rules.ts`): markdown notes that reach an agent at
+      a moment the daemon sees (`start`, `path`, `new-file`, `commit`, `done`), filtered by role
+      and path, delivered like change notices (a running turn gets them, an idle agent with
+      whatever reaches it next); each logged as `rule.fired`. Layers: the built-in pack
+      (`defaults/rules/`), personal, repository; same name replaces, `off: true` or
+      `settings.json` `rules: {name: false}` turns one off. Rules page in the app; the assistant
+      can propose one. Adapters now say what kind each tool call is (Codex: which files it
+      created). Live on Claude haiku in a scratch repository: map sections came with its reads
+      and it reused the helpers the map named, no-duplicates fired on its new file, map-upkeep
+      on its commit (it then updated ARCHITECTURE.md), finish-clean held its first done.
+      Not yet seen live on Codex or Antigravity, nor the map-bootstrap workflow
+- [x] **The clean-code pack**: `conventions` (+ `CONVENTIONS.md`), `map` (sections of
+      `ARCHITECTURE.md` by path heading), `no-duplicates`, `map-upkeep`, `finish-clean`,
+      `map-missing`, and the built-in `map-bootstrap` workflow
+- [x] **Personal skills hidden** (checked live 2026-10-19): Claude Code already by
+      `--setting-sources project,local` (the claude.ai plugin's skills drop out, bundled ones
+      stay); Codex by `skills.config` entries for `user`-scope skills from `skills/list` (a probe
+      skill vanished from a luna thread, imagegen stayed); Antigravity by stubs in the agent's
+      customization root (a global probe skill showed as "turned off" on gemini flash)
+- [ ] Skills, step 2: `SKILL.md` folders in `skills/`, a `skill(name)` tool on every harness,
+      repository skills (`.claude/skills`, `.agents/skills`) picked up for all, a `harness:`
+      filter, `native_skills: true` per role
 - [ ] An agent that goes quiet mid-turn for a long time (no tool calls, no text): not detected
 - [ ] Test each workflow on its own, once more workflows and roles exist (quality, cost, time,
       interventions). A single-model baseline comparison is dropped for now (2026-10-18)
@@ -281,7 +303,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 80 tests, about half a minute, no model calls
+npm install && npm test        # 88 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

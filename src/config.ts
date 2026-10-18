@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { loadMcpDefs, type McpServerDef } from './mcpservers.ts';
+import { BUILTIN_DIR, loadRules, type Rule } from './rules.ts';
 import { APPROVAL_MODES, loadSettings, type ApprovalMode, type Settings } from './settings.ts';
 import type { Role, Workflow } from './types.ts';
 
@@ -10,6 +11,8 @@ export interface Config {
   helperMethodology: string;
   /** From workflows/, and from playbooks/ (their old name). */
   workflows: Map<string, Workflow>;
+  /** From rules/: the built-in pack, then each folder's; those turned off are kept, marked off (design §18). */
+  rules: Map<string, Rule>;
   /** MCP server definitions from mcp.json, for roles' `mcp:` names. */
   mcp: Map<string, McpServerDef>;
   settings: Settings;
@@ -49,16 +52,28 @@ function markdownFiles(dir: string): string[] {
   return readdirSync(dir).filter(f => f.endsWith('.md')).map(f => join(dir, f));
 }
 
-/** Loads config from each directory in order; later directories override earlier ones. */
-export function loadConfig(dirs: string[]): Config {
+/**
+ * Loads config from each directory in order; later directories override earlier ones. The
+ * built-in rules and workflows come first, unless `builtIn` is false (one folder on its own).
+ */
+export function loadConfig(dirs: string[], o: { builtIn?: boolean } = {}): Config {
+  const builtIn = o.builtIn !== false;
+  const settings = loadSettings(dirs);
   const cfg: Config = {
     roles: new Map(),
     methodology: DEFAULT_METHODOLOGY,
     helperMethodology: DEFAULT_HELPER_METHODOLOGY,
     workflows: new Map(),
+    rules: loadRules(builtIn ? [BUILTIN_DIR, ...dirs] : dirs, settings.rules),
     mcp: loadMcpDefs(dirs),
-    settings: loadSettings(dirs),
+    settings,
   };
+  if (builtIn) {
+    for (const file of markdownFiles(join(BUILTIN_DIR, 'workflows'))) {
+      const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
+      cfg.workflows.set(basename(file, '.md'), { name: basename(file, '.md'), goodAt: meta.good_at ?? '', body, file, builtIn: true });
+    }
+  }
   for (const dir of dirs) {
     cfg.methodology = readIf(join(dir, 'methodology.md')) ?? cfg.methodology;
     cfg.helperMethodology = readIf(join(dir, 'helper-methodology.md')) ?? cfg.helperMethodology;

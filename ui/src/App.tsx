@@ -12,9 +12,10 @@ import { Settings } from './pages/Settings.tsx';
 import { Roles } from './pages/Roles.tsx';
 import { Workflows } from './pages/Workflows.tsx';
 import { Guidelines } from './pages/Guidelines.tsx';
+import { Rules } from './pages/Rules.tsx';
 import { Tools } from './pages/Tools.tsx';
 
-type Page = 'home' | 'goal' | 'roles' | 'workflows' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
+type Page = 'home' | 'goal' | 'roles' | 'workflows' | 'rules' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
 
 /** Where you are, kept in the address so a reload or a shared link comes back to it. */
 interface Place {
@@ -204,6 +205,7 @@ function Shell() {
         <div className="rail-group">Setup</div>
         <RailButton icon={ICONS.roles} label="Roles" on={place.page === 'roles'} onClick={() => go({ page: 'roles', item: undefined })} />
         <RailButton icon={ICONS.workflows} label="Workflows" on={place.page === 'workflows'} onClick={() => go({ page: 'workflows', item: undefined })} />
+        <RailButton icon={ICONS.rules} label="Rules" on={place.page === 'rules'} onClick={() => go({ page: 'rules', item: undefined })} />
         <RailButton icon={ICONS.guide} label="Guidelines" on={place.page === 'guidelines'} onClick={() => go({ page: 'guidelines', item: undefined })} />
         <RailButton icon={ICONS.tools} label="Tools" on={place.page === 'tools'} onClick={() => go({ page: 'tools', item: undefined })} />
         <RailButton icon={ICONS.harness} label="Harnesses" on={place.page === 'harnesses'} onClick={() => go({ page: 'harnesses', item: undefined })} />
@@ -242,6 +244,7 @@ function Shell() {
         )}
         {place.page === 'roles' && <Roles {...setup('roles')} />}
         {place.page === 'workflows' && <Workflows {...setup('workflows')} onStartWith={workflow => setDialog({ kind: 'goal', workflow })} />}
+        {place.page === 'rules' && <Rules {...setup('rules')} />}
         {place.page === 'guidelines' && <Guidelines config={config} onSave={saveConfig} />}
         {place.page === 'tools' && <Tools {...setup('tools')} />}
         {place.page === 'harnesses' && <Harnesses {...setup('harnesses')} />}
@@ -337,6 +340,12 @@ const ICONS = {
       <rect x="15" y="4" width="6" height="5" rx="1" />
       <rect x="9" y="15" width="6" height="5" rx="1" />
       <path d="M9 6.5h6M18 9v3H12v3" />
+    </>,
+  ),
+  rules: svg(
+    <>
+      <path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z" />
+      <path d="M9 12l2 2 4-4" />
     </>,
   ),
   guide: svg(

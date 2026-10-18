@@ -19,8 +19,10 @@ export function Workflows({ config, selected, onSelect, onSave, onStartWith }: S
   const names = workflows.map(w => w.name);
   const isNew = selected === 'new' || selected?.startsWith('new:');
   const current = workflows.find(w => keyOf(w) === selected) ?? (isNew ? undefined : workflows[0]);
+  const builtIn = !isNew && current?.scope === 'built-in';
   const template = useMemo(() => {
-    if (!isNew) return current ?? blank(config);
+    // A built-in workflow is edited as a copy for one of the folders.
+    if (!isNew) return current ? (current.scope === 'built-in' ? { ...current, scope: blank(config).scope } : current) : blank(config);
     const from = workflows.find(w => `new:${keyOf(w)}` === selected);
     return from ? { ...from, name: `${from.name}-copy`, file: '' } : blank(config);
   }, [isNew, current, selected, workflows, config]);
@@ -36,7 +38,7 @@ export function Workflows({ config, selected, onSelect, onSave, onStartWith }: S
 
   const save = async () => {
     setSaving(true);
-    const next = await onSave({ cmd: 'workflow.save', ...draft, previous: isNew || !current ? undefined : { name: current.name, scope: current.scope } });
+    const next = await onSave({ cmd: 'workflow.save', ...draft, previous: isNew || !current || builtIn ? undefined : { name: current.name, scope: current.scope } });
     setSaving(false);
     if (next) onSelect(keyOf(draft));
   };
@@ -78,9 +80,10 @@ export function Workflows({ config, selected, onSelect, onSave, onStartWith }: S
                     <input type="text" value={draft.name} onChange={e => set('name', e.target.value.replace(/\s+/g, '-'))} placeholder="e.g. bugfix" />
                   </Field>
                   <Field label="Saved in">
-                    <ScopePicker config={config} value={draft.scope} onChange={s => set('scope', s)} />
+                    <ScopePicker config={config} value={draft.scope === 'built-in' ? 'repo' : draft.scope} onChange={s => set('scope', s)} />
                   </Field>
                 </div>
+                {builtIn && <div className="hint">Built into MetaHarness. Saving writes a copy into the folder you pick, which replaces it there.</div>}
                 <Field label="Good at" hint="One line. The lead reads it when it picks a workflow.">
                   <textarea rows={2} value={draft.goodAt} onChange={e => set('goodAt', e.target.value.replace(/\n/g, ' '))} placeholder="e.g. a bug with a clear reproduction: find the cause, fix it, add a test" />
                 </Field>
@@ -142,7 +145,7 @@ export function Workflows({ config, selected, onSelect, onSave, onStartWith }: S
               onSave={() => void save()}
               onRevert={() => (isNew ? void go(workflows[0] && keyOf(workflows[0])) : revert())}
               onDuplicate={() => current && void go(`new:${keyOf(current)}`)}
-              onDelete={async () => {
+              onDelete={builtIn ? undefined : async () => {
                 if (!current) return;
                 if (await confirm({ title: `Delete the ${current.name} workflow?`, body: <>Its file goes: <span className="mono">{current.file}</span>.{roles.length ? ` ${roles.map(r => r.name).join(', ')} still name${roles.length === 1 ? 's' : ''} it.` : ''}</>, confirm: 'Delete', danger: true })) {
                   if (await onSave({ cmd: 'workflow.delete', name: current.name, scope: current.scope })) onSelect(undefined);

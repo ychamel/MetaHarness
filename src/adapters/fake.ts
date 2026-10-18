@@ -16,6 +16,10 @@ export interface FakeCtx {
   /** Resolves with the next message injected into this turn, or null after the timeout. */
   nextMessage(timeoutMs?: number): Promise<string | null>;
   writeShared(relPath: string, content: string): void;
+  /** Writes a file in the working folder, reported as a Write tool call before it's written. */
+  writeFile(relPath: string, content: string): void;
+  /** Reports reading a file or folder in the working folder, as a Read tool call. */
+  read(relPath: string): void;
   /** Reports the account's rate-limit state, as a real harness would. */
   rateLimit(info: RateLimitInfo): void;
   /** True once this session has been stopped, e.g. to move the agent elsewhere. */
@@ -149,7 +153,18 @@ class FakeSession implements Session {
         const p = join(this.spec.sharedDir, relPath);
         mkdirSync(dirname(p), { recursive: true });
         writeFileSync(p, content);
-        this.ev.toolCall('Write', `shared/${relPath}`);
+        this.ev.toolCall('Write', p, { kind: 'edit' });
+      },
+      writeFile: (relPath, content) => {
+        const p = join(this.spec.cwd, relPath);
+        this.ev.toolCall('Write', p, { kind: 'edit' });
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, content);
+        this.ev.toolResult('written', true);
+      },
+      read: relPath => {
+        this.ev.toolCall('Read', join(this.spec.cwd, relPath), { kind: 'read' });
+        this.ev.toolResult('read', true);
       },
       rateLimit: info => this.ev.rateLimit(info),
       context: (pct, tokens) => {
@@ -159,7 +174,7 @@ class FakeSession implements Session {
       stopped: () => this.stopped,
       run: (command, ms) => {
         if (this.interruptedTurn) return Promise.resolve(false);
-        this.ev.toolCall('Bash', command);
+        this.ev.toolCall('Bash', command, { kind: 'shell' });
         return new Promise<boolean>(resolve => {
           const timer = setTimeout(() => finish(true), ms);
           const finish = (completed: boolean) => {

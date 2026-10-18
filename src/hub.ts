@@ -101,8 +101,8 @@ export class Hub {
     }
     if (r.guessed) out = `(Used ${r.match} for "${toolName}".)\n${out}`;
     if (r.match !== 'wait') out += this.unreadNotice(rec);
-    const files = this.d.takeFileNotes(rec);
-    if (files) out += `\n\n${files}`;
+    const notes = this.d.takeNotes(rec);
+    if (notes) out += `\n\n${notes}`;
     return out;
   }
 
@@ -175,6 +175,9 @@ export class Hub {
       case 'done': {
         const note = str(pick(a, 'note', 'summary', 'text', 'result', 'message', 'answer')) ?? (rec.lastText || '(no note)');
         const again = rec.doneNote !== undefined;
+        // Done rules hold the first done back once, with what to check first.
+        const held = again ? undefined : d.doneRules(rec);
+        if (held) return held;
         const warning = d.done(rec, note);
         const ok = again ? 'Updated your note. Whoever spawned you has the new one.' : rec.parent === 'human' ? 'Done. The human has your note.' : `Done. ${rec.parent} has your note.`;
         return warning ? `${ok}\n\n${warning}` : ok;

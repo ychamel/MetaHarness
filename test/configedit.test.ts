@@ -29,7 +29,10 @@ test('config: the view says where each role comes from, and what it overrides', 
   assert.equal(arch.scope, 'repo');
   assert.equal(arch.overrides, 'personal');
   assert.equal(arch.model, 'opus');
-  assert.equal(v.workflows[0].name, 'old');
+  const wf = (name: string) => v.workflows.find((w: { name: string }) => w.name === name);
+  assert.equal(wf('old').scope, 'repo');
+  assert.equal(wf('map-bootstrap').scope, 'built-in', 'the built-in workflow shows, marked built-in');
+  assert.ok(v.rules.some((r: { name: string; scope: string; on: boolean }) => r.name === 'map' && r.scope === 'built-in' && r.on));
   assert.equal(v.methodology.from, 'built-in');
   assert.ok(v.harnesses.some((h: { id: string }) => h.id === 'claude-code'));
 });

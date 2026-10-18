@@ -164,11 +164,40 @@ export interface RoleDef {
 
 export interface WorkflowDef {
   name: string;
-  scope: Scope;
+  /** built-in: ships with MetaHarness; saving it writes a copy into a folder. */
+  scope: Scope | 'built-in';
   file: string;
-  overrides?: Scope;
+  overrides?: Scope | 'built-in';
   goodAt: string;
   body: string;
+}
+
+export type RuleWhen = 'start' | 'path' | 'new-file' | 'commit' | 'done';
+export type ChangeKind = 'added' | 'modified' | 'deleted' | 'renamed';
+
+/** A note MetaHarness hands agents at a moment it can see (design §18). */
+export interface RuleDef {
+  name: string;
+  scope: Scope | 'built-in';
+  file: string;
+  overrides?: Scope | 'built-in';
+  when: RuleWhen;
+  description: string;
+  body: string;
+  roles: string[];
+  paths: string[];
+  sections?: string;
+  include?: string;
+  requires?: string;
+  missing?: string;
+  changes: ChangeKind[];
+  unlessChanged?: string;
+  edited: boolean;
+  /** What agents get: false when its file or the settings turn it off. */
+  on: boolean;
+  fileOff: boolean;
+  /** The folder whose settings.json switches it, if one does. */
+  switchedBy?: Scope;
 }
 
 export interface GuideDef {
@@ -191,6 +220,7 @@ export interface ConfigView {
   scopes: { scope: Scope; dir: string }[];
   roles: RoleDef[];
   workflows: WorkflowDef[];
+  rules: RuleDef[];
   methodology: GuideDef;
   helperMethodology: GuideDef;
   mcp: { name: string; scope: Scope; def: McpDef }[];
@@ -274,6 +304,7 @@ export interface Settings {
   contextHandoffPct: number;
   stallMinutes: number;
   models: Record<string, ModelSettings>;
+  rules: Record<string, boolean>;
 }
 
 export interface HarnessReport {

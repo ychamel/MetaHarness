@@ -2,10 +2,12 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { loadConfig, parseFrontMatter } from './config.ts';
 import type { McpServerDef } from './mcpservers.ts';
+import { BUILTIN_DIR, loadRuleFiles, loadRules, RULE_WHENS, type Rule } from './rules.ts';
+import { loadSettings } from './settings.ts';
 
 /**
- * Reading and writing the configuration from a client (the web app): roles, workflows, the team
- * guidelines (methodology) and MCP servers, each in one of the config directories. The files stay
+ * Reading and writing the configuration from a client (the web app): roles, workflows, rules, the
+ * team guidelines (methodology) and MCP servers, each in one of the config directories. The files stay
  * the source of truth, in the same format people write by hand.
  */
 
@@ -63,11 +65,24 @@ export interface RoleView {
 
 export interface WorkflowView {
   name: string;
-  scope: Scope;
+  /** built-in: ships with MetaHarness; saving it writes a copy into a folder. */
+  scope: Scope | 'built-in';
   file: string;
-  overrides?: Scope;
+  overrides?: Scope | 'built-in';
   goodAt: string;
   body: string;
+}
+
+export interface RuleView extends Omit<Rule, 'off'> {
+  scope: Scope | 'built-in';
+  /** The same name in a folder (or the built-in pack) this one replaces. */
+  overrides?: Scope | 'built-in';
+  /** What agents get: false when its file or the settings turn it off. */
+  on: boolean;
+  /** Its file says off: true. */
+  fileOff: boolean;
+  /** The settings' switch for it, where one is set: the folder whose settings.json says so. */
+  switchedBy?: Scope;
 }
 
 export interface GuideView {
@@ -83,6 +98,7 @@ export interface ConfigView {
   scopes: ScopeDir[];
   roles: RoleView[];
   workflows: WorkflowView[];
+  rules: RuleView[];
   methodology: GuideView;
   helperMethodology: GuideView;
   mcp: { name: string; scope: Scope; def: McpServerDef }[];
@@ -94,6 +110,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
   const builtIn = loadConfig([]);
   const roles = new Map<string, RoleView>();
   const workflows = new Map<string, WorkflowView>();
+  for (const w of builtIn.workflows.values()) workflows.set(w.name, { name: w.name, scope: 'built-in', file: w.file, goodAt: w.goodAt, body: w.body });
   const mcp = new Map<string, { name: string; scope: Scope; def: McpServerDef }>();
   const guide = (file: string, def: string): GuideView => {
     const g: GuideView = { text: def, from: 'built-in', builtIn: def, files: {} };
@@ -107,7 +124,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
     return g;
   };
   for (const { scope, dir } of scopes) {
-    const c = loadConfig([dir]);
+    const c = loadConfig([dir], { builtIn: false });
     for (const r of c.roles.values()) {
       // Built-in roles (the gatekeeper) have no file to edit.
       if (r.file === '(built in)') continue;
@@ -129,10 +146,36 @@ export function configView(scopes: ScopeDir[]): ConfigView {
     scopes,
     roles: byName(roles),
     workflows: byName(workflows),
+    rules: rulesView(scopes),
     methodology: guide('methodology.md', builtIn.methodology),
     helperMethodology: guide('helper-methodology.md', builtIn.helperMethodology),
     mcp: byName(mcp),
   };
+}
+
+/** Every rule with the layer its file is in, what it replaces, and whether it's on. */
+function rulesView(scopes: ScopeDir[]): RuleView[] {
+  const layers: { scope: Scope | 'built-in'; dir: string }[] = [{ scope: 'built-in', dir: BUILTIN_DIR }, ...scopes];
+  const effective = loadRules(layers.map(l => l.dir), loadSettings(scopes.map(s => s.dir)).rules);
+  const out = new Map<string, RuleView>();
+  for (const { scope, dir } of layers) {
+    for (const r of loadRuleFiles(dir)) {
+      const before = out.get(r.name);
+      const { off: fileOff, ...rule } = r;
+      // A bare "off" file shows the rule it turns off, from that folder.
+      const shown = fileOff && !r.body && before ? { ...before, file: r.file } : rule;
+      out.set(r.name, { ...shown, scope, overrides: before?.scope, on: true, fileOff });
+    }
+  }
+  for (const v of out.values()) v.on = !effective.get(v.name)?.off;
+  for (const { scope, dir } of scopes) {
+    const rules = loadSettings([dir]).rules;
+    for (const name of Object.keys(rules)) {
+      const v = out.get(name);
+      if (v) v.switchedBy = scope;
+    }
+  }
+  return [...out.values()].sort((a, b) => RULE_WHENS.indexOf(a.when) - RULE_WHENS.indexOf(b.when) || a.name.localeCompare(b.name));
 }
 
 /* ---------------- writing ---------------- */
@@ -223,10 +266,57 @@ export function saveWorkflow(scopes: ScopeDir[], b: Record<string, unknown>): st
   return file;
 }
 
-export function deleteItem(scopes: ScopeDir[], kind: 'role' | 'workflow', b: Record<string, unknown>): string {
+/** Keys the app writes for a rule; anything else already in the file is kept as it was. */
+const RULE_KEYS = ['when', 'description', 'roles', 'paths', 'sections', 'include', 'requires', 'missing', 'changes', 'unless_changed', 'edited', 'off'];
+
+/** Saves a rule as rules/<name>.md. Saving a built-in one into a folder makes a copy that replaces it there. */
+export function saveRule(scopes: ScopeDir[], b: Record<string, unknown>): string {
+  const name = checkName(b.name, 'rule');
+  const dir = dirOf(scopes, b.scope);
+  const when = str(b.when);
+  if (!(RULE_WHENS as string[]).includes(when)) throw new Error(`A rule's "when" is one of ${RULE_WHENS.join(', ')}.`);
+  const body = str(b.body);
+  if (!body && b.off !== true) throw new Error('A rule needs its text: what the agent should read.');
+  const file = join(dir, 'rules', `${name}.md`);
+  const prev = (b.previous ?? {}) as Previous;
+  const prevFile = prev.name && prev.scope !== ('built-in' as Scope) ? join(dirOf(scopes, prev.scope ?? b.scope), 'rules', `${checkName(prev.name, 'rule')}.md`) : undefined;
+  if (file !== prevFile && existsSync(file)) throw new Error(`There's already a rule called ${name} in the ${String(b.scope)} folder.`);
+  const old = prevFile && existsSync(prevFile) ? readFileSync(prevFile, 'utf8') : '';
+  const extra = Object.entries(parseFrontMatter(old).meta).filter(([k]) => !RULE_KEYS.includes(k));
+  const joined = (v: unknown) => strList(v).join(', ');
+  const paths = joined(b.paths);
+  const changes = joined(b.changes);
+  writeDoc(
+    file,
+    [
+      ['when', when],
+      ['description', str(b.description)],
+      ['roles', joined(b.roles) === 'all' ? '' : joined(b.roles)],
+      ['paths', paths === '**' ? '' : paths],
+      ['sections', str(b.sections)],
+      ['include', str(b.include)],
+      ['requires', str(b.requires)],
+      ['missing', str(b.missing)],
+      ['changes', changes === 'added, modified, deleted, renamed' ? '' : changes],
+      ['unless_changed', str(b.unlessChanged)],
+      ['edited', b.edited === true ? 'true' : ''],
+      ['off', b.off === true ? 'true' : ''],
+      ...extra,
+    ],
+    body,
+    leadingComments(old),
+  );
+  if (prevFile && prevFile !== file) rmSync(prevFile, { force: true });
+  return file;
+}
+
+export function deleteItem(scopes: ScopeDir[], kind: 'role' | 'workflow' | 'rule', b: Record<string, unknown>): string {
   const name = checkName(b.name, kind);
   const dir = dirOf(scopes, b.scope);
-  const files = kind === 'role' ? [join(dir, 'roles', `${name}.md`)] : [join(dir, 'workflows', `${name}.md`), join(dir, 'playbooks', `${name}.md`)];
+  const files =
+    kind === 'role' ? [join(dir, 'roles', `${name}.md`)]
+    : kind === 'rule' ? [join(dir, 'rules', `${name}.md`)]
+    : [join(dir, 'workflows', `${name}.md`), join(dir, 'playbooks', `${name}.md`)];
   const found = files.filter(existsSync);
   if (!found.length) throw new Error(`There's no ${kind} called ${name} in the ${String(b.scope)} folder.`);
   for (const f of found) rmSync(f);

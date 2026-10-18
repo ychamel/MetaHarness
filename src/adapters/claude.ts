@@ -223,7 +223,7 @@ class ClaudeSession implements Session {
           const id = (b as { id?: string }).id;
           if (id) this.toolNames.set(id, b.name);
           // Our own tools are already logged by the daemon as they happen.
-          if (!b.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) this.ev.toolCall(b.name, summarize(b.input));
+          if (!b.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) this.ev.toolCall(b.name, summarize(b.input), { kind: claudeToolRequest(b.name, b.input ?? {}).kind });
         }
       }
     } else if (m.type === 'user') {

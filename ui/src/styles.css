@@ -523,6 +523,8 @@ textarea.instructions { font-family: var(--mono); font-size: 12.5px; line-height
 .segmented button + button { border-left: 1px solid var(--line-strong); }
 .segmented button.on { background: var(--accent-soft); color: var(--accent); font-weight: 560; }
 .segmented.small button { padding: 2px 9px; font-size: 12px; }
+.segmented.wrap { flex-wrap: wrap; }
+.tag.muted { color: var(--text-3); margin: 0 0 0 6px; }
 button.link { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font-size: 12px; }
 button.link:hover { text-decoration: underline; }
 button.link:disabled { color: var(--text-3); cursor: default; text-decoration: none; }

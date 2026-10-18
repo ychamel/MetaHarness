@@ -317,13 +317,13 @@ class AcpSession implements Session {
     const req = acpToolRequest(t);
     if (!t.reported && u.status !== 'pending') {
       t.reported = true;
-      this.ev.toolCall(req.tool, req.detail.slice(0, 160));
+      this.ev.toolCall(req.tool, req.detail.slice(0, 160), { kind: req.kind });
     }
     if (!t.finished && (u.status === 'completed' || u.status === 'failed')) {
       t.finished = true;
       if (!t.reported) {
         t.reported = true;
-        this.ev.toolCall(req.tool, req.detail.slice(0, 160));
+        this.ev.toolCall(req.tool, req.detail.slice(0, 160), { kind: req.kind });
       }
       this.ev.toolResult(resultSummary(u), u.status === 'completed');
     }

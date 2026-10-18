@@ -19,8 +19,9 @@ import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } 
 import { HISTORY, SharedFolder } from './shared.ts';
 import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
 import { deniedCommandPrefixes, guardEnv, installGuard, refusedGitCommand } from './guard.ts';
-import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveWorkflow, scopesOf } from './configedit.ts';
+import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
+import { onCommit, onDone, onToolCall, rulesPrompt, RuleState, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
 
 export interface InboxEntry {
   id: string;
@@ -123,6 +124,10 @@ export interface AgentRec {
   stallReported?: number;
   /** Its context window is nearly full: it continues in a fresh session soon (see checkContext). */
   refresh?: { since: number; pct: number; timer?: NodeJS.Timeout };
+  /** Which rules it has had this session (design §18). A fresh session starts over. */
+  rules: RuleState;
+  /** Rule notes for an agent between turns: they ride along with whatever reaches it next. */
+  ruleNotes: string[];
 }
 
 export interface GoalRec {
@@ -499,7 +504,7 @@ export class Daemon {
       goal: goalId, name, role, harness, model, parent: o.parent, brief: o.brief,
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
       adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
-      toolsRunning: 0, lastToolEnd: 0, progressAt: Date.now(),
+      toolsRunning: 0, lastToolEnd: 0, progressAt: Date.now(), rules: new RuleState(), ruleNotes: [],
       ...(parentRec ? { lastPartner: { name: parentRec.name, at: Date.now(), text: o.brief, sent: false } } : {}),
     };
     rec.systemPrompt = this.buildPrompt(g, rec, o.workflow, startedFrom);
@@ -533,6 +538,8 @@ export class Daemon {
     const gen = ++rec.gen;
     rec.pendingBrief = undefined;
     rec.resumeId = undefined;
+    // A resumed session still has what the rules gave it; a fresh one doesn't.
+    if (!resume) rec.rules = new RuleState();
     rec.adapter
       .start(
         {
@@ -627,6 +634,8 @@ export class Daemon {
       const list = [...this.config.workflows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
       parts.push(`## Workflows\n\nGuides for running kinds of tasks. If one fits this goal, read it with the \`workflow\` tool and follow it.\n\n${list}`);
     }
+    const rules = rulesPrompt(this.config.rules.values(), ruleAgent(rec), rec.cwd);
+    if (rules) parts.push(rules);
     parts.push(
       [
         '## Where you are',
@@ -720,7 +729,7 @@ export class Daemon {
         rec.lastCallAt = Date.now();
         this.emit({ ...base, type: 'agent.text', data: { text } });
       },
-      toolCall: (tool, summary) => {
+      toolCall: (tool, summary, info) => {
         if (!live()) return;
         rec.toolsRunning++;
         rec.lastCallAt = Date.now();
@@ -728,6 +737,7 @@ export class Daemon {
         this.noteGitActor(rec, summary);
         this.noteSharedTouch(rec, summary);
         this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } });
+        this.toolRules(rec, tool, summary, info);
       },
       toolResult: (summary, ok) => {
         if (!live()) return;
@@ -1098,6 +1108,7 @@ export class Daemon {
         g.seenOn.set(c.sha, branch);
         this.emit({ goal: g.id, agent: owner, type: 'git.commit', data: { branch, sha: c.sha, summary: c.summary } });
         if (c.mergedSha) merged(c.mergedSha, c.sha);
+        else if (owner) this.commitRules(g, gg, owner, c.sha);
       }
       if (fastForwarded) merged(fastForwarded, fastForwarded, true);
     }
@@ -1363,6 +1374,37 @@ export class Daemon {
       out.push(`[MetaHarness] Changed in the shared folder (${g.sharedDir}) since you last heard: ${items.join('; ')}. Re-read what matters to you.`);
     }
     return out.join('\n');
+  }
+
+  /* ---------------- rules (design §18) ---------------- */
+
+  /** Path and new-file rules for one tool call. */
+  private toolRules(rec: AgentRec, tool: string, summary: string, info?: ToolInfo): void {
+    if (FINISHED.includes(rec.state)) return;
+    for (const n of onToolCall(this.config.rules.values(), ruleAgent(rec), rec.cwd, rec.rules, tool, summary, info)) this.ruleNote(rec, n);
+  }
+
+  /** Commit rules for a commit an agent made (not a merge). */
+  private commitRules(g: GoalRec, gg: git.GoalGit, name: string, sha: string): void {
+    const rec = g.agents.get(name);
+    if (!rec || rec.quick) return;
+    const notes = onCommit(this.config.rules.values(), ruleAgent(rec), rec.cwd, rec.rules, sha, git.changedFiles(gg, sha));
+    for (const n of notes) this.ruleNote(rec, n);
+  }
+
+  /** The done rules an agent hasn't had this session: the reply that holds its first done back. */
+  doneRules(rec: AgentRec): string | undefined {
+    const n = onDone(this.config.rules.values(), ruleAgent(rec), rec.cwd, rec.rules);
+    if (!n) return undefined;
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: [] } });
+    return n.text;
+  }
+
+  /** In a turn, a rule's note joins it; between turns it waits for whatever reaches the agent next, so it never wakes anyone. */
+  private ruleNote(rec: AgentRec, n: RuleNote): void {
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: n.paths.slice(0, 20) } });
+    if (rec.session?.busy() && !FINISHED.includes(rec.state)) this.notice(rec, n.text);
+    else rec.ruleNotes.push(n.text);
   }
 
   /** Remembers who in the human's checkout last ran a git command that makes commits. */
@@ -2083,16 +2125,21 @@ export class Daemon {
    * Shared-folder notes ride along too: this costs nothing, unlike a new turn.
    */
   private takeForTurn(rec: AgentRec, via: string): string | undefined {
-    if ((!rec.inbox.length && !rec.fileNotes.size) || rec.interrupting || rec.state === 'paused' || rec.held) return undefined;
+    if ((!rec.inbox.length && !rec.fileNotes.size && !rec.ruleNotes.length) || rec.interrupting || rec.state === 'paused' || rec.held) return undefined;
     const entries = rec.inbox.splice(0);
     this.markDelivered(rec, entries, via);
     if (!rec.inbox.length) this.endPause(rec);
     return this.forAgent(rec, entries);
   }
 
-  /** Messages for an agent, with any shared-folder changes it hasn't heard about. */
+  /** Messages for an agent, with the notes it hasn't had yet. */
   private forAgent(rec: AgentRec, entries: InboxEntry[]): string {
-    return [formatForAgent(entries), this.takeFileNotes(rec)].filter(Boolean).join('\n');
+    return [formatForAgent(entries), this.takeNotes(rec)].filter(Boolean).join('\n');
+  }
+
+  /** What rides along with the next thing that reaches an agent: rule notes, then shared-folder changes. Empties both. */
+  takeNotes(rec: AgentRec): string {
+    return [...rec.ruleNotes.splice(0), this.takeFileNotes(rec)].filter(Boolean).join('\n\n');
   }
 
   /** A message from MetaHarness itself. */
@@ -2305,7 +2352,7 @@ export class Daemon {
       lastCallAt: a.lastCallAt, cacheMinutes: a.cacheMinutes, contextPct: a.contextPct, lastText: a.lastText,
       adapter: this.adapters[a.harness], resumeId: a.nativeSession, gen: 0, token, systemPrompt: '', doneNote: a.doneNote,
       inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(), toolsRunning: 0, lastToolEnd: 0,
-      progressAt: Date.now(),
+      progressAt: Date.now(), rules: new RuleState(), ruleNotes: [],
     };
     rec.systemPrompt = this.buildPrompt(g, rec, g.workflow, a.startedFrom ?? 'its start point');
     return rec;
@@ -2727,15 +2774,18 @@ export class Daemon {
       case 'role.delete':
       case 'workflow.save':
       case 'workflow.delete':
+      case 'rule.save':
+      case 'rule.delete':
       case 'guide.save':
       case 'mcp.save': {
         const scopes = scopesOf(this.configDirs);
         const file =
           b.cmd === 'role.save' ? saveRole(scopes, b)
           : b.cmd === 'workflow.save' ? saveWorkflow(scopes, b)
+          : b.cmd === 'rule.save' ? saveRule(scopes, b)
           : b.cmd === 'guide.save' ? saveGuide(scopes, b)
           : b.cmd === 'mcp.save' ? saveMcp(scopes, b)
-          : deleteItem(scopes, b.cmd === 'role.delete' ? 'role' : 'workflow', b);
+          : deleteItem(scopes, b.cmd === 'role.delete' ? 'role' : b.cmd === 'rule.delete' ? 'rule' : 'workflow', b);
         this.reloadConfig();
         const what = String(b.cmd).endsWith('.delete') ? 'Deleted' : 'Saved';
         return { result: `${what} ${file}. Agents started from now on use it.`, file, config: this.configView() };
@@ -2810,7 +2860,7 @@ export class Daemon {
         return await this.harnessModels(harness, b.refresh === true);
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, guide.save, mcp.save.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, rule.save, rule.delete, guide.save, mcp.save.`);
     }
   }
 
@@ -2926,13 +2976,18 @@ export function formatForAgent(entries: InboxEntry[]): string {
       e.kind === 'done'
         ? `[MetaHarness] ${e.from} finished: ${e.text}`
         : e.kind === 'notice'
-          ? `[MetaHarness] ${e.text}`
+          ? e.text.startsWith('[MetaHarness') ? e.text : `[MetaHarness] ${e.text}`
           : `[MetaHarness] Message from ${e.from}${e.urgent ? ' (urgent)' : ''}: ${e.text}`,
     )
     .join('\n');
 }
 
 /** Whether a role's allow list (Claude Code style, e.g. "Bash(npm test*)") covers a shell command. */
+/** Who an agent is, for the rules' roles: lines. */
+function ruleAgent(rec: AgentRec): RuleAgent {
+  return { role: rec.role.name, helper: rec.quick || rec.role.helper, lead: rec.isLead };
+}
+
 export function roleAllows(role: Role, command: string): boolean {
   const cmd = command.trim();
   return role.allow.some(a => {

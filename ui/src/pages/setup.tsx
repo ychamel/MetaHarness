@@ -13,7 +13,7 @@ export interface SetupProps {
 }
 
 /** An item's key in the address: scope/name. */
-export const keyOf = (x: { scope: Scope; name: string }) => `${x.scope}/${x.name}`;
+export const keyOf = (x: { scope: Scope | 'built-in'; name: string }) => `${x.scope}/${x.name}`;
 
 /**
  * A copy of an item being edited, and whether it differs from what's saved. `reset` takes a new
@@ -62,7 +62,7 @@ export function SetupLayout({ title, intro, list, editor, action }: { title: str
   );
 }
 
-export function ListItem({ on, title, scope, sub, extra, onClick }: { on: boolean; title: string; scope?: Scope; sub?: ReactNode; extra?: ReactNode; onClick: () => void }) {
+export function ListItem({ on, title, scope, sub, extra, onClick }: { on: boolean; title: string; scope?: Scope | 'built-in'; sub?: ReactNode; extra?: ReactNode; onClick: () => void }) {
   return (
     <button className={`list-item${on ? ' on' : ''}`} onClick={onClick}>
       <span className="list-item-top">

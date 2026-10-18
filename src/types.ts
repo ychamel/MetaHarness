@@ -56,4 +56,6 @@ export interface Workflow {
   goodAt: string;
   body: string;
   file: string;
+  /** Ships with MetaHarness (defaults/workflows/); a folder's file of the same name replaces it. */
+  builtIn?: boolean;
 }

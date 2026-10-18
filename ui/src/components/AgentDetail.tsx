@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.ts';
-import { BUSY, clock, isOwnTool, money, oneLine, STATE_LABEL, GATE } from '../format.ts';
+import { BUSY, clock, isOwnTool, money, oneLine, ruleLine, STATE_LABEL, GATE } from '../format.ts';
 import type { Agent, AgentDetail as Detail, Goal, Manifest, MhEvent } from '../types.ts';
 import { CopyText, Ctx, Dialog, Dot, Markdown, More, useConfirm, CacheClock } from './common.tsx';
 
@@ -81,6 +81,7 @@ function streamOf(events: MhEvent[], name: string): Item[] {
       case 'git.conflict':
       case 'shared.write':
       case 'shared.clash':
+      case 'rule.fired':
         out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: noteText(e), warn: ['agent.crashed', 'git.conflict', 'shared.clash', 'agent.limited', 'agent.moved'].includes(e.type) });
         break;
     }
@@ -107,6 +108,7 @@ function noteText(e: MhEvent): string {
     case 'git.conflict': return `${d.op} conflict on ${d.branch}: ${(d.files as string[]).join(', ')}`;
     case 'shared.write': return `wrote shared/${d.path} (v${d.version})`;
     case 'shared.clash': return `changed shared/${d.path}, which is ${d.owner}'s`;
+    case 'rule.fired': return ruleLine(d);
     default: return e.type;
   }
 }

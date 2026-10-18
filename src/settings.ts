@@ -4,7 +4,7 @@ import { join } from 'node:path';
 /**
  * settings.json in the personal and the repository's .metaharness folder (the repository's wins,
  * key by key): how approvals are decided, prompt-cache reminders, context handoffs, stall reports,
- * and per-model prices and cache lifetimes.
+ * per-model prices and cache lifetimes, and which rules are on.
  */
 
 /** Dollars per million tokens. */
@@ -53,6 +53,8 @@ export interface Settings {
   stallMinutes: number;
   /** By "harness/model", or just "model" for every harness that offers it. */
   models: Record<string, ModelSettings>;
+  /** Rules turned off (false) or back on (true) by name, without a file (design §18). */
+  rules: Record<string, boolean>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -67,6 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
   contextHandoffPct: 80,
   stallMinutes: 10,
   models: {},
+  rules: {},
 };
 
 const FILE = 'settings.json';
@@ -115,11 +118,14 @@ function apply(s: Settings, raw: Record<string, unknown>): void {
   if (raw.models && typeof raw.models === 'object') {
     for (const [key, v] of Object.entries(raw.models)) s.models[key] = { ...s.models[key], ...readModel(v) };
   }
+  if (raw.rules && typeof raw.rules === 'object') {
+    for (const [name, on] of Object.entries(raw.rules)) if (typeof on === 'boolean') s.rules[name] = on;
+  }
 }
 
 /** Settings from each directory in order; later ones override earlier ones. */
 export function loadSettings(dirs: string[]): Settings {
-  const s: Settings = { ...DEFAULT_SETTINGS, models: {} };
+  const s: Settings = { ...DEFAULT_SETTINGS, models: {}, rules: {} };
   for (const dir of dirs) {
     // The older prices.json: { "<model>": { input, cachedInput, output } }.
     const old = readJson(join(dir, 'prices.json'));
@@ -151,6 +157,15 @@ export function writeSettingsFile(dir: string, patch: Record<string, unknown>): 
       }
       if (Object.keys(models).length) cur.models = models;
       else delete cur.models;
+    } else if (k === 'rules' && v && typeof v === 'object') {
+      // One rule at a time: true or false sets it, null goes back to the folder before.
+      const rules = { ...((cur.rules as Record<string, unknown>) ?? {}) };
+      for (const [name, on] of Object.entries(v as Record<string, unknown>)) {
+        if (typeof on === 'boolean') rules[name] = on;
+        else delete rules[name];
+      }
+      if (Object.keys(rules).length) cur.rules = rules;
+      else delete cur.rules;
     } else if (v === null) delete cur[k];
     else cur[k] = v;
   }

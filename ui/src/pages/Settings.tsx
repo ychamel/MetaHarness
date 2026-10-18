@@ -4,7 +4,7 @@ import { Field, Toggle } from '../components/common.tsx';
 import { EditorFooter, ScopePicker, Section, useDraft, type SetupProps } from './setup.tsx';
 import type { ConfigView } from '../types.ts';
 
-type Draft = Omit<SettingsT, 'models'>;
+type Draft = Omit<SettingsT, 'models' | 'rules'>;
 const MODES: [ApprovalMode, string, string][] = [
   ['ask', 'Ask me', 'Whatever the fixed rules don’t settle comes to your Inbox.'],
   ['gatekeeper', 'Gatekeeper', 'A cheap model in the gatekeeper role allows what’s safe, refuses what’s harmful, and asks you about the rest, with its reason.'],

@@ -76,8 +76,18 @@ export function eventText(e: MhEvent): string {
     case 'inbox.item': return `→ you (${d.kind}): ${oneLine(d.text, 300)}`;
     case 'inbox.resolved': return `you ${d.decision === 'approve' ? 'approved' : d.decision === 'deny' ? 'denied' : 'dismissed'} ${d.id}${d.reply ? `: ${oneLine(d.reply)}` : ''}`;
     case 'account.limit': return `${d.account}: ${d.status}${d.usedPct != null ? `, ${d.usedPct}% used` : ''}`;
+    case 'rule.fired': return ruleLine(d);
     default: return '';
   }
+}
+
+const RULE_MOMENT: Record<string, string> = { path: 'looking at', 'new-file': 'created', commit: 'committed', done: 'calling done' };
+
+/** A rule's note reaching an agent: "rule map (looking at src/api/orders.ts)". */
+export function ruleLine(d: Record<string, any>): string {
+  const paths = (d.paths as string[] | undefined) ?? [];
+  const what = paths.length ? ` ${paths.slice(0, 3).join(', ')}${paths.length > 3 ? ` +${paths.length - 3}` : ''}` : '';
+  return `rule ${d.rule} (${RULE_MOMENT[d.when] ?? d.when}${what})`;
 }
 
 /** Kinds of feed line, for styling and filtering. */
@@ -112,6 +122,7 @@ export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
       return e.data.version === 1 ? 'key' : 'minor';
     case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'approval.gatekeeper': case 'agent.cache_expiring': case 'shared.delete':
     case 'agent.paused': case 'agent.resumed': case 'agent.paused_between_steps': case 'agent.interrupted': case 'account.limit': case 'agent.context_full':
+    case 'rule.fired':
       return 'minor';
     default:
       return 'hidden';

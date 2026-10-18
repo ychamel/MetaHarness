@@ -26,6 +26,10 @@ Milestone 1 in progress:
 - **Workflows** guide the lead through a kind of task (`feature`, `feature-explore`,
   `implementation`), hand on to each other, and stop for your approval where they say so.
   **Specialist roles** can bring their own MCP servers (`mcp: blender`) and workflow.
+- **Rules** reach agents at the moment they matter: the codebase map's section for the folder
+  an agent is reading, "does this already exist?" when it creates a file, "update the map" when
+  a commit moves things. The built-in pack keeps code clean and mapped (`ARCHITECTURE.md`); turn
+  any rule off or write your own. Personal skills are hidden so every harness is on equal terms.
 - The team works **in your checkout**, like native subagents; worktrees (on `mh/<goal>/<agent>`)
   are only for code written in parallel, when a workflow asks for them. They get hard-linked
   copies of your ignored `node_modules`/`vendor`, merge conflicts show up in `mh tail`, and
@@ -99,6 +103,8 @@ Another harness on a transport MetaHarness already speaks is a profile, not code
 | `src/mcpservers.ts`, `src/readonly.ts` | Roles' MCP servers by name; which shell commands only read |
 | `src/doctor.ts`, `src/probe.ts` | `mh doctor` and `mh test` |
 | `src/git.ts` | Worktrees and branches per agent, and reading new commits for git events |
+| `src/rules.ts` | Rules: loading the layers, and which ones fire for a tool call, a commit or a done |
+| `defaults/` | The built-in rules and the `map-bootstrap` workflow |
 | `src/mcp.ts` | The tools as an MCP server, one identity per agent, plus the approval tool |
 | `src/cli.ts` | The `mh` command |
 | `src/adapters/` | `claude.ts` (Claude Code, stream-json), `codex.ts` (Codex app-server), `agy.ts` + `agy-hook.ts` (Antigravity CLI, stream-json and hooks), `fake.ts` (scripted agents for tests) |

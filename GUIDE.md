@@ -288,7 +288,7 @@ The terminal can do all of this too:
 
 ## 8. Tailoring it
 
-Roles, workflows, the agent guidelines and MCP servers each have a page under **Setup** in the
+Roles, workflows, rules, the agent guidelines and MCP servers each have a page under **Setup** in the
 web app. Each item shows whether it lives in this repository or in your personal folder, and
 you choose where to save it. What you save applies to agents started from then on, without
 restarting the daemon. The pages write the same files described below.
@@ -298,6 +298,47 @@ restarting the daemon. The pages write the same files described below.
   workflow. Copy one of the shipped ones to start.
 - **Agent instructions.** `methodology.md` is what every agent reads about working on a team;
   `helper-methodology.md` is for quick helpers. Edit them in either config folder.
+- **Rules** are short notes MetaHarness hands an agent at a moment it can see: at the start,
+  when it looks at files, creates one, commits, or calls `done`. The **Rules** page lists them
+  with a switch each. The built-in ones keep code clean and mapped:
+
+  | Rule | What the agent gets |
+  |---|---|
+  | `conventions` | At the start: readable, well structured, scalable, plus your `CONVENTIONS.md` |
+  | `map` | Looking at files: the overview of `ARCHITECTURE.md` and the section for that folder |
+  | `no-duplicates` | Creating a file: check that nothing already does its job |
+  | `map-upkeep` | Committing new, moved or removed files without touching the map: update it |
+  | `finish-clean` | Its first `done`, if it changed files: one look over the changes, then `done` again |
+  | `map-missing` | The lead, when there's no map: it can offer you the `map-bootstrap` workflow |
+
+  **The map** is `ARCHITECTURE.md` at the repository root: an overview, then a short section
+  per area whose heading is its path (`## src/api/`). Agents get the section for wherever they
+  are working, so they open the right files instead of searching. To write one, start a goal
+  with the **map-bootstrap** workflow: explorers survey the code, the lead writes the map (and
+  a `CONVENTIONS.md` if the code has clear conventions), and you approve it before it's
+  committed.
+
+  To change a built-in rule, open it and save: the copy goes into the folder you pick and
+  replaces it there. To add one, write `.metaharness/rules/<name>.md`:
+
+  ```markdown
+  ---
+  when: path                 # start, path, new-file, commit or done
+  description: how handlers in src/api are written
+  paths: src/api/**          # globs; !glob leaves some out
+  roles: team                # all, team, helpers, lead, role names, !name
+  ---
+  Handlers take a request and return a response; they never touch the database directly.
+  ```
+
+  More keys: `sections:` (a file whose path sections come along), `include:` (a file whose
+  text follows), `requires:` / `missing:` (only while a file exists, or doesn't), `changes:` and
+  `unless_changed:` for commits, `edited: true` for done. To turn a rule off, flip its switch
+  (that writes `"rules": {"map": false}` into `settings.json`), or add a file of the same name
+  with `off: true`.
+- **Personal skills stay out.** Skills you installed for yourself (in `~/.claude/skills`, your
+  Codex skills, `~/.gemini/config/skills`) are hidden from agents, so every harness on a team
+  has the same ones. Each harness's own skills, like Codex's image generation, stay.
 - **MCP servers.** A role names what it needs, for example `mcp: blender`. Each name is looked
   up in `~/.metaharness/mcp.json`, in the format every harness uses
   (`{"mcpServers": {"blender": {"command": "…", "args": […]}}}`), else among the servers that
@@ -350,6 +391,7 @@ Finished goals stay in the app's goal list, rebuilt from the log.
 | Lots of approvals for harmless commands | Use the gatekeeper (Settings), or add them to the role's `allow:` list |
 | Costs show "—" for Codex or Antigravity | Give the model's prices on the Harnesses page |
 | An agent seems stuck | Its stream in the app shows its last command. Message it, mark it urgent, or pause and resume it |
+| A rule's note is noisy or wrong for this repository | Turn it off on the Rules page, or save an edited copy into the repository |
 | A harness misbehaves | `mh test <harness>` says which part works and which doesn't |
 
 ## Reference

@@ -927,7 +927,119 @@ nothing more.
 
 ---
 
-## 18. Plan
+## 18. Rules and skills
+
+Roles, workflows and the methodology are prose an agent gets once, at the start. Some guidance
+only helps at a particular moment: the map of the code when an agent starts looking around, a
+check for an existing helper when it creates a file, a reminder about the map when it commits.
+An agent told at the start forgets it forty tool calls later, and only the harness sees those
+moments come. So there are two more kinds of markdown, split by **who decides when they
+apply**:
+
+- **Rules**: MetaHarness decides. A rule is a short note that reaches an agent at a moment the
+  daemon can see.
+- **Skills** (the second step): the agent decides. The `SKILL.md` format the harnesses already
+  share (a name and a one-line description, plus a folder of resources), served the same way on
+  every harness through a `skill(name)` tool.
+
+The mechanism is MetaHarness's; the content is the user's. What ships is a default pack the
+user can edit, extend or turn off.
+
+### A rule
+
+```markdown
+<!-- .metaharness/rules/map.md -->
+---
+when: path                  # start | path | new-file | commit | done
+description: the part of ARCHITECTURE.md for where you're working
+roles: all                  # all · team · helpers · lead · role names · !name to leave one out
+paths: **                   # globs, !glob to leave some out (path, new-file, commit)
+sections: ARCHITECTURE.md   # attach the sections of this repo file whose heading is a path
+requires: ARCHITECTURE.md   # only when this file exists in the repo (missing: the opposite)
+                            # include: FILE adds a repo file's text after the body, when it exists
+---
+This repository's map is ARCHITECTURE.md. The part for where you're working is below...
+```
+
+| `when` | Fires | Once per |
+|---|---|---|
+| `start` | The body goes into the agent's prompt, under *Rules* (so a fresh session gets it again) | session |
+| `path` | The agent's tool call names a path in the repository matching `paths`: a read, search, listing, edit or command. With `sections`, each newly matched section comes along | session; each section once |
+| `new-file` | The agent writes a file that didn't exist | session |
+| `commit` | A commit by the agent touches `paths`; `changes:` narrows it to `added`, `deleted`, `renamed`, `modified`; `unless_changed:` skips commits that also change that file. Merges don't count | commit |
+| `done` | The agent calls `done`: the rule's text comes back instead, once, and the next `done` is accepted. `edited: true` limits it to agents that changed files in the repository | session |
+
+- **Delivery** is the change-notice path (§6): a note joins a running turn (mid-turn injection,
+  a hook before the next model call, or the next MetaHarness tool result), and for an agent
+  between turns it waits for whatever reaches it next. A rule never wakes an agent. Each note
+  starts `[MetaHarness · rule <name>]` and says what triggered it ("You created src/x.ts").
+- **Awareness**: the prompt's *Rules* part lists the other rules with their `description` and
+  trigger, so an agent knows notes will come and why.
+- **Sections**: a heading whose first word is a path in the repository (`## src/adapters/`,
+  ``### `ui/src/pages/` ``) starts a section that runs to the next heading of the same or a
+  higher level. The deepest heading containing the touched path wins. Everything outside path
+  sections is the overview, which comes with the first section. An agent that reads the whole
+  file gets no more sections that session.
+- **Paths** are read from the tool call's summary (the file path, the search path, the words of
+  a shell command), so it works the same on every harness. A path counts when it's inside the
+  agent's working folder; files are read from there too, so an agent in a worktree sees its
+  branch's map.
+- Each firing is logged as `rule.fired` {rule, when, paths}.
+
+### Layers, overrides, off
+
+Rules load like roles: the built-in pack (`defaults/rules/` in MetaHarness), then the personal
+`~/.metaharness/rules/`, then the repository's `.metaharness/rules/`. A file with the same name
+replaces the one before it, and `off: true` in its front matter turns it off. Without writing a
+file, `rules: { "<name>": false }` in `settings.json` turns one off (and `true` turns one the
+personal folder turned off back on, for one repository). The **Rules** page lists every rule
+with where it comes from, a switch, and *Customize* to copy a built-in into a folder to edit.
+The assistant can propose a rule.
+
+### The default pack: clean, mapped code
+
+Clean means readable, scalable and well structured. The map is `ARCHITECTURE.md` in the
+repository, committed with the code: an overview and where things go, then a short section per
+area under a path heading. It's a map, not documentation.
+
+| Rule | When | Roles | Does |
+|---|---|---|---|
+| `conventions` | start | team | Readable, well structured, scalable: the principles, plus the repository's `CONVENTIONS.md` when there is one (`include:`) |
+| `map` | path | all | The overview and the section for where the agent is, from `ARCHITECTURE.md` |
+| `no-duplicates` | new-file | team | "Is there already something that does this?": check the map, or ask a scout |
+| `map-upkeep` | commit | team | Files were added, moved or removed without a change to `ARCHITECTURE.md`: update its section |
+| `finish-clean` | done | team | Look over your changes once before finishing (`edited: true`) |
+| `map-missing` | start | lead | There's no `ARCHITECTURE.md`: offer the `map-bootstrap` workflow to the human; never run it unasked |
+
+The **`map-bootstrap`** workflow (built in) has explorers survey the code area by area, writes
+`ARCHITECTURE.md` (and a `CONVENTIONS.md` when the code has clear conventions), asks the human
+to approve both, and commits them. Linters and formatters are left out on purpose.
+
+### Native skills: hidden, so every harness sees the same
+
+A team mixes harnesses, so a personal skill only one of them can see makes agents unequal.
+What each harness brings falls in three tiers:
+
+| Tier | Examples | Kept? |
+|---|---|---|
+| Built-in tools | Codex's `image_gen`, browser and computer use | Always; they're why a role picks a harness |
+| The harness's own skills | Codex's `.system` skills (imagegen, openai-docs…), Claude Code's bundled skills, Antigravity's built-in skills | Kept: they're the manual for the harness's own tools |
+| The user's personal skills | `~/.claude/skills` and account plugins, Codex's user skills, `~/.gemini/config/skills` | Hidden |
+
+- **Claude Code**: `--setting-sources project,local` already leaves out user-level skills and
+  plugins (checked: the claude.ai plugin's skills go, the bundled ones stay).
+- **Codex**: the adapter asks the app-server (`skills/list`) for the agent's folder and turns
+  off each skill of scope `user` with `skills.config` entries (`enabled: false`) on the thread.
+- **Antigravity** has no switch for its global folder, but a workspace customization wins over
+  a global one of the same name, so the agent's own customization root gets a stub for each
+  personal skill saying it's off.
+- Skills in the repository (`.claude/skills/`, `.agents/skills/`) stay for now; the skills step
+  picks them up for every harness. A role will be able to ask for the user's own with
+  `native_skills: true`.
+
+---
+
+## 19. Plan
 
 | Step | Scope | Done when |
 |---|---|---|
@@ -941,7 +1053,7 @@ Claude Code, and the team. Compare result quality, cost, time, and how often you
 
 ---
 
-## 19. Open questions
+## 20. Open questions
 
 1. Can you act as the lead (spawning and briefing agents from the UI), or is the lead always an agent? Probably both.
 2. Should the shared folder be committed with the code at the end (design docs, reports), or stay outside the repo?

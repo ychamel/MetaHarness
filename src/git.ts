@@ -118,6 +118,20 @@ export function commitsBetween(g: GoalGit, from: string, to: string): NewCommit[
     });
 }
 
+/** The files a commit changed, against its first parent (renames detected). */
+export function changedFiles(g: GoalGit, sha: string): import('./rules.ts').CommitFile[] {
+  const out = tryGit(g.repo, 'diff-tree', '--no-commit-id', '--root', '-r', '-M', '--name-status', sha) ?? '';
+  const kinds: Record<string, import('./rules.ts').ChangeKind> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'added', T: 'modified' };
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map(line => {
+      const [status, a, b] = line.split('\t');
+      const kind = kinds[status[0]] ?? 'modified';
+      return b ? { kind, path: b, ...(kind === 'renamed' ? { from: a } : {}) } : { kind, path: a };
+    });
+}
+
 /** Uncommitted changes in a worktree, one `git status --short` line each. */
 export function statusShort(path: string): string[] {
   return (tryGit(path, 'status', '--short') ?? '').split('\n').filter(Boolean);

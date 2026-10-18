@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { parseFrontMatter } from '../config.ts';
 import { MCP_SERVER_NAME } from '../mcp.ts';
 import { run } from '../harnesses.ts';
 import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest } from './types.ts';
@@ -17,6 +19,9 @@ import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, Sessio
  * - Our MCP server, the hooks and the role prompt live in the agent's own directory, added with
  *   --add-dir: every workspace is a customization root, so nothing touches the user's own
  *   agy config or the agent's worktree.
+ * - agy has no switch for the user's global customizations (~/.gemini/config/), but a workspace
+ *   skill wins over a global one of the same name, so each personal skill gets a stub there
+ *   saying it's off (design §18). Its built-in skills stay.
  * - No interrupt: the daemon restarts the session from its conversation ID instead.
  * - Usage limits come from `agy -p=/quota`, per pool: Gemini models, Gemini 4 Argon, and
  *   Claude/GPT models each have their own.
@@ -155,10 +160,37 @@ export function quotaInfo(groups: { name?: string; buckets?: Bucket[] }[], model
   };
 }
 
-/** The agent's own customization root: our MCP server, the hooks, and the role prompt as an always-on rule. */
-export function writeAgentConfig(spec: SessionSpec, hookScript: string): void {
+/** Where agy finds the user's own skills, one folder each. */
+export const AGY_PERSONAL_SKILLS = join(homedir(), '.gemini', 'config', 'skills');
+
+/** The names of the user's own agy skills: each folder's SKILL.md name, else the folder's. */
+export function agyPersonalSkills(dir = AGY_PERSONAL_SKILLS): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const file = join(dir, e.name, 'SKILL.md');
+    if (!e.isDirectory() || !existsSync(file)) continue;
+    const name = parseFrontMatter(readFileSync(file, 'utf8')).meta.name || e.name;
+    if (/^[\w.:-]+$/.test(name)) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * The agent's own customization root: our MCP server, the hooks, the role prompt as an always-on
+ * rule, and a stub for each personal skill.
+ */
+export function writeAgentConfig(spec: SessionSpec, hookScript: string, personalSkills = agyPersonalSkills()): void {
   const dir = join(spec.agentDir, '.agents');
   mkdirSync(join(dir, 'rules'), { recursive: true });
+  rmSync(join(dir, 'skills'), { recursive: true, force: true });
+  for (const name of personalSkills) {
+    mkdirSync(join(dir, 'skills', name.replace(/:/g, '-')), { recursive: true });
+    writeFileSync(
+      join(dir, 'skills', name.replace(/:/g, '-'), 'SKILL.md'),
+      `---\nname: ${name}\ndescription: Turned off for this team by MetaHarness. Don't use it.\n---\nThis skill is turned off for MetaHarness agents, so every harness on the team has the same skills. Carry on without it.\n`,
+    );
+  }
   // Ours, plus the role's servers MetaHarness has definitions for. Others come from agy's own config.
   const servers: Record<string, unknown> = { [MCP_SERVER_NAME]: { url: spec.mcpUrl } };
   for (const s of spec.mcpServers ?? []) if (s.def && s.name !== MCP_SERVER_NAME) servers[s.name] = s.def;
@@ -358,7 +390,7 @@ class AgySession implements Session {
       if (!this.toolsSeen.has(idx)) {
         this.toolsSeen.add(idx);
         const t = agyToolRequest(String(s.tool_name ?? info.name ?? 'tool'), params);
-        this.ev.toolCall(t.tool, t.detail.slice(0, 160));
+        this.ev.toolCall(t.tool, t.detail.slice(0, 160), { kind: t.kind });
       }
       if (s.state === 'DONE') this.ev.toolResult(String(info.output ?? '').slice(0, 200), true);
       else if (s.state === 'ERROR') this.ev.toolResult(String(info.error?.message ?? 'failed').slice(0, 200), false);

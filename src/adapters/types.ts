@@ -109,7 +109,8 @@ export interface SessionEvents {
   turnStarted(): void;
   turnEnded(): void;
   text(text: string): void;
-  toolCall(tool: string, summary: string): void;
+  /** info: what kind of call it is (from the adapter's toolRequest), and files it created when the harness says. */
+  toolCall(tool: string, summary: string, info?: import('../rules.ts').ToolInfo): void;
   toolResult(summary: string, ok: boolean): void;
   /** Totals so far for this session. tokensIn is input not read from the prompt cache. */
   usage(u: Usage): void;

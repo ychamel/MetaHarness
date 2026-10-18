@@ -6,10 +6,11 @@ import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, Sessio
 
 /**
  * Config overrides that keep a thread to what MetaHarness gives it: the user's global MCP servers
- * are turned off, and so are plugins and app connectors, which bring their own skills and tools.
- * Codex's built-in system skills remain; they're part of the harness.
+ * are turned off, and so are plugins and app connectors, which bring their own skills and tools,
+ * and the user's personal skills (design §18). Codex's built-in system skills remain; they're
+ * part of the harness (imagegen is the manual for its image_gen tool).
  */
-export function isolationConfig(userMcpServers: string[], keep: string[] = []): Record<string, unknown> {
+export function isolationConfig(userMcpServers: string[], keep: string[] = [], personalSkills: string[] = []): Record<string, unknown> {
   const cfg: Record<string, unknown> = {
     'features.plugins': false,
     'features.apps': false,
@@ -20,7 +21,19 @@ export function isolationConfig(userMcpServers: string[], keep: string[] = []): 
   for (const name of userMcpServers) {
     if (name !== MCP_SERVER_NAME && !keep.includes(name) && /^[\w-]+$/.test(name)) cfg[`mcp_servers.${name}.enabled`] = false;
   }
+  if (personalSkills.length) cfg['skills.config'] = personalSkills.map(path => ({ path, enabled: false }));
   return cfg;
+}
+
+/** The SKILL.md paths of the user's own skills (scope "user") that Codex would load in `cwd`. */
+export async function personalSkills(server: { request(method: string, params: unknown): Promise<any> }, cwd: string): Promise<string[]> {
+  try {
+    const r = await server.request('skills/list', { cwds: [cwd] });
+    return ((r?.data ?? []) as { skills?: { scope?: string; path?: string }[] }[]).flatMap(e => e.skills ?? []).filter(k => k.scope === 'user' && k.path).map(k => String(k.path));
+  } catch {
+    // An older Codex without skills/list: nothing to turn off that we can see.
+    return [];
+  }
 }
 
 async function listUserMcpServers(bin: string): Promise<string[]> {
@@ -124,7 +137,8 @@ export class CodexAdapter implements HarnessAdapter {
     }
     const server = await this.server;
     this.userServers ??= listUserMcpServers(this.bin);
-    const config = { ...isolationConfig(await this.userServers, spec.mcpServers.map(s => s.name)), ...mcpServerConfig(spec.mcpServers) };
+    const skills = await personalSkills(server, spec.cwd);
+    const config = { ...isolationConfig(await this.userServers, spec.mcpServers.map(s => s.name), skills), ...mcpServerConfig(spec.mcpServers) };
     const session = new CodexSession(server, spec, events, config);
     await session.init(opts.resume);
     return session;
@@ -339,7 +353,7 @@ class CodexSession implements Session {
         break;
       }
       case 'item/started':
-        if (p.item?.type === 'commandExecution') this.ev.toolCall('Bash', String(p.item.command ?? '').slice(0, 160));
+        if (p.item?.type === 'commandExecution') this.ev.toolCall('Bash', String(p.item.command ?? '').slice(0, 160), { kind: 'shell' });
         // Its paths, for when the change asks for approval.
         else if (p.item?.type === 'fileChange') this.fileChanges.set(String(p.item.id), (p.item.changes ?? []).map((c: { path?: string }) => String(c.path ?? '')).filter(Boolean));
         break;
@@ -349,7 +363,11 @@ class CodexSession implements Session {
         else if (it.type === 'commandExecution') this.ev.toolResult(`exit ${it.exitCode ?? '?'}: ${String(it.aggregatedOutput ?? '').slice(0, 160)}`, it.exitCode === 0);
         else if (it.type === 'fileChange') {
           // Reported once it's applied, so it starts and finishes here.
-          this.ev.toolCall('Edit', (it.changes ?? []).map((c: { path?: string }) => c.path).join(', ').slice(0, 160));
+          const changes = (it.changes ?? []) as { path?: string; kind?: { type?: string } }[];
+          this.ev.toolCall('Edit', changes.map(c => c.path).join(', ').slice(0, 160), {
+            kind: 'edit',
+            created: changes.filter(c => c.kind?.type === 'add' && c.path).map(c => String(c.path)),
+          });
           this.ev.toolResult(String(it.status ?? 'applied'), it.status !== 'failed');
         }
         else if (it.type === 'mcpToolCall' && it.server !== MCP_SERVER_NAME) this.ev.toolCall(`${it.server}.${it.tool}`, JSON.stringify(it.arguments ?? {}).slice(0, 160));
