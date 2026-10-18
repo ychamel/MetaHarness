@@ -93,8 +93,31 @@ export interface Snapshot {
   inbox: InboxItem[];
   roles: { name: string; harness: string; model: string; goodAt: string; helper: boolean; worktree: boolean }[];
   workflows: { name: string; goodAt: string }[];
-  accounts: { id: string; status: string; usedPct: number | null; resetsAt: number | null; window: string | null; note?: string | null }[];
+  accounts: Account[];
+  limitChecks: LimitCheck[];
   harnesses: Record<string, Manifest>;
+}
+
+/** One harness login, or one of its quota pools, against its plan's limits. */
+export interface Account {
+  id: string;
+  status: 'ok' | 'warning' | 'limited';
+  /** The fullest window. */
+  usedPct: number | null;
+  resetsAt: number | null;
+  window: string | null;
+  note?: string | null;
+  /** Every window: 5h, 7d, 7d sonnet… */
+  windows: { name: string; usedPct: number; resetsAt?: number }[];
+  checkedAt: number | null;
+}
+
+/** The last time a harness was asked for its limits. */
+export interface LimitCheck {
+  harness: string;
+  at: number | null;
+  error: string | null;
+  checking: boolean;
 }
 
 export interface GoalSummary {
@@ -247,6 +270,7 @@ export interface Settings {
   cacheRemindSec: number;
   cacheRemindMinTokens: number;
   defaultCacheMinutes: number;
+  limitCheckMinutes: number;
   models: Record<string, ModelSettings>;
 }
 

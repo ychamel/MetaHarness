@@ -28,10 +28,20 @@ export interface RateLimitInfo {
   usedPct?: number;
   /** When the limiting window resets, in ms since the epoch. */
   resetsAt?: number;
-  /** Which window, e.g. five_hour or seven_day. */
+  /** Which window, e.g. 5h or 7d. */
   window?: string;
   /** Anything else the human should know, e.g. that the plan's limit is passed and credits are paying. */
   note?: string;
+  /** Every window the plan has (the five-hour one, the weekly one…), when the harness says. */
+  windows?: LimitWindow[];
+}
+
+/** One window of a plan's limit. */
+export interface LimitWindow {
+  /** 5h, 7d, or 7d with what it covers (7d sonnet, argon 7d), so updates from a turn match what a check found. */
+  name: string;
+  usedPct: number;
+  resetsAt?: number;
 }
 
 /** A session's token totals so far, its cost if the harness reports one, and how full its context is. */
@@ -143,6 +153,11 @@ export interface HarnessAdapter {
    * has one for Gemini and one for Claude and GPT models). Default: one account per harness.
    */
   account?(model: string): string;
+  /**
+   * Where each of the harness's accounts stands, read without running a turn (Claude Code's
+   * /usage, Codex's account/rateLimits/read, Antigravity's /quota). Keyed by account.
+   */
+  readLimits?(): Promise<Record<string, RateLimitInfo>>;
   /** What a tool call means, for harnesses whose hooks ask MetaHarness before each tool runs. */
   toolRequest?(tool: string, args: Record<string, unknown>): ToolRequest;
   /** The command a human runs to open a session in the harness itself, e.g. `claude --resume <id>`. */

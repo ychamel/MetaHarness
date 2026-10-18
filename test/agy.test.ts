@@ -88,7 +88,19 @@ test('agy pieces: arguments, quota pools', () => {
     { name: 'Gemini 4 Argon', buckets: [{ id: 'gemini-argon-wtu-weekly', window: 'weekly', remaining_fraction: 0, reset_time: '2030-01-07T00:00:00Z' }] },
     { name: 'Claude and GPT models', buckets: [{ id: '3p-5h', window: '5h', remaining_fraction: 1, reset_time: '2030-01-01T05:00:00Z' }] },
   ];
-  assert.deepEqual(quotaInfo(groups, 'gemini-3.8-flash-low'), { status: 'ok', usedPct: 70, resetsAt: Date.parse('2030-01-01T05:00:00Z'), window: '5h' });
-  assert.equal(quotaInfo(groups, 'gemini-4-argon-high')?.status, 'limited', "Argon's own weekly limit is spent");
+  assert.deepEqual(quotaInfo(groups, 'gemini-3.8-flash-low'), {
+    status: 'ok', usedPct: 70, resetsAt: Date.parse('2030-01-01T05:00:00Z'), window: '5h',
+    windows: [{ name: '7d', usedPct: 40, resetsAt: Date.parse('2030-01-07T00:00:00Z') }, { name: '5h', usedPct: 70, resetsAt: Date.parse('2030-01-01T05:00:00Z') }],
+  });
+  const argon = quotaInfo(groups, 'gemini-4-argon-high');
+  assert.equal(argon?.status, 'limited', "Argon's own weekly limit is spent");
+  assert.deepEqual(argon?.windows?.map(w => w.name), ['7d', '5h', 'argon 7d'], 'Argon draws on the Gemini windows and its own');
   assert.equal(quotaInfo(groups, 'claude-opus-5-5-high')?.usedPct, 0);
+});
+
+test('agy: every pool is read without a turn', async () => {
+  const limits = await new AgyAdapter({ bin: fakeAgy }).readLimits();
+  assert.deepEqual(Object.keys(limits).sort(), ['antigravity:argon', 'antigravity:claude-gpt', 'antigravity:gemini']);
+  assert.equal(limits['antigravity:gemini'].usedPct, 95);
+  assert.equal(limits['antigravity:claude-gpt'].usedPct, 0);
 });

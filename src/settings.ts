@@ -45,6 +45,8 @@ export interface Settings {
   cacheRemindMinTokens: number;
   /** When a model has no cacheMinutes of its own. */
   defaultCacheMinutes: number;
+  /** How often to ask each harness where its plan's limits stand, in minutes; 0: only when asked. */
+  limitCheckMinutes: number;
   /** By "harness/model", or just "model" for every harness that offers it. */
   models: Record<string, ModelSettings>;
 }
@@ -57,6 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cacheRemindSec: 60,
   cacheRemindMinTokens: 30_000,
   defaultCacheMinutes: 5,
+  limitCheckMinutes: 10,
   models: {},
 };
 
@@ -102,7 +105,7 @@ function apply(s: Settings, raw: Record<string, unknown>): void {
   if (typeof raw.gatekeeper === 'string' && raw.gatekeeper.trim()) s.gatekeeper = raw.gatekeeper.trim();
   if (typeof raw.assistant === 'string' && raw.assistant.trim()) s.assistant = raw.assistant.trim();
   if (typeof raw.cacheReminders === 'boolean') s.cacheReminders = raw.cacheReminders;
-  for (const k of ['cacheRemindSec', 'cacheRemindMinTokens', 'defaultCacheMinutes'] as const) if (num(raw[k]) !== undefined) s[k] = num(raw[k])!;
+  for (const k of ['cacheRemindSec', 'cacheRemindMinTokens', 'defaultCacheMinutes', 'limitCheckMinutes'] as const) if (num(raw[k]) !== undefined) s[k] = num(raw[k])!;
   if (raw.models && typeof raw.models === 'object') {
     for (const [key, v] of Object.entries(raw.models)) s.models[key] = { ...s.models[key], ...readModel(v) };
   }

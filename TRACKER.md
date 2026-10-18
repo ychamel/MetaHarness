@@ -236,6 +236,13 @@ Findings from the run:
       backups, editable); read-only MCP tools (goals, goal, events, agent, files, costs,
       config, guide) and propose/apply for setup changes; fresh session per conversation.
       Checked live on luna against a copy of the Evolution run's log, and in headless Chrome
+- [x] **Plan limits** (2026-10-18): every window of every account (Claude Code session and
+      weekly, Codex 5h and 7d, each Antigravity pool), read without a turn: `claude -p /usage`,
+      Codex `account/rateLimits/read`, `agy -p=/quota` (now with stdin closed; it waited on it
+      before). At start, every `limitCheckMinutes` (10), and *Check now* (`limits.check`). Home
+      and Harnesses show them, a running goal's header a chip per account. A lifted limit
+      releases agents waiting on it. Read live from all three on 2026-10-18; checked in
+      headless Chrome
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,
@@ -259,7 +266,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 62 tests, about half a minute, no model calls
+npm install && npm test        # 73 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeAdapter, type FakeScript } from '../src/adapters/fake.ts';
+import type { RateLimitInfo } from '../src/adapters/types.ts';
 import { makeTeam, settle, withTimeout } from './helpers.ts';
 
 const HOUR = 3600_000;
@@ -100,6 +101,58 @@ test('a limit that resets soon is waited out, then the agent carries on', async 
   assert.ok(events.some(e => e.type === 'agent.limited' && e.data.known === true));
   assert.ok(!events.some(e => e.type === 'agent.idle' && events.indexOf(e) < events.findIndex(x => x.data.state === 'limited')), 'a refused turn is not "stopped without done"');
   assert.equal(d.agent(goal, 'architect')!.harness, 'fake', 'no move for a short wait');
+  await d.close();
+});
+
+test('harnesses are asked for their limits between turns; a lifted limit lets waiting agents carry on', async () => {
+  const primary = new FakeAdapter({
+    architect: async ctx => {
+      await ctx.tool('status', { text: 'Designing' });
+      ctx.rateLimit({ status: 'limited', resetsAt: Date.now() + 2 * HOUR, window: '5h', usedPct: 100 });
+    },
+  });
+  let reads = 0;
+  let answer: Record<string, RateLimitInfo> = {};
+  Object.assign(primary, { readLimits: async () => (reads++, answer) });
+  const broken = new FakeAdapter({}, { harness: 'broken' });
+  Object.assign(broken, { readLimits: async () => Promise.reject(new Error('not signed in')) });
+  const d = makeTeam({ roles: { architect: role('fake', 'm') }, adapters: { fake: primary, broken }, limits: { marginMs: 0 } });
+  const goal = d.startGoal({ request: 'Design it' });
+  await withTimeout(
+    (async () => {
+      while (d.agent(goal, 'architect')?.state !== 'limited') await settle();
+    })(),
+    3000,
+    'limited',
+  );
+  // A turn reported only its tightest window; the check brings every one.
+  answer = { fake: { status: 'ok', usedPct: 40, window: '7d', windows: [{ name: '5h', usedPct: 2, resetsAt: Date.now() + HOUR }, { name: '7d', usedPct: 40 }] } };
+  await d.checkLimits();
+  assert.equal(reads, 1);
+  await d.checkLimits();
+  assert.equal(reads, 1, 'asked at most once a minute');
+  await withTimeout(
+    (async () => {
+      while (!d.store.since(goal).some(e => e.type === 'agent.text' && /should have reset/.test(String(e.data.text)))) await settle();
+    })(),
+    3000,
+    'carry on',
+  );
+  const view = d.accountsView();
+  const fake = view.accounts.find(a => a.id === 'fake')!;
+  assert.equal(fake.status, 'ok');
+  assert.deepEqual(fake.windows.map(w => [w.name, w.usedPct]), [['5h', 2], ['7d', 40]]);
+  assert.ok(fake.checkedAt);
+  assert.equal(view.limitChecks.find(c => c.harness === 'broken')?.error, 'not signed in');
+
+  // A later turn's update refreshes its own window and keeps the others.
+  d.accounts.get('fake')!.status = 'ok';
+  (d as any).updateAccount('fake', { status: 'ok', usedPct: 30, window: '5h' });
+  assert.deepEqual(d.accounts.get('fake')!.windows!.map(w => [w.name, w.usedPct]), [['5h', 30], ['7d', 40]]);
+
+  const r = (await d.command({ cmd: 'limits.check', harness: 'fake' })) as ReturnType<typeof d.accountsView>;
+  assert.equal(reads, 2, 'the human asking always checks');
+  assert.ok(r.accounts.some(a => a.id === 'fake'));
   await d.close();
 });
 

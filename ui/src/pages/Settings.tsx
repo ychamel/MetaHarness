@@ -25,7 +25,7 @@ export function Settings({ config, ...p }: Props) {
 function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: ConfigView }) {
   const eff = config.settings.effective;
   const [scope, setScope] = useState<Scope>(config.scopes.some(s => s.scope === 'repo') ? 'repo' : 'personal');
-  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes }), [eff]);
+  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes, limitCheckMinutes: eff.limitCheckMinutes }), [eff]);
   const { draft, set, dirty, revert } = useDraft<Draft>(saved);
   const [busy, setBusy] = useState(false);
   const from = (k: keyof Draft) => [...config.settings.files].reverse().find(f => f.values[k] !== undefined)?.scope;
@@ -47,7 +47,7 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
         <div>
           <h1>Settings</h1>
           <div className="muted intro">
-            How approvals are decided and when you hear about expiring prompt caches. Saved in <span className="mono">settings.json</span>; this repository’s settings win over your personal ones.
+            How approvals are decided, when you hear about expiring prompt caches, and how often plan limits are checked. Saved in <span className="mono">settings.json</span>; this repository’s settings win over your personal ones.
           </div>
         </div>
       </div>
@@ -115,6 +115,15 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
                   <input type="number" min={1} value={draft.defaultCacheMinutes} onChange={e => set('defaultCacheMinutes', Number(e.target.value))} />
                 </Field>
               </div>
+            </Section>
+
+            <Section title="Plan limits" hint={where('limitCheckMinutes')}>
+              <div className="grid-3">
+                <Field label="Check every" hint="minutes; 0 checks only when you ask">
+                  <input type="number" min={0} value={draft.limitCheckMinutes} onChange={e => set('limitCheckMinutes', Number(e.target.value))} />
+                </Field>
+              </div>
+              <div className="hint">Each harness is asked where its plan’s windows stand (Claude Code’s /usage, Codex’s rate limits, Antigravity’s /quota) without running a turn, so it costs nothing. Agents also report them as they work.</div>
             </Section>
           </div>
           <EditorFooter dirty={dirty} isNew={false} saving={busy} onSave={() => void save()} onRevert={revert} />

@@ -768,6 +768,14 @@ its limit can move to Claude on the same login. Claude Code sends `rate_limit_ev
 `usageLimitExceeded`; Antigravity answers `agy -p=/quota` without a model call, which the adapter
 polls.
 
+Between turns the daemon asks each harness itself, also without a model call: Claude Code's
+`claude -p /usage` (a local command; its text gives the session and weekly windows), Codex's
+`account/rateLimits/read` (on the running app-server, or a short-lived one), and `agy -p=/quota`
+for every pool. It does so at start and every `limitCheckMinutes` (settings, 10 by default; 0
+only when asked), and when the human presses *Check now*. Each account keeps all its windows
+(5h, 7d, 7d sonnet…); a turn's update refreshes the one window it names. A check that finds a
+limit lifted lets agents waiting on it carry on at once.
+
 - **Near the limit** (90% by default), each agent on that account is asked to write where it is
   to `shared/notes/<name>.md` and finish its current step.
 - **At the limit**, each of its agents either waits or moves. If the reset is close (15 minutes

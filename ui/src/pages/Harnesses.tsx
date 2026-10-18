@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { ConfigView, HarnessReport, HarnessView, ModelSettings, Scope } from '../types.ts';
 import { useConfirm } from '../components/common.tsx';
+import { AccountList, harnessOf, useOverview } from '../components/Accounts.tsx';
 import { EditorFooter, ListItem, ScopePicker, Section, SetupLayout, useDraft, useLeaveGuard, type SetupProps } from './setup.tsx';
 
 /** One model's settings as the form edits them: numbers as text, blank for unset. */
@@ -58,6 +59,7 @@ export function Harnesses({ config, selected, onSelect, onSave, onCommand }: Set
   // Prices are usually yours on every project; a setup with only the repository's folder saves there.
   const scope: Scope = config?.scopes.some(x => x.scope === picked) ? picked : (config?.scopes[0]?.scope ?? picked);
   const confirm = useConfirm();
+  const overview = useOverview(10_000);
 
   // Models: the profile's, any the harness listed, and any a role uses or has settings for.
   const list = useMemo(() => {
@@ -189,6 +191,17 @@ export function Harnesses({ config, selected, onSelect, onSave, onCommand }: Set
                 {usedBy.length ? <>Roles on it: {usedBy.map(r => (r.harness === h.id ? r.name : `${r.name} (backup)`)).join(', ')}</> : 'No role uses it yet.'}
               </div>
             </Section>
+
+            {h.runnable && (
+              <Section title="Plan limits" hint={overview?.limitChecks.some(c => c.harness === h.id) ? 'Checked in the background as set in Settings' : undefined}>
+                <AccountList
+                  accounts={(overview?.accounts ?? []).filter(a => harnessOf(a.id) === h.id)}
+                  checks={(overview?.limitChecks ?? []).filter(c => c.harness === h.id)}
+                  onCheck={overview?.limitChecks.some(c => c.harness === h.id) ? () => onCommand({ cmd: 'limits.check', harness: h.id }) : undefined}
+                  empty={h.manifest?.reportsRateLimits ? `${h.title} reports its limits while agents run on it.` : `${h.title} doesn’t report its limits.`}
+                />
+              </Section>
+            )}
 
             <Section title="Models" hint={<>Saved in <ScopePicker config={config} value={scope} onChange={setScope} /></>}>
               <table className="model-table">

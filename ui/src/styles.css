@@ -427,6 +427,7 @@ svg.lanes rect.bar { rx: 2; }
 .line code { font-size: 12px; }
 .pill.decision { color: var(--accent); background: var(--accent-soft); }
 .pill.urgent { color: var(--limited); background: color-mix(in srgb, var(--limited) 13%, transparent); }
+.pill.waiting { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 13%, transparent); }
 .name-link { border: 0; background: none; padding: 0; font-weight: 620; color: var(--text); cursor: pointer; }
 .name-link:hover { color: var(--accent); text-decoration: underline; }
 b.you { color: var(--you); font-weight: 620; }
@@ -559,12 +560,23 @@ button.tag:hover { border-color: var(--accent); color: var(--accent); }
 .goal-row-top { display: flex; gap: 10px; align-items: center; min-width: 0; }
 .goal-row-title { font-weight: 560; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .goal-row-top .muted { white-space: nowrap; }
-.accounts { display: grid; gap: 8px; }
-.account { display: flex; gap: 12px; align-items: center; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 13px; flex-wrap: wrap; }
+.accounts { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.accounts > :not(.account) { grid-column: 1 / -1; }
+.account { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 13px; }
 .account.limited { border-color: color-mix(in srgb, var(--limited) 45%, var(--line)); }
+.account-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.account-head .muted { margin-left: auto; }
+.window { display: grid; grid-template-columns: 5.5em minmax(60px, 1fr) 3.2em 8.5em; gap: 8px; align-items: center; }
+.window-name { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.window-pct { text-align: right; font-variant-numeric: tabular-nums; }
 .meter { width: 120px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.window .meter { width: auto; }
 .meter > i { display: block; height: 100%; background: var(--accent); }
-.account.limited .meter > i, .account.warn .meter > i { background: var(--limited); }
+.meter.high > i { background: var(--waiting); }
+.meter.full > i, .account.limited .meter > i { background: var(--limited); }
+.account-chip { display: inline-flex; gap: 4px; align-items: baseline; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; white-space: nowrap; cursor: default; }
+.account-chip.high { border-color: color-mix(in srgb, var(--waiting) 55%, var(--line)); }
+.account-chip.full, .account-chip.limited { border-color: color-mix(in srgb, var(--limited) 55%, var(--line)); color: var(--limited); }
 
 /* ---------- setup ---------- */
 

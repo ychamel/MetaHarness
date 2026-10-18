@@ -6,6 +6,7 @@ import { ACTIONABLE, NeedsYou, Updates } from '../components/Inbox.tsx';
 import { AgentDetail } from '../components/AgentDetail.tsx';
 import { Markdown, More, useConfirm } from '../components/common.tsx';
 import { MessageDialog } from '../components/Dialogs.tsx';
+import { AccountChips, harnessOf } from '../components/Accounts.tsx';
 import { Story } from '../views/Story.tsx';
 import { Files } from '../views/Files.tsx';
 import { Activity } from '../views/Activity.tsx';
@@ -147,7 +148,7 @@ function teamSummary(goal: Goal): string {
   return [working && `${working} working`, done && `${done} done`].filter(Boolean).join(' · ');
 }
 
-function GoalHeader({ goals, goal, events, connected, onGoal, onCommand, onSpawn, onNewGoal, onTab, onFile }: Props & { goal: Goal }) {
+function GoalHeader({ goals, goal, events, snapshot, connected, onGoal, onCommand, onSpawn, onNewGoal, onTab, onFile }: Props & { goal: Goal }) {
   const confirm = useConfirm();
   const [messaging, setMessaging] = useState(false);
   const agents = goal.agents;
@@ -202,6 +203,7 @@ function GoalHeader({ goals, goal, events, connected, onGoal, onCommand, onSpawn
         </span>
         {goal.workflow && <span>workflow: {goal.workflow}</span>}
         {goal.branch && <span className="mono">{goal.branch}</span>}
+        {goal.status === 'running' && snapshot && <AccountChips accounts={snapshot.accounts.filter(a => agents.some(x => x.harness === harnessOf(a.id)))} />}
         {!connected && goal.live && <span className="warn-text">reconnecting…</span>}
       </div>
       {goal.notice && (

@@ -1,26 +1,10 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api.ts';
-import { ago, clock, duration, firstLine, money } from '../format.ts';
+import { ago, duration, firstLine, money } from '../format.ts';
 import type { ConfigView, GoalSummary, Snapshot } from '../types.ts';
 import { ACTIONABLE, NeedsYou } from '../components/Inbox.tsx';
 import { NewGoalForm } from '../components/Dialogs.tsx';
 import { Markdown, More } from '../components/common.tsx';
-
-/** Everything loaded on the daemon (all goals' Inbox items and the accounts), refreshed every few seconds. */
-function useOverview() {
-  const [snap, setSnap] = useState<Snapshot>();
-  useEffect(() => {
-    let alive = true;
-    const load = () => void api.state().then(s => alive && setSnap(s), () => {});
-    load();
-    const t = setInterval(load, 4000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
-  return snap;
-}
+import { AccountList, useOverview } from '../components/Accounts.tsx';
 
 interface Props {
   goals: GoalSummary[];
@@ -46,7 +30,6 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
   const shown = showAll || query ? past : past.slice(0, 8);
   const needs = (overview?.inbox ?? []).filter(i => ACTIONABLE.includes(i.kind));
   const label = (id: string) => firstLine(goals.find(g => g.id === id)?.request).slice(0, 40) || id;
-  const accounts = (overview?.accounts ?? []).filter(a => a.status !== 'ok' || (a.usedPct ?? 0) > 0);
   const roles = config?.roles.length ?? 0;
 
   return (
@@ -147,23 +130,10 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
         </div>
       </section>
 
-      {accounts.length > 0 && (
+      {overview && (overview.accounts.length > 0 || overview.limitChecks.length > 0) && (
         <section>
-          <h2 className="section-h">Accounts</h2>
-          <div className="accounts">
-            {accounts.map(a => (
-              <div key={a.id} className={`account ${a.status}`}>
-                <b>{a.id}</b>
-                <span>{a.status}</span>
-                {a.usedPct != null && (
-                  <span className="meter" title={`${a.usedPct}% used`}>
-                    <i style={{ width: `${Math.min(100, a.usedPct)}%` }} />
-                  </span>
-                )}
-                <span className="muted small">{[a.usedPct != null && `${a.usedPct}% used`, a.window, a.resetsAt && `resets ${clock(a.resetsAt)}`, a.note].filter(Boolean).join(' · ')}</span>
-              </div>
-            ))}
-          </div>
+          <h2 className="section-h">Plan limits</h2>
+          <AccountList accounts={overview.accounts} checks={overview.limitChecks} onCheck={() => onCommand({ cmd: 'limits.check' })} />
         </section>
       )}
     </div>

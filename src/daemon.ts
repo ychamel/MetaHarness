@@ -7,7 +7,7 @@ import { resolveName } from './fuzzy.ts';
 import { Hub } from './hub.ts';
 import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
-import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest, Usage } from './adapters/types.ts';
+import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, LimitWindow, RateLimitInfo, Session, SessionEvents, ToolRequest, Usage } from './adapters/types.ts';
 import { addSplit, addTokens, priceSplit, splitTotal, tokenCount, tokensOf, type Tokens } from './costs.ts';
 import { modelSettings, readSettingsFile, writeSettingsFile } from './settings.ts';
 import { Gatekeeper, type GatekeeperLimits, type Judgement } from './gatekeeper.ts';
@@ -225,6 +225,9 @@ export interface AccountRec {
   resetsAt?: number;
   window?: string;
   note?: string;
+  windows?: LimitWindow[];
+  /** When the harness last said where the account stands. */
+  checkedAt?: number;
   /** Agents (goal/name) already asked to write their notes in this window. */
   warned: Set<string>;
 }
@@ -292,6 +295,9 @@ export class Daemon {
   private pollMs: number;
   private pollTimer?: NodeJS.Timeout;
   readonly accounts = new Map<string, AccountRec>();
+  /** The last time each harness was asked for its limits, and what went wrong if it failed. */
+  private limitChecks = new Map<string, { at: number; error?: string; running?: Promise<void> }>();
+  private limitTimer?: NodeJS.Timeout;
   readonly limits: LimitPolicy;
   readonly pausing: PausePolicy;
   /** Git hooks that keep agents from deleting branches, rewinding shared ones, or pushing. */
@@ -1589,11 +1595,11 @@ export class Daemon {
     return !!a && a.status === 'limited' && (a.resetsAt === undefined || a.resetsAt > Date.now());
   }
 
-  private onRateLimit(rec: AgentRec, info: RateLimitInfo): void {
-    const id = this.accountOf(rec.harness, rec.model);
+  /** Takes in what a harness says about an account. Updates can be partial (a refused turn may say only "limited"), so what's known is kept. */
+  private updateAccount(id: string, info: RateLimitInfo): { a: AccountRec; changed: boolean; was: AccountRec['status'] } {
     const prev = this.accounts.get(id);
     const a: AccountRec = prev ?? { id, status: 'ok', warned: new Set() };
-    // Updates can be partial (a refused turn may say only "limited"), so keep what's known.
+    const was = a.status;
     const statusChanged = a.status !== info.status;
     const changed =
       statusChanged ||
@@ -1608,9 +1614,21 @@ export class Daemon {
       a.resetsAt = info.resetsAt;
     }
     if (info.window !== undefined) a.window = info.window;
+    if (info.windows) a.windows = info.windows;
+    else if (a.windows && info.window && info.usedPct !== undefined) {
+      // A turn reports only its tightest window: refresh that one in what the last check found.
+      const w: LimitWindow = { name: info.window, usedPct: info.usedPct, ...(info.resetsAt ? { resetsAt: info.resetsAt } : {}) };
+      a.windows = a.windows.some(x => x.name === w.name) ? a.windows.map(x => (x.name === w.name ? w : x)) : [...a.windows, w];
+    }
     // A note lasts until the status changes or a new one comes.
     if (info.note !== undefined || statusChanged) a.note = info.note;
+    a.checkedAt = Date.now();
     this.accounts.set(a.id, a);
+    return { a, changed, was };
+  }
+
+  private onRateLimit(rec: AgentRec, info: RateLimitInfo): void {
+    const { a, changed } = this.updateAccount(this.accountOf(rec.harness, rec.model), info);
     if (changed) {
       this.emit({
         goal: rec.goal, agent: rec.name, type: 'account.limit',
@@ -1635,6 +1653,65 @@ export class Daemon {
   /** Live agents on an account, across goals. */
   private agentsOn(account: string): AgentRec[] {
     return [...this.goals.values()].flatMap(g => [...g.agents.values()]).filter(r => this.accountOf(r.harness, r.model) === account && !FINISHED.includes(r.state));
+  }
+
+  /**
+   * Asks harnesses where their accounts stand, without running a turn: every one that can say,
+   * or just `harness`. At most once a minute per harness unless forced. Agents waiting out a
+   * limit that has lifted carry on straight away.
+   */
+  async checkLimits(harness?: string, force = false): Promise<void> {
+    const ids = Object.keys(this.adapters).filter(id => this.adapters[id].readLimits && (!harness || id === harness));
+    await Promise.all(
+      ids.map(id => {
+        const last = this.limitChecks.get(id);
+        if (last?.running) return last.running;
+        if (!force && last && Date.now() - last.at < 60_000) return;
+        const running = Promise.race([
+          this.adapters[id].readLimits!(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('no answer in 90 seconds')), 90_000).unref()),
+        ]).then(
+          found => {
+            for (const [account, info] of Object.entries(found)) {
+              const { a, was } = this.updateAccount(account, info);
+              if (was === 'limited' && a.status !== 'limited') {
+                for (const r of this.agentsOn(account)) if (r.state === 'limited') (clearTimeout(r.limitTimer), this.limitOver(r));
+              }
+            }
+            this.limitChecks.set(id, { at: Date.now() });
+          },
+          (e: Error) => void this.limitChecks.set(id, { at: Date.now(), error: e.message }),
+        );
+        this.limitChecks.set(id, { at: last?.at ?? 0, error: last?.error, running });
+        return running;
+      }),
+    );
+  }
+
+  /** Checks limits now, then every `limitCheckMinutes` (the setting is read each time, so a change applies). */
+  startLimitChecks(): void {
+    if (this.limitTimer) return;
+    const tick = () => {
+      const every = this.config.settings.limitCheckMinutes * 60_000;
+      if (every <= 0) return;
+      const due = Object.keys(this.adapters).filter(id => this.adapters[id].readLimits && Date.now() - (this.limitChecks.get(id)?.at ?? 0) >= every);
+      for (const id of due) void this.checkLimits(id);
+    };
+    tick();
+    this.limitTimer = setInterval(tick, 60_000).unref();
+  }
+
+  /** The accounts and the last limit check of each harness, as clients show them. */
+  accountsView() {
+    return {
+      accounts: [...this.accounts.values()].map(a => ({
+        id: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ?? null, window: a.window ?? null, note: a.note ?? null,
+        windows: a.windows ?? [], checkedAt: a.checkedAt ?? null,
+      })),
+      limitChecks: Object.keys(this.adapters)
+        .filter(id => this.adapters[id].readLimits)
+        .map(id => ({ harness: id, at: this.limitChecks.get(id)?.at || null, error: this.limitChecks.get(id)?.error ?? null, checking: !!this.limitChecks.get(id)?.running })),
+    };
   }
 
   /** The account a harness and model count against: the harness, or one of its quota pools. */
@@ -2169,7 +2246,7 @@ export class Daemon {
       // What a client offers when starting a goal or spawning an agent.
       roles: [...this.config.roles.values()].map(r => ({ name: r.name, harness: r.harness, model: r.model, goodAt: r.goodAt, helper: r.helper, worktree: r.worktree })),
       workflows: [...this.config.workflows.values()].map(w => ({ name: w.name, goodAt: w.goodAt })),
-      accounts: [...this.accounts.values()].map(a => ({ id: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ?? null, window: a.window ?? null, note: a.note ?? null })),
+      ...this.accountsView(),
       harnesses,
     };
   }
@@ -2392,6 +2469,12 @@ export class Daemon {
       }
       case 'goal.clean':
         return this.cleanGoals(s('goal'), b.force === true);
+      case 'limits.check': {
+        const harness = s('harness');
+        if (harness && !this.adapters[harness]?.readLimits) throw new Error(`MetaHarness can't read ${harness}'s limits here.`);
+        await this.checkLimits(harness, true);
+        return this.accountsView();
+      }
       case 'harness.test': {
         const harness = s('harness');
         if (!harness) throw new Error('harness.test needs "harness".');
@@ -2488,7 +2571,7 @@ export class Daemon {
         return await this.harnessModels(harness, b.refresh === true);
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, guide.save, mcp.save.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, guide.save, mcp.save.`);
     }
   }
 
@@ -2579,6 +2662,7 @@ export class Daemon {
 
   async close(): Promise<void> {
     clearInterval(this.pollTimer);
+    clearInterval(this.limitTimer);
     await this.assistant.stop();
     for (const g of this.goals.values()) {
       await g.gatekeeper?.stop();

@@ -1,6 +1,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 import { MCP_SERVER_NAME } from '../mcp.ts';
+import { codexAsk } from '../harnesses.ts';
 import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions } from './types.ts';
 
 /**
@@ -44,9 +45,8 @@ type Window = { usedPercent?: number; resetsAt?: number | null; windowDurationMi
 export function codexRateLimit(r: any): RateLimitInfo | undefined {
   if (!r || typeof r !== 'object') return undefined;
   const windows = [r.primary, r.secondary].filter((w): w is Window => !!w && typeof w.usedPercent === 'number');
-  const top = windows.sort((a, b) => b.usedPercent! - a.usedPercent!)[0];
+  const top = windows.slice().sort((a, b) => b.usedPercent! - a.usedPercent!)[0];
   if (!top && !r.rateLimitReachedType) return undefined;
-  const mins = top?.windowDurationMins;
   const over = (top?.usedPercent ?? 0) >= 100;
   const credits = r.credits && typeof r.credits === 'object' ? (r.credits as { hasCredits?: boolean; unlimited?: boolean; balance?: string | null }) : undefined;
   const note = r.rateLimitReachedType
@@ -63,9 +63,14 @@ export function codexRateLimit(r: any): RateLimitInfo | undefined {
     ...(note ? { note } : {}),
     usedPct: top?.usedPercent,
     resetsAt: top?.resetsAt ? top.resetsAt * 1000 : undefined,
-    window: r.limitName ?? (mins ? (mins % 1440 === 0 ? `${mins / 1440}d` : mins % 60 === 0 ? `${mins / 60}h` : `${mins}m`) : undefined),
+    window: r.limitName ?? windowName(top?.windowDurationMins),
+    ...(windows.length
+      ? { windows: windows.map(w => ({ name: windowName(w.windowDurationMins) ?? 'window', usedPct: w.usedPercent!, ...(w.resetsAt ? { resetsAt: w.resetsAt * 1000 } : {}) })) }
+      : {}),
   };
 }
+
+const windowName = (mins?: number | null) => (mins ? (mins % 1440 === 0 ? `${mins / 1440}d` : mins % 60 === 0 ? `${mins / 60}h` : `${mins}m`) : undefined);
 
 /** Config overrides adding the role's servers that MetaHarness has definitions for. */
 export function mcpServerConfig(servers: SessionSpec['mcpServers']): Record<string, unknown> {
@@ -97,6 +102,14 @@ export class CodexAdapter implements HarnessAdapter {
 
   constructor(opts: { bin?: string } = {}) {
     this.bin = opts.bin ?? 'codex';
+  }
+
+  /** account/rateLimits/read: from the running app-server, or a short-lived one when no agent runs. */
+  async readLimits(): Promise<Record<string, RateLimitInfo>> {
+    const server = this.server && (await this.server.catch(() => undefined));
+    const r = server ? await server.request('account/rateLimits/read', null) : await codexAsk(this.bin, process.env, 'account/rateLimits/read', null, 30_000);
+    const info = codexRateLimit(r?.rateLimits);
+    return info ? { [this.manifest.harness]: info } : {};
   }
 
   nativeCommand(sessionId: string): string {

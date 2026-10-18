@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { APPROVAL_TOOL, MCP_SERVER_NAME } from '../mcp.ts';
 import { claudeMcpDef } from '../mcpservers.ts';
-import type { CapabilityManifest, CostSplit, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest, Usage } from './types.ts';
+import { run } from '../harnesses.ts';
+import type { CapabilityManifest, CostSplit, HarnessAdapter, LimitWindow, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest, Usage } from './types.ts';
 
 /**
  * Claude Code in streaming mode: one long-lived `claude -p` process per agent, NDJSON in and out.
@@ -34,6 +36,19 @@ export class ClaudeAdapter implements HarnessAdapter {
 
   toolRequest(tool: string, args: Record<string, unknown>): ToolRequest {
     return claudeToolRequest(tool, args);
+  }
+
+  /** `/usage` runs locally in print mode: no model call, no cost. */
+  async readLimits(): Promise<Record<string, RateLimitInfo>> {
+    const r = await run(this.bin, ['-p', '/usage', '--output-format', 'json', '--no-session-persistence'], { ...process.env, ...this.env }, 60_000, tmpdir());
+    let text: unknown;
+    try {
+      text = JSON.parse(r.stdout).result;
+    } catch {
+      throw new Error(`claude /usage said: ${r.out.slice(0, 200) || `exit ${r.code}`}`);
+    }
+    const info = claudeUsage(String(text ?? ''));
+    return info ? { [this.manifest.harness]: info } : {};
   }
 
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
@@ -319,8 +334,78 @@ export function rateLimitInfo(r: any): RateLimitInfo | undefined {
     status,
     usedPct: typeof r.utilization === 'number' ? Math.round(r.utilization * 100) : undefined,
     resetsAt: typeof r.resetsAt === 'number' ? r.resetsAt * 1000 : undefined,
-    window: typeof r.rateLimitType === 'string' ? r.rateLimitType : undefined,
+    window: typeof r.rateLimitType === 'string' ? claudeWindow(r.rateLimitType) : undefined,
   };
+}
+
+/** five_hour → 5h, seven_day_sonnet → 7d sonnet; /usage's "session" → 5h, "week (Sonnet only)" → 7d sonnet. */
+export function claudeWindow(name: string): string {
+  const n = name.toLowerCase();
+  const span = /five_hour|session/.test(n) ? '5h' : /seven_day|week/.test(n) ? '7d' : n;
+  const only = /opus|sonnet|haiku|fable/.exec(n)?.[0];
+  return only ? `${span} ${only}` : span;
+}
+
+/**
+ * The windows in `claude -p /usage`'s text, e.g. "Current session: 37% used · resets Oct 19,
+ * 2:20am (Africa/Cairo)" and "Current week (all models): 57% used · resets Oct 23, 7am (…)".
+ * Nothing for an API key, which has no plan windows.
+ */
+export function claudeUsage(text: string, now = Date.now()): RateLimitInfo | undefined {
+  const windows: LimitWindow[] = [];
+  for (const m of text.matchAll(/^\s*Current ([^:\n]+):\s*(\d+(?:\.\d+)?)% used(?:\s*·\s*resets\s+([^\n]+))?/gim)) {
+    const resetsAt = m[3] ? parseReset(m[3], now) : undefined;
+    windows.push({ name: claudeWindow(m[1].trim()), usedPct: Math.round(Number(m[2])), ...(resetsAt ? { resetsAt } : {}) });
+  }
+  if (!windows.length) return undefined;
+  const top = windows.slice().sort((a, b) => b.usedPct - a.usedPct)[0];
+  return { status: top.usedPct >= 100 ? 'limited' : 'ok', usedPct: top.usedPct, resetsAt: top.resetsAt, window: top.name, windows };
+}
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/** "Oct 19, 2:20am (Africa/Cairo)" or "7am (Africa/Cairo)": the next such moment, in ms. */
+export function parseReset(s: string, now = Date.now()): number | undefined {
+  const m = /^(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(?:\(([^)]+)\))?/i.exec(s.trim());
+  if (!m) return undefined;
+  const month = m[1] ? MONTHS.indexOf(m[1].toLowerCase()) : -1;
+  if (m[1] && month < 0) return undefined;
+  const hour = (Number(m[3]) % 12) + (m[5].toLowerCase() === 'pm' ? 12 : 0);
+  const minute = Number(m[4] ?? 0);
+  const zone = m[6]?.trim();
+  const today = zonedParts(now, zone);
+  if (!today) return undefined;
+  if (month < 0) {
+    const t = zonedTime(today.year, today.month, today.day, hour, minute, zone);
+    return t < now - 60_000 ? zonedTime(today.year, today.month, today.day + 1, hour, minute, zone) : t;
+  }
+  const day = Number(m[2]);
+  const t = zonedTime(today.year, month, day, hour, minute, zone);
+  // No year is given: a date well in the past means next year's.
+  return t < now - 2 * 86_400_000 ? zonedTime(today.year + 1, month, day, hour, minute, zone) : t;
+}
+
+/** The wall clock in a time zone (the machine's when none or an unknown one is given). */
+function zonedParts(t: number, zone?: string): { year: number; month: number; day: number; hour: number; minute: number } | undefined {
+  try {
+    const f = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' });
+    const p = Object.fromEntries(f.formatToParts(t).map(x => [x.type, Number(x.value)]));
+    return { year: p.year, month: p.month - 1, day: p.day, hour: p.hour, minute: p.minute };
+  } catch {
+    return zone ? zonedParts(t) : undefined;
+  }
+}
+
+/** The moment a wall-clock time in a time zone happens. */
+function zonedTime(year: number, month: number, day: number, hour: number, minute: number, zone?: string): number {
+  const wall = Date.UTC(year, month, day, hour, minute);
+  const offset = (t: number) => {
+    const p = zonedParts(t, zone)!;
+    return Date.UTC(p.year, p.month, p.day, p.hour, p.minute) - Math.floor(t / 60_000) * 60_000;
+  };
+  const first = wall - offset(wall);
+  // Twice, for a guess that lands across a daylight-saving change.
+  return wall - offset(first);
 }
 
 function summarize(input: Record<string, unknown> | undefined): string {

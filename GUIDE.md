@@ -272,6 +272,11 @@ The terminal can do all of this too:
 - **Rate limits.** Near a subscription's limit, agents are asked to write notes. At the limit,
   they wait for a reset that's close, or move to a backup from their role's `fallback`, picking
   up from a handoff.
+- **Plan limits** on Home and on each harness's page show every window of each subscription
+  (the five-hour and the weekly one, each pool on Antigravity), how full it is and when it
+  resets. The daemon asks the harnesses every 10 minutes (Settings) without running a turn, so
+  it costs nothing; *Check now* asks straight away. A running goal's header shows the fullest
+  window of each account its agents use.
 
 ## 8. Tailoring it
 

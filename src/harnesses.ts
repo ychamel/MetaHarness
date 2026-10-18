@@ -48,12 +48,14 @@ export interface HarnessProfile {
   file?: string;
 }
 
-function run(bin: string, args: string[], env: NodeJS.ProcessEnv, timeout = 20_000): Promise<{ code: number; out: string }> {
+/** Runs a CLI with nothing on its stdin (some, like `agy -p`, wait for it to close). */
+export function run(bin: string, args: string[], env: NodeJS.ProcessEnv, timeout = 20_000, cwd?: string): Promise<{ code: number; out: string; stdout: string }> {
   return new Promise(resolve => {
-    execFile(bin, args, { env, timeout, maxBuffer: 4 << 20 }, (err, stdout, stderr) => {
+    const child = execFile(bin, args, { env, timeout, cwd, maxBuffer: 4 << 20 }, (err, stdout, stderr) => {
       const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? Number((err as { code: number }).code) : 1) : 0;
-      resolve({ code, out: `${stdout}${stderr}`.trim() });
+      resolve({ code, out: `${stdout}${stderr}`.trim(), stdout });
     });
+    child.stdin?.end();
   });
 }
 
@@ -65,17 +67,17 @@ function modelsFromLines(out: string): string[] {
     .filter(w => w && /^[\w][\w.:/-]*$/.test(w) && /\d|-/.test(w));
 }
 
-/** Asks a `codex app-server` for its model list, then shuts it down. */
-function codexModels(bin: string, env: NodeJS.ProcessEnv): Promise<string[]> {
+/** Starts a `codex app-server`, makes one request, then shuts it down. */
+export function codexAsk(bin: string, env: NodeJS.ProcessEnv, method: string, params: unknown, timeout = 20_000): Promise<any> {
   return new Promise((resolve, reject) => {
     const proc = spawn(bin, ['app-server'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
-    const timer = setTimeout(() => finish(new Error('codex app-server did not answer in 20s')), 20_000);
+    const timer = setTimeout(() => finish(new Error(`codex app-server did not answer ${method} in ${timeout / 1000}s`)), timeout);
     let buf = '';
-    const finish = (err: Error | null, models: string[] = []) => {
+    const finish = (err: Error | null, result?: unknown) => {
       clearTimeout(timer);
       proc.kill();
       if (err) reject(err);
-      else resolve(models);
+      else resolve(result);
     };
     const send = (m: unknown) => proc.stdin.write(JSON.stringify(m) + '\n');
     proc.on('error', e => finish(e));
@@ -94,16 +96,21 @@ function codexModels(bin: string, env: NodeJS.ProcessEnv): Promise<string[]> {
         }
         if (m.id === 1) {
           send({ jsonrpc: '2.0', method: 'initialized' });
-          send({ jsonrpc: '2.0', id: 2, method: 'model/list', params: {} });
+          send({ jsonrpc: '2.0', id: 2, method, params });
         } else if (m.id === 2) {
-          if (m.error) return finish(new Error(m.error.message ?? 'model/list failed'));
-          const data = (m.result?.data ?? []) as { id?: string; model?: string; hidden?: boolean }[];
-          finish(null, data.filter(x => !x.hidden).map(x => x.id ?? x.model ?? '').filter(Boolean));
+          if (m.error) return finish(new Error(m.error.message ?? `${method} failed`));
+          finish(null, m.result);
         }
       }
     });
     send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'metaharness', title: 'MetaHarness', version: '0.0.1' }, capabilities: null } });
   });
+}
+
+/** Codex's model list, from a short-lived app-server. */
+async function codexModels(bin: string, env: NodeJS.ProcessEnv): Promise<string[]> {
+  const data = ((await codexAsk(bin, env, 'model/list', {}))?.data ?? []) as { id?: string; model?: string; hidden?: boolean }[];
+  return data.filter(x => !x.hidden).map(x => x.id ?? x.model ?? '').filter(Boolean);
 }
 
 /** The harnesses MetaHarness knows. Ones without a transport are found and reported, not driven. */

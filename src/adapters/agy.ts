@@ -1,7 +1,8 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MCP_SERVER_NAME } from '../mcp.ts';
+import { run } from '../harnesses.ts';
 import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest } from './types.ts';
 
 /**
@@ -73,24 +74,47 @@ export class AgyAdapter implements HarnessAdapter {
   private refreshQuota(force = false): void {
     if (this.quotaRunning || (!force && Date.now() - this.quotaAt < 60_000)) return;
     this.quotaAt = Date.now();
-    this.quotaRunning = new Promise<void>(resolve => {
-      execFile(this.bin, ['-p=/quota', '--output-format', 'json'], { timeout: 60_000 }, (err, stdout) => {
-        this.quotaRunning = undefined;
-        resolve();
-        if (err) return;
-        try {
-          const groups = JSON.parse(stdout).command?.data?.groups ?? [];
-          for (const s of this.sessions) {
-            const info = quotaInfo(groups, s.model);
-            if (info) s.reportLimit(info);
-          }
-        } catch {
-          /* an older agy, or not JSON: no quota then */
+    this.quotaRunning = this.quotaGroups()
+      .then(groups => {
+        for (const s of this.sessions) {
+          const info = quotaInfo(groups, s.model);
+          if (info) s.reportLimit(info);
         }
-      });
-    });
+      })
+      .catch(() => {
+        /* an older agy, or not JSON: no quota then */
+      })
+      .finally(() => (this.quotaRunning = undefined));
+  }
+
+  /** `agy -p=/quota` answers locally, without a turn. */
+  private async quotaGroups(): Promise<{ name?: string; buckets?: Bucket[] }[]> {
+    const r = await run(this.bin, ['-p=/quota', '--output-format', 'json'], process.env, 60_000);
+    try {
+      return JSON.parse(r.stdout).command?.data?.groups ?? [];
+    } catch {
+      throw new Error(`agy /quota said: ${r.out.slice(0, 200) || `exit ${r.code}`}`);
+    }
+  }
+
+  /** Every pool's quota. */
+  async readLimits(): Promise<Record<string, RateLimitInfo>> {
+    const groups = await this.quotaGroups();
+    const out: Record<string, RateLimitInfo> = {};
+    for (const pool of POOLS) {
+      const info = quotaInfo(groups, pool.model);
+      if (info) out[`${this.manifest.harness}:${pool.id}`] = info;
+    }
+    return out;
   }
 }
+
+/** Antigravity's quota pools, each with a model that draws on it. */
+const POOLS = [
+  { id: 'gemini', model: 'gemini' },
+  { id: 'argon', model: 'gemini-argon' },
+  { id: 'claude-gpt', model: 'claude' },
+];
 
 /** Which of Antigravity's quota pools a model draws on. */
 export function quotaPool(model: string): string {
@@ -114,13 +138,20 @@ export function quotaInfo(groups: { name?: string; buckets?: Bucket[] }[], model
   };
   const buckets = groups.flatMap(g => (g.buckets ?? []).filter(b => typeof b.remaining_fraction === 'number' && wanted(g, b)));
   if (!buckets.length) return undefined;
-  const tight = buckets.sort((a, b) => a.remaining_fraction! - b.remaining_fraction!)[0];
-  const resetsAt = tight.reset_time ? Date.parse(tight.reset_time) : NaN;
+  // Argon draws on the Gemini pool too, so its own windows are named apart.
+  const nameOf = (b: Bucket) => `${pool === 'argon' && (b.id ?? '').includes('argon') ? 'argon ' : ''}${b.window === 'weekly' ? '7d' : (b.window ?? b.id ?? 'window')}`;
+  const resetOf = (b: Bucket) => (b.reset_time && Number.isFinite(Date.parse(b.reset_time)) ? Date.parse(b.reset_time) : undefined);
+  const tight = buckets.slice().sort((a, b) => a.remaining_fraction! - b.remaining_fraction!)[0];
   return {
     status: tight.remaining_fraction! <= 0 ? 'limited' : 'ok',
     usedPct: Math.round((1 - tight.remaining_fraction!) * 100),
-    resetsAt: Number.isFinite(resetsAt) ? resetsAt : undefined,
-    window: tight.window,
+    resetsAt: resetOf(tight),
+    window: nameOf(tight),
+    windows: buckets.map(b => ({
+      name: nameOf(b),
+      usedPct: Math.round((1 - b.remaining_fraction!) * 100),
+      ...(resetOf(b) ? { resetsAt: resetOf(b) } : {}),
+    })),
   };
 }
 
