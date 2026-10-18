@@ -46,6 +46,8 @@ export interface Usage {
   /** The cost split by kind of token, when the harness knows it (Claude Code's per-model costs). */
   costSplit?: CostSplit;
   contextPct?: number;
+  /** Tokens in the context at the last model call: what an expired cache makes it pay for again. */
+  contextTokens?: number;
   /** How long the provider keeps this session's prompt cache, when the harness says (Claude Code: 5 or 60). */
   cacheMinutes?: number;
 }

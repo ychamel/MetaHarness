@@ -360,6 +360,7 @@ class CodexSession implements Session {
           cacheRead: total.cachedInputTokens,
           tokensOut: total.outputTokens,
           contextPct: window && last.totalTokens ? Math.round((100 * last.totalTokens) / window) : undefined,
+          contextTokens: last.totalTokens,
         });
         break;
       }

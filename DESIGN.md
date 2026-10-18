@@ -441,6 +441,15 @@ What you get from it:
   and cache counts call by call, so a long turn's cost shows while it runs, priced at the rate
   the last turn worked out to. Codex, Antigravity and ACP report tokens only; their cost comes
   from the prices in `settings.json` (per `harness/model` or model), marked as estimated.
+- **Prompt caches.** Each agent's cache stays warm for its model's lifetime after its last
+  model call: the settings' `cacheMinutes`, else what the harness reported (Claude Code says 5
+  or 60), else 5. The team list counts it down for agents that aren't working. A minute before
+  it expires (`cacheRemindSec`), for an agent between tasks with at least 30k tokens of
+  context, its spawner is told once, so it can send follow-up work while it's cheap. The
+  notice joins the spawner's running turn or the wait it's in; an idle spawner isn't woken,
+  since that turn would cost more than the cache saves. The lead's cache is the human's: the
+  app says so (and notifies, if the tab is in the background). Reminders batch per spawner and
+  can be turned off.
 - **Per role×model numbers** across goals: cost, time, how often its outputs drew review
   findings or follow-up questions, how often it needed nudging, and your optional 👍/👎 on its
   work.

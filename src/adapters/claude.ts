@@ -250,6 +250,7 @@ class ClaudeSession implements Session {
       costUsd: this.costSoFar + (this.price ? weigh(running, this.cacheMinutes) * this.price : 0),
       ...(this.split ? { costSplit: this.split } : {}),
       ...(this.contextWindow ? { contextPct: Math.round((100 * used) / this.contextWindow) } : {}),
+      contextTokens: used,
       ...(this.cacheMinutes ? { cacheMinutes: this.cacheMinutes } : {}),
     });
   }
@@ -283,6 +284,7 @@ class ClaudeSession implements Session {
       costUsd: this.costSoFar,
       ...(this.split ? { costSplit: this.split } : {}),
       contextPct: this.contextWindow && used ? Math.round((100 * used) / this.contextWindow) : undefined,
+      ...(used ? { contextTokens: used } : {}),
       ...(this.cacheMinutes ? { cacheMinutes: this.cacheMinutes } : {}),
     });
   }

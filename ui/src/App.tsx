@@ -108,6 +108,22 @@ function Shell() {
     document.title = needs ? `(${needs}) MetaHarness` : 'MetaHarness';
   }, [needs]);
 
+  // The lead's prompt cache is yours to keep warm: say so when it's about to expire.
+  const seenSeq = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!events.length) return;
+    const last = events.at(-1)!.seq;
+    if (seenSeq.current === undefined) return void (seenSeq.current = last);
+    for (const e of events) {
+      if (e.seq <= seenSeq.current || e.type !== 'agent.cache_expiring' || e.data.told !== 'human') continue;
+      const text = `${e.agent}'s prompt cache expires in about ${e.data.inSec < 90 ? `${e.data.inSec} seconds` : `${Math.round(e.data.inSec / 60)} minutes`}. Message it now if you have more for it; after that its next turn costs more.`;
+      say(text);
+      if (document.hidden && 'Notification' in window && Notification.permission === 'granted') new Notification('MetaHarness', { body: text });
+    }
+    seenSeq.current = last;
+  }, [events, say]);
+  useEffect(() => void (seenSeq.current = undefined), [goalId]);
+
   const command = useCallback(
     async (body: Record<string, unknown>) => {
       try {

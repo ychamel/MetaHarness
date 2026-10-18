@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { money, STATE_LABEL } from '../format.ts';
 import type { Agent, Goal } from '../types.ts';
-import { Ctx, Dot } from './common.tsx';
+import { Ctx, Dot, CacheClock } from './common.tsx';
 
 /** Who spawned whom, with each agent's state, status line, cost and context. Quick helpers fold under their caller. */
 export function TeamTree({ goal, selected, onSelect }: { goal: Goal; selected?: string; onSelect: (name: string) => void }) {
@@ -27,6 +27,7 @@ export function TeamTree({ goal, selected, onSelect }: { goal: Goal; selected?: 
           <span className="right">
             {a.awaitingApproval > 0 && <span className="badge warn" title="waiting for your approval">!</span>}
             {a.unread > 0 && <span className="badge" title="unread messages">{a.unread}</span>}
+            <CacheClock agent={a} />
             <Ctx pct={a.contextPct} />
             <span>{money(a.cost)}</span>
           </span>

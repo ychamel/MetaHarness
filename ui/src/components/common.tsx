@@ -6,6 +6,35 @@ export function Dot({ state }: { state: string }) {
 }
 
 /** Context fill, when the harness reports it. */
+/** The time, refreshed every `ms`, for things that count down. */
+export function useNow(ms = 1000): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
+const left = (ms: number) => (ms >= 3_600_000 ? `${Math.floor(ms / 3_600_000)}h${String(Math.floor((ms % 3_600_000) / 60_000)).padStart(2, '0')}` : ms >= 120_000 ? `${Math.round(ms / 60_000)}m` : `${Math.floor(ms / 60_000)}:${String(Math.floor((ms % 60_000) / 1000)).padStart(2, '0')}`);
+
+/**
+ * How long an agent's prompt cache stays warm while it isn't working. After that, its next turn
+ * pays to read its whole context again.
+ */
+export function CacheClock({ agent, long }: { agent: Agent; long?: boolean }) {
+  const now = useNow(long ? 1000 : 5000);
+  if (!agent.cacheUntil || ['starting', 'working', 'ended', 'crashed'].includes(agent.state)) return null;
+  const ms = agent.cacheUntil - now;
+  const what = `${agent.cacheMinutes >= 60 ? `${agent.cacheMinutes / 60}-hour` : `${agent.cacheMinutes}-minute`} cache`;
+  if (ms <= 0) return long ? <span className="muted" title={`Its ${what} has expired: its next turn reads its context at full price`}>cache expired</span> : null;
+  return (
+    <span className={`cache-clock${ms < 120_000 ? ' soon' : ''}`} title={`Its prompt cache (${what}) stays warm for ${left(ms)} more; a turn before then reads its context cheaply`}>
+      {long ? `cache warm for ${left(ms)}` : left(ms)}
+    </span>
+  );
+}
+
 export function Ctx({ pct }: { pct: number | null }) {
   if (pct == null) return null;
   return (

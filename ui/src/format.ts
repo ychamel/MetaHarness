@@ -68,6 +68,7 @@ export function eventText(e: MhEvent): string {
     case 'shared.clash': return `⚠ changed shared/${d.path}, which is ${d.owner}'s`;
     case 'approval.auto': return `ran without asking (read-only): ${oneLine(d.detail, 140)}`;
     case 'approval.refused': return `refused: ${oneLine(d.detail, 100)} — ${oneLine(d.why, 160)}`;
+    case 'agent.cache_expiring': return `prompt cache expires in about ${d.inSec < 90 ? `${d.inSec} s` : `${Math.round(d.inSec / 60)} min`}${d.told === 'parent' ? `; told ${d.parent}` : d.told === 'human' ? '; told you' : ''}`;
     case 'approval.gatekeeper': return `${GATE[d.verdict as string] ?? d.verdict}${d.remembered ? ' (as before)' : ''}: ${oneLine(d.detail, 100)} — ${oneLine(d.reason, 160)}`;
     case 'inbox.item': return `→ you (${d.kind}): ${oneLine(d.text, 300)}`;
     case 'inbox.resolved': return `you ${d.decision === 'approve' ? 'approved' : d.decision === 'deny' ? 'denied' : 'dismissed'} ${d.id}${d.reply ? `: ${oneLine(d.reply)}` : ''}`;
@@ -105,7 +106,7 @@ export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
       return e.data.kind === 'approval' ? 'key' : 'hidden';
     case 'shared.write':
       return e.data.version === 1 ? 'key' : 'minor';
-    case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'approval.gatekeeper': case 'shared.delete':
+    case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'approval.gatekeeper': case 'agent.cache_expiring': case 'shared.delete':
     case 'agent.paused': case 'agent.resumed': case 'agent.paused_between_steps': case 'agent.interrupted': case 'account.limit':
       return 'minor';
     default:

@@ -78,6 +78,8 @@ export interface AgentRec {
   cacheMinutes?: number;
   /** The lastCallAt its spawner was last told about, so each idle spell is reminded once. */
   cacheReminded?: number;
+  /** Tokens in its context at its last model call. */
+  contextTokens?: number;
   contextPct?: number;
   lastText: string;
   adapter: HarnessAdapter;
@@ -683,6 +685,7 @@ export class Daemon {
         sessionTokens = session;
         rec.tokens = addTokens(rec.tokensBefore, session);
         if (u.cacheMinutes) rec.cacheMinutes = u.cacheMinutes;
+        if (u.contextTokens) rec.contextTokens = u.contextTokens;
         if (u.contextPct !== undefined) rec.contextPct = u.contextPct;
         // The harness's cost when it reports one, else the settings' prices for its tokens.
         const prices = modelSettings(this.config.settings, rec.harness, rec.model).prices;
@@ -1008,7 +1011,46 @@ export class Daemon {
     this.pollTimer = setInterval(() => {
       this.refreshGit();
       this.refreshShared();
+      this.checkCaches();
     }, this.pollMs).unref();
+  }
+
+  /**
+   * Prompt caches about to expire (DESIGN.md §12). An agent that's between tasks with a large
+   * context costs much more to start again once its cache is gone, so its spawner hears about
+   * it shortly before: in its running turn, or through the wait it's in. An idle spawner isn't
+   * woken for it (that turn would cost more than the cache saves). The human hears about the
+   * agents they spawned (the lead) in the app. Each idle spell is reminded once.
+   */
+  checkCaches(now = Date.now()): void {
+    const s = this.config.settings;
+    if (!s.cacheReminders) return;
+    for (const g of this.goals.values()) {
+      if (g.status === 'ended') continue;
+      const due = new Map<string, { rec: AgentRec; inSec: number }[]>();
+      for (const a of g.agents.values()) {
+        if (a.quick || !a.lastCallAt || a.cacheReminded === a.lastCallAt || !['idle', 'done', 'waiting'].includes(a.state)) continue;
+        if (a.contextTokens !== undefined && a.contextTokens < s.cacheRemindMinTokens) continue;
+        const left = a.lastCallAt + this.cacheLifetime(a) * 60_000 - now;
+        if (left <= 0 || left > s.cacheRemindSec * 1000) continue;
+        a.cacheReminded = a.lastCallAt;
+        due.set(a.parent, [...(due.get(a.parent) ?? []), { rec: a, inSec: Math.round(left / 1000) }]);
+      }
+      for (const [parent, list] of due) {
+        const p = parent === 'human' ? undefined : g.agents.get(parent);
+        const reachable = !!p && (p.state === 'waiting' || (p.state === 'working' && p.adapter.manifest.injectMidTurn && !!p.session?.busy()));
+        const to = parent === 'human' ? 'human' : reachable ? 'parent' : 'nobody';
+        for (const { rec, inSec } of list) {
+          this.emit({ goal: g.id, agent: rec.name, type: 'agent.cache_expiring', data: { parent, inSec, contextTokens: rec.contextTokens ?? null, told: to } });
+        }
+        if (to !== 'parent') continue;
+        const names = list.map(({ rec, inSec }) => `${rec.name} (in about ${inSec < 90 ? `${inSec} s` : `${Math.round(inSec / 60)} min`}${rec.contextTokens ? `, ${Math.round(rec.contextTokens / 1000)}k tokens of context` : ''})`);
+        this.notice(
+          p!,
+          `Prompt cache about to expire for ${names.join(', ')}. If you have more work for ${list.length > 1 ? 'them' : 'it'}, send it now: after that, ${list.length > 1 ? 'their' : 'its'} next turn pays to read the whole context again. Otherwise ignore this.`,
+        );
+      }
+    }
   }
 
   /**

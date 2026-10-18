@@ -297,7 +297,7 @@ class AcpSession implements Session {
         const size = num(u.size);
         const used = num(u.used);
         const cost = u.cost && u.cost.currency === 'USD' ? num(u.cost.amount) : undefined;
-        this.ev.usage({ contextPct: size && used !== undefined ? Math.round((used / size) * 100) : undefined, costUsd: cost });
+        this.ev.usage({ contextPct: size && used !== undefined ? Math.round((used / size) * 100) : undefined, contextTokens: used, costUsd: cost });
         break;
       }
     }

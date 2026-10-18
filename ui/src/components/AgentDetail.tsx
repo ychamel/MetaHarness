@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.ts';
 import { BUSY, clock, isOwnTool, money, oneLine, STATE_LABEL, GATE } from '../format.ts';
 import type { Agent, AgentDetail as Detail, Goal, Manifest, MhEvent } from '../types.ts';
-import { CopyText, Ctx, Dialog, Dot, Markdown, More, useConfirm } from './common.tsx';
+import { CopyText, Ctx, Dialog, Dot, Markdown, More, useConfirm, CacheClock } from './common.tsx';
 
 type Item =
   | { kind: 'say'; seq: number; ts: string; text: string }
@@ -195,6 +195,7 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
               <Ctx pct={agent.contextPct} /> {agent.contextPct}% context
             </span>
           )}
+          <CacheClock agent={agent} long />
           {agent.branch && <span className="mono" title="Its branch">{agent.branch}</span>}
           {agent.awaitingApproval > 0 && <span className="warn-text">{agent.awaitingApproval} waiting for your approval</span>}
           {agent.unread > 0 && <span>{agent.unread} unread message{agent.unread > 1 ? 's' : ''}</span>}
