@@ -318,7 +318,11 @@ class CodexSession implements Session {
         const it = p.item ?? {};
         if (it.type === 'agentMessage' && it.text?.trim()) this.ev.text(it.text);
         else if (it.type === 'commandExecution') this.ev.toolResult(`exit ${it.exitCode ?? '?'}: ${String(it.aggregatedOutput ?? '').slice(0, 160)}`, it.exitCode === 0);
-        else if (it.type === 'fileChange') this.ev.toolCall('Edit', (it.changes ?? []).map((c: { path?: string }) => c.path).join(', ').slice(0, 160));
+        else if (it.type === 'fileChange') {
+          // Reported once it's applied, so it starts and finishes here.
+          this.ev.toolCall('Edit', (it.changes ?? []).map((c: { path?: string }) => c.path).join(', ').slice(0, 160));
+          this.ev.toolResult(String(it.status ?? 'applied'), it.status !== 'failed');
+        }
         else if (it.type === 'mcpToolCall' && it.server !== MCP_SERVER_NAME) this.ev.toolCall(`${it.server}.${it.tool}`, JSON.stringify(it.arguments ?? {}).slice(0, 160));
         break;
       }

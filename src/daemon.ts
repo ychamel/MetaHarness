@@ -77,6 +77,11 @@ export interface AgentRec {
   limitTimer?: NodeJS.Timeout;
   /** An urgent message is waiting for the interrupted turn to end. */
   interrupting?: boolean;
+  /** Tool calls the harness reported as started and not yet finished, in the current turn. */
+  toolsRunning: number;
+  lastToolEnd: number;
+  /** Messages are waiting to pause the running turn between steps (see pauseCheck). */
+  pause?: { since: number; urgent: boolean; timer: NodeJS.Timeout };
   inbox: InboxEntry[];
   waiters: Waiter[];
   /** Callers blocked in a quick spawn, waiting for this agent's answer. */
@@ -150,6 +155,21 @@ export interface DaemonOptions {
   limits?: Partial<LimitPolicy>;
   /** Remove worktrees and merged branches when a goal's lead finishes (default true). */
   autoClean?: boolean;
+  pause?: Partial<PausePolicy>;
+}
+
+/**
+ * When a message can't join a running turn, the turn is paused between steps: never while a tool
+ * is running, so nothing is cut in half (design §7).
+ */
+export interface PausePolicy {
+  /** How long a normal message waits for the harness to pick it up by itself (a hook, a tool result). */
+  graceMs: number;
+  /** After a tool finishes, how long to leave a harness that pulls messages to do so before pausing. */
+  settleMs: number;
+  /** The longest a pause waits for a running tool to finish before interrupting anyway. */
+  maxWaitMs: number;
+  tickMs: number;
 }
 
 /** What to do as an account nears or hits its rate limit (design §16). */
@@ -193,6 +213,10 @@ interface OpenConflict {
 
 const FINISHED: AgentState[] = ['ended', 'crashed'];
 
+/** Added to messages that paused an agent's turn. */
+const PAUSED_NOTE =
+  '\n[MetaHarness] Your turn was paused between steps for this (your last step had finished). Check where you were, then carry on, or change course if the message says so.';
+
 /** How long after a tool call that names a shared file a change to it is put down to that agent. */
 const SHARED_TOUCH_MS = 120_000;
 
@@ -220,6 +244,7 @@ export class Daemon {
   private pollTimer?: NodeJS.Timeout;
   readonly accounts = new Map<string, AccountRec>();
   readonly limits: LimitPolicy;
+  readonly pausing: PausePolicy;
   /** Git hooks that keep agents from deleting branches, rewinding shared ones, or pushing. */
   readonly guardDir: string;
   private autoClean: boolean;
@@ -235,6 +260,7 @@ export class Daemon {
     this.quickTimeoutMs = o.quickTimeoutMs ?? 120_000;
     this.pollMs = o.pollMs ?? 3000;
     this.limits = { warnPct: 90, waitMaxMs: 15 * 60_000, retryMs: 15 * 60_000, marginMs: 5000, ...o.limits };
+    this.pausing = { graceMs: 20_000, settleMs: 5000, maxWaitMs: 60_000, tickMs: 500, ...o.pause };
     this.hub = new Hub(this);
     this.guardDir = installGuard(o.home);
     this.autoClean = o.autoClean ?? true;
@@ -371,6 +397,7 @@ export class Daemon {
       goal: goalId, name, role, harness, model, parent: o.parent, brief: o.brief,
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
       adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
+      toolsRunning: 0, lastToolEnd: 0,
     };
     rec.systemPrompt = this.buildPrompt(g, rec, o.workflow, startedFrom);
     g.agents.set(name, rec);
@@ -562,10 +589,13 @@ export class Daemon {
     const live = () => rec.gen === gen;
     return {
       turnStarted: () => {
+        if (live()) rec.toolsRunning = 0;
         if (live() && !FINISHED.includes(rec.state) && rec.state !== 'paused' && rec.state !== 'limited') this.setState(rec, 'working');
       },
       turnEnded: () => {
         if (!live() || FINISHED.includes(rec.state)) return;
+        rec.toolsRunning = 0;
+        this.endPause(rec);
         // A turn refused at the rate limit isn't the agent stopping: it continues later.
         if (rec.state === 'limited') return;
         if (rec.doneNote !== undefined) this.setState(rec, 'done');
@@ -579,11 +609,17 @@ export class Daemon {
       },
       toolCall: (tool, summary) => {
         if (!live()) return;
+        rec.toolsRunning++;
         this.noteGitActor(rec, summary);
         this.noteSharedTouch(rec, summary);
         this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } });
       },
-      toolResult: (summary, ok) => live() && void this.emit({ ...base, type: 'agent.tool_result', data: { summary, ok } }),
+      toolResult: (summary, ok) => {
+        if (!live()) return;
+        rec.toolsRunning = Math.max(0, rec.toolsRunning - 1);
+        rec.lastToolEnd = Date.now();
+        this.emit({ ...base, type: 'agent.tool_result', data: { summary, ok } });
+      },
       usage: u => {
         if (!live()) return;
         if (u.costUsd !== undefined) rec.cost = (rec.costBefore ?? 0) + u.costUsd;
@@ -602,6 +638,13 @@ export class Daemon {
         }
       },
       approval: (tool, detail) => (live() ? this.requestApproval(rec, tool, detail) : Promise.resolve({ allow: false, message: 'This session was replaced.' })),
+      decide: async t => {
+        if (!live()) return { allow: false, message: 'This session was replaced.' };
+        const verdict = this.policyVerdict(rec, t);
+        if (verdict !== 'ask') return { allow: verdict.allow, message: verdict.reason };
+        return this.requestApproval(rec, t.tool, t.detail);
+      },
+      pull: () => (live() ? this.takeForTurn(rec, 'tool_result') : undefined),
     };
   }
 
@@ -1030,11 +1073,16 @@ export class Daemon {
     if (s.busy()) {
       // An interrupted turn is ending; its messages go in the next turn.
       if (rec.interrupting) return;
-      if (rec.inbox.some(e => e.urgent) && this.interrupt(rec, s)) return;
-      if (!rec.adapter.manifest.injectMidTurn) return;
-      const entries = rec.inbox.splice(0);
-      this.markDelivered(rec, entries, 'inject');
-      void s.send(this.forAgent(rec, entries), 'inject');
+      const urgent = rec.inbox.some(e => e.urgent);
+      const m = rec.adapter.manifest;
+      if (!urgent && m.injectMidTurn) {
+        const entries = rec.inbox.splice(0);
+        this.markDelivered(rec, entries, 'inject');
+        void s.send(this.forAgent(rec, entries), 'inject');
+        return;
+      }
+      // Urgent, or no way into the running turn: pause it between steps (or wait for the turn's end).
+      if (m.interrupt || m.resume) this.startPause(rec, urgent);
       return;
     }
     // A new turn on an account at its limit would only be refused.
@@ -1043,7 +1091,46 @@ export class Daemon {
     rec.interrupting = false;
     const entries = rec.inbox.splice(0);
     this.markDelivered(rec, entries, via);
-    void s.send(this.forAgent(rec, entries), 'new_turn');
+    void s.send(this.forAgent(rec, entries) + (via === 'interrupt' ? PAUSED_NOTE : ''), 'new_turn');
+  }
+
+  /**
+   * Messages are waiting and can't join the running turn. Urgent ones pause it at the next step
+   * boundary; others first give the harness graceMs to pick them up itself (hooks, tool results),
+   * then do the same. If the turn ends first, they simply start the next one.
+   */
+  private startPause(rec: AgentRec, urgent: boolean): void {
+    if (rec.pause) {
+      rec.pause.urgent ||= urgent;
+      return;
+    }
+    rec.pause = { since: Date.now(), urgent, timer: setInterval(() => this.pauseCheck(rec), this.pausing.tickMs).unref() };
+    this.pauseCheck(rec);
+  }
+
+  private endPause(rec: AgentRec): void {
+    if (!rec.pause) return;
+    clearInterval(rec.pause.timer);
+    rec.pause = undefined;
+  }
+
+  /** Pauses the turn once no tool is running (or the wait is too long). */
+  private pauseCheck(rec: AgentRec): void {
+    const p = rec.pause;
+    const s = rec.session;
+    if (!p) return;
+    if (!rec.inbox.length || !s?.busy() || rec.interrupting || FINISHED.includes(rec.state)) return this.endPause(rec);
+    const now = Date.now();
+    const waitFrom = p.urgent ? p.since : p.since + this.pausing.graceMs;
+    if (now < waitFrom) return;
+    // A harness that pulls messages gets a moment after each tool to do so before the pause.
+    const settle = rec.adapter.manifest.pullsMessages && !p.urgent ? this.pausing.settleMs : 0;
+    // A tool waiting for the human's approval hasn't started, so it's no reason to wait.
+    const between = rec.toolsRunning - rec.pendingApprovals <= 0 && now - rec.lastToolEnd >= settle;
+    if (!between && now - waitFrom < this.pausing.maxWaitMs) return;
+    this.endPause(rec);
+    if (!this.interrupt(rec, s)) return;
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.paused_between_steps', data: { urgent: p.urgent, waitedMs: now - p.since, cut: !between } });
   }
 
   /**
@@ -1078,7 +1165,7 @@ export class Daemon {
     rec.session = undefined;
     rec.costBefore = rec.cost;
     void s.stop().catch(() => {});
-    this.startSession(rec, this.forAgent(rec, entries), s.nativeId);
+    this.startSession(rec, this.forAgent(rec, entries) + PAUSED_NOTE, s.nativeId);
     return true;
   }
 
@@ -1100,17 +1187,21 @@ export class Daemon {
     const rec = who && this.agent(who.goal, who.agent);
     if (!rec) return req.event === 'before_tool' ? { allow: false, reason: 'MetaHarness does not know this agent.' } : {};
     if (req.event === 'before_model') {
-      // Shared-folder notes ride along too: the hook costs nothing, unlike a new turn.
-      if ((!rec.inbox.length && !rec.fileNotes.size) || rec.interrupting || rec.state === 'paused') return {};
-      const entries = rec.inbox.splice(0);
-      this.markDelivered(rec, entries, 'hook');
-      return { messages: this.forAgent(rec, entries) };
+      const messages = this.takeForTurn(rec, 'hook');
+      return messages ? { messages } : {};
     }
     const t = rec.adapter.toolRequest?.(req.tool, req.args ?? {}) ?? { kind: 'other', tool: req.tool, detail: JSON.stringify(req.args ?? {}).slice(0, 8000) };
-    const verdict = this.toolPolicy(rec, t);
+    const verdict = this.policyVerdict(rec, t);
     if (verdict !== 'ask') return verdict;
     const d = await this.requestApproval(rec, t.tool, t.detail);
     return { allow: d.allow, reason: d.allow ? undefined : (d.message ?? 'The human denied this.') };
+  }
+
+  /** toolPolicy, with refusals logged. */
+  private policyVerdict(rec: AgentRec, t: ToolRequest): { allow: boolean; reason?: string } | 'ask' {
+    const v = this.toolPolicy(rec, t);
+    if (v !== 'ask' && !v.allow) this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.refused', data: { tool: t.tool, detail: t.detail.slice(0, 2000), why: v.reason ?? null } });
+    return v;
   }
 
   /** What may run without asking: reads, MetaHarness's own tools, edits in the agent's own directories, and commands its role allows. */
@@ -1331,6 +1422,18 @@ export class Daemon {
     return this.firstMessage(rec, parts.join('\n\n'));
   }
 
+  /**
+   * Waiting messages for an adapter to add to the running turn itself (a hook, a tool result).
+   * Shared-folder notes ride along too: this costs nothing, unlike a new turn.
+   */
+  private takeForTurn(rec: AgentRec, via: string): string | undefined {
+    if ((!rec.inbox.length && !rec.fileNotes.size) || rec.interrupting || rec.state === 'paused') return undefined;
+    const entries = rec.inbox.splice(0);
+    this.markDelivered(rec, entries, via);
+    if (!rec.inbox.length) this.endPause(rec);
+    return this.forAgent(rec, entries);
+  }
+
   /** Messages for an agent, with any shared-folder changes it hasn't heard about. */
   private forAgent(rec: AgentRec, entries: InboxEntry[]): string {
     return [formatForAgent(entries), this.takeFileNotes(rec)].filter(Boolean).join('\n');
@@ -1401,6 +1504,7 @@ export class Daemon {
     // Whatever the stopped session still says is no longer news.
     rec.gen++;
     clearTimeout(rec.limitTimer);
+    this.endPause(rec);
     this.setState(rec, 'ended');
     this.emit({ goal: goalId, agent: name, type: 'agent.ended', data: { reason: `stopped by ${by}` } });
     if (rec.doneNote === undefined) this.finish(rec, `${name} was stopped by ${by}.`, 'ended');
@@ -1492,7 +1596,7 @@ export class Daemon {
       quick: a.quick, isLead: a.name === g.lead, cwd: a.cwd, worktree, state: a.state, status: a.status,
       cost: a.cost, costBefore: a.costBefore, contextPct: a.contextPct, lastText: a.lastText,
       adapter: this.adapters[a.harness], resumeId: a.nativeSession, gen: 0, token, systemPrompt: '', doneNote: a.doneNote,
-      inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
+      inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(), toolsRunning: 0, lastToolEnd: 0,
     };
     rec.systemPrompt = this.buildPrompt(g, rec, g.workflow, a.startedFrom ?? 'its start point');
     return rec;
@@ -1728,6 +1832,7 @@ export class Daemon {
       for (const a of g.agents.values()) {
         for (const w of a.waiters) clearTimeout(w.timer);
         clearTimeout(a.limitTimer);
+        this.endPause(a);
         // What the stopping sessions report isn't the agents' doing: the log keeps their state,
         // so the next daemon can resume them (recover).
         a.gen++;

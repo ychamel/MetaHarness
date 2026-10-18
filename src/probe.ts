@@ -94,28 +94,37 @@ export async function probeHarness(d: Daemon, harness: string, model: string, o:
     const got = !!done1 && String(done1.data.note).includes(code1);
     checks.push({
       name: 'Message during a turn',
-      ok: got && (how === 'inject' || how === 'hook' || how === 'wait'),
-      detail: !done1 ? 'no done call' : !got ? `delivered (${how ?? '?'}) but not in the done note` : how === 'inject' ? 'arrived in the running turn (native)' : how === 'hook' ? 'arrived in the running turn (through a hook)' : `only arrived between turns (${how})`,
+      ok: got && ['inject', 'hook', 'tool_result', 'wait', 'interrupt'].includes(how ?? ''),
+      detail: !done1
+        ? 'no done call'
+        : !got
+          ? `delivered (${how ?? '?'}) but not in the done note`
+          : ({ inject: 'arrived in the running turn (native)', hook: 'arrived in the running turn (through a hook)', tool_result: 'arrived with a tool result', wait: 'reached it in a wait call', interrupt: 'paused the turn between steps' } as Record<string, string>)[how ?? ''] ??
+            `only arrived between turns (${how})`,
     });
     if (!done1) return report();
     await until(e => e.type === 'agent.state' && e.data.state === 'done' && e.seq > done1.seq, 30_000);
 
-    // 3. A finished agent takes a follow-up, and 4. an urgent message interrupts it.
+    // 3. A finished agent takes a follow-up, and 4. an urgent message pauses it between steps.
     const followAt = seen.at(-1)!.seq;
-    d.deliver(goal, 'human', 'probe', 'Follow-up: run the shell command "sleep 45", then call the MetaHarness done tool with the note "slept".');
-    const sleeping = await until(e => e.type === 'agent.tool_call' && e.seq > followAt && /sleep 45/.test(String(e.data.summary)));
+    d.deliver(goal, 'human', 'probe', 'Follow-up: run the shell command "sleep 8" three times, one command at a time, then call the MetaHarness done tool with the note "slept".');
+    const sleeping = await until(e => e.type === 'agent.tool_call' && e.seq > followAt && /sleep 8/.test(String(e.data.summary)));
     const resumed = via(followAt);
     checks.push({ name: 'Follow-up after done', ok: !!sleeping, detail: sleeping ? `resumed (${resumed ?? '?'})` : 'the follow-up never started' });
     if (sleeping) {
       const urgentAt = seen.at(-1)!.seq;
       d.deliver(goal, 'human', 'probe', `Stop what you're doing: call the MetaHarness done tool now with the note "interrupted ${code2}".`, true);
-      const done2 = await until(isDone(urgentAt), 60_000);
+      const done2 = await until(isDone(urgentAt), 90_000);
       const how2 = seen.find(e => e.type === 'agent.interrupted' && e.seq > urgentAt)?.data.how;
-      const quick = !!done2 && String(done2.data.note).includes(code2) && Date.parse(done2.ts) - Date.parse(sleeping.ts) < 40_000;
+      const paused = seen.find(e => e.type === 'agent.paused_between_steps' && e.seq > urgentAt);
+      const sleeps = seen.filter(e => e.type === 'agent.tool_call' && e.seq > followAt && e.seq < (done2?.seq ?? Infinity) && /sleep 8/.test(String(e.data.summary))).length;
+      const ok = !!done2 && String(done2.data.note).includes(code2) && !!paused && sleeps < 3;
       checks.push({
-        name: 'Urgent message interrupts',
-        ok: quick,
-        detail: quick ? (how2 === 'restart' ? 'stopped by restarting the session from its ID' : 'stopped natively') : done2 ? 'it finished, but only after the command ran out' : 'no done call within 60s',
+        name: 'Urgent message pauses the turn',
+        ok,
+        detail: ok
+          ? `paused after the running command finished${paused!.data.cut ? ' (cut: the command ran too long)' : ''}, ${how2 === 'restart' ? 'by restarting the session from its ID' : 'natively'}`
+          : !done2 ? 'no done call within 90s' : !paused ? 'the turn was never paused' : sleeps >= 3 ? 'it ran every step before answering' : 'paused, but the note lacks the codeword',
       });
     }
 

@@ -14,6 +14,9 @@ turns, and permission requests land in your Inbox. Scripted agents (`--fake`) ar
 development.
 
 Milestone 1 in progress:
+- **ACP harnesses** (OpenCode built in; Gemini CLI, Goose, Qwen Code and others as a profile
+  file) run through one adapter. Messages reach a busy agent mid-turn on every harness: natively,
+  through a hook or a command's output, or by pausing the turn between steps, never mid-command.
 - **Claude Code, Codex and Antigravity CLI** all run, and each passes every `mh test` check:
   mid-turn messages (native, or through a hook for Antigravity), urgent interrupts, resume,
   usage and rate limits.

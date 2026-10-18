@@ -24,6 +24,8 @@ export class AgyAdapter implements HarnessAdapter {
   readonly manifest: CapabilityManifest = {
     harness: 'antigravity',
     injectMidTurn: false,
+    // Through its PreInvocation hook, before each model call (Daemon.hook).
+    pullsMessages: true,
     resume: true,
     interrupt: false,
     reportsCost: false,

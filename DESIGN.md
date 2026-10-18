@@ -248,13 +248,23 @@ agent's harness supports:
 | Situation | How it's delivered |
 |---|---|
 | Agent is working (mid-turn) | **Straight into the running turn.** Claude Code: the message is written to its streaming input; Codex: `turn/steer`. Both are native and verified (Appendix A). **This is the main path** |
-| Harness has no native channel | A hook adds the message before the agent's next model call or after its next tool call (Antigravity: `PreInvocation`, tested; Claude Code: `PostToolUse`, tested) |
+| Harness has no native channel | A hook adds the message before the agent's next model call or after its next tool call (Antigravity: `PreInvocation`, tested; Claude Code: `PostToolUse`, tested). Over ACP, it's added to the output of the next command the agent runs through MetaHarness (`terminal/*`) |
+| None of those picks it up within 20 s | **The turn is paused between steps**: once no tool is running, it's stopped (natively, or by restarting the session from its ID) and the message starts the next turn in the same session, with a line saying the turn was paused after a finished step |
 | Agent is calling our tools | Unread notice attached to every tool result; it reads them via `wait(0)` |
 | Agent is in `wait` | Returned immediately |
 | Agent's turn has ended (idle) | Sent as a new user turn (session resumed) |
 | Harness has neither | The methodology asks agents to call `wait(0)` between steps; the unread notice catches the rest |
-| You mark a message urgent | Interrupt and resume with the message. Without a native interrupt, the session is killed and resumed from its ID with the message |
+| You mark a message urgent | **Paused between steps** at once: it waits for the running tool to finish (up to 60 s, then interrupts anyway), so a command or file write is never cut in half. Without a native interrupt, the session is killed and resumed from its ID with the message |
 | Agent is done | Its session is resumed for the follow-up. If that's impossible, the message goes to its spawner with a note |
+
+Mid-turn delivery is the standard: every harness that can be interrupted or resumed gets
+messages during its turn, by one of the paths above. A pause only ever happens between steps:
+the daemon counts the tool calls each harness reports as started and finished, and stops a turn
+only when none is running. (Interrupting mid-tool is what corrupts work: ACP agents, for one,
+mark an interrupted tool call as failed.) The delays are a `PausePolicy`: 20 s grace for a
+harness to pick the message up itself, 5 s after each tool for one that pulls messages through a
+hook, 60 s at most waiting for a tool. Only a harness with neither interrupt nor resume waits for
+the end of the turn.
 
 Where a hook is used, it's a few lines of glue that call the daemon. It only adds something when
 there are new messages or file changes, so an agent nobody is messaging sees nothing extra.
@@ -447,7 +457,7 @@ type Event = {
 |---|---|---|
 | Goal | `goal.started` · `goal.paused` · `goal.resumed` · `goal.recovered` {resumed, later} · `goal.ended` · `goal.cleaned` {removed, deleted, kept} | Header, goal list |
 | Agent lifecycle | `agent.spawned` {role, harness, model, parent, brief, quick, worktree, branch, native_session} · `agent.state` · `agent.status` {text} · `agent.done` {note} · `agent.ended` · `agent.crashed` · `agent.resumed` · `agent.respawned` | Team tree, cards |
-| Activity | `agent.text` (streamed) · `agent.tool_call` {tool, summary} · `agent.tool_result` {summary, ok} · `agent.file_edit` {path, diff} | Agent detail stream |
+| Activity | `agent.text` (streamed) · `agent.tool_call` {tool, summary} · `agent.tool_result` {summary, ok} · `agent.file_edit` {path, diff} · `agent.paused_between_steps` {urgent, waitedMs, cut} | Agent detail stream |
 | Messages | `message.sent` {from, to, text, urgent} · `message.delivered` {via: hook \| tool \| turn \| interrupt} · `message.read` | Graph, sequence view |
 | Shared folder | `shared.write` {path, version, by, history} · `shared.delete` {path, by} · `shared.clash` {path, owner, by, previous} · `shared.read` {path} (not yet) | Graph file nodes, folder browser |
 | You | `inbox.item` {kind: approval \| decision \| question \| stuck \| crash} · `inbox.resolved` · `approval.auto` · `approval.refused` {tool, detail, why} | Inbox, notifications |
@@ -593,7 +603,22 @@ An adapter splits into two parts:
 - A **transport**: how we start the harness and talk to it. There are few: stream-json over
   stdio (Claude Code, `agy`, and their imitators), a JSON-RPC app server (Codex), ACP (the Agent
   Client Protocol, spoken by Gemini CLI, OpenCode, Goose and others), and a one-shot print mode
-  as the last resort. Each is code.
+  as the last resort (not built: no mid-turn delivery at all, so only when a harness needs it).
+  Each is code.
+- **ACP** (`src/adapters/acp.ts`): one process per agent (so each has its own environment), our
+  MCP server over HTTP, the shared folder as an additional directory, the role's model through
+  the session's `model` config option, the system prompt as an assistant-audience block in the
+  first prompt, `session/resume` or `session/load` to resume, `usage_update` for context and
+  cost. MetaHarness offers the client's `fs/*` and `terminal/*` to the agent: writes go through
+  the approval policy, and a finished command's output carries waiting messages. Permission
+  requests go through the policy and are answered "once", never "always". OpenCode is a
+  built-in profile (`opencode acp`); its inline config makes it ask before edits and commands
+  and turns off its own subagents and questions. OpenCode v2 reaches MCP tools through "code
+  mode", one `execute` tool running code like `await tools.metaharness.done(...)`; the policy
+  reads which `tools.<server>.<tool>` the code calls. It runs commands with its own shell tool,
+  not the client's terminal, so its messages arrive through `wait`, tool results or a pause.
+  `MH_ACP_LOG=<file>` records every ACP message, for checking a new harness. Any other ACP harness is a profile file with
+  `transport: acp` and `args:` (e.g. `--experimental-acp`).
 - A **profile**: one harness on one transport. Its binary, flags, how it's given our MCP
   server, which hook format it has, how to check its login and list its models, and which rung
   of each ladder below it reaches. Profiles are data, so a new harness is usually a profile, not
@@ -610,8 +635,8 @@ profile says which ones work; the daemon uses the best one available.
 
 | Feature | Best → fallback |
 |---|---|
-| Message into a running turn | native (stream input, `turn/steer`) → hook after the next tool call → unread notice on our tool results → interrupt and resume → next turn |
-| Interrupt | native → kill the process and resume the session with the message |
+| Message into a running turn | native (stream input, `turn/steer`) → hook before the next model call → on a tool result (ACP terminal output, our own tools' unread notice) → pause between steps and continue the session → next turn |
+| Interrupt | at a step boundary, always: native (`session/cancel` over ACP) → kill the process and resume the session with the message |
 | Approvals | native protocol or ACP `session/request_permission` → our MCP permission tool → a `PreToolUse` hook that asks the daemon → a fixed policy plus the harness's sandbox |
 | Our MCP server, one identity per agent | a CLI flag → a per-session config file → a separate config directory |
 | Seeing what it does | event stream → hooks that report tool calls → its transcript file → git commits only |

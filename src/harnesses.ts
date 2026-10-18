@@ -10,7 +10,7 @@ import { claudeMcpNames } from './mcpservers.ts';
  */
 
 /** How MetaHarness talks to a harness. Each one is an adapter. */
-export const TRANSPORTS = ['claude-stream', 'codex-app-server', 'agy-stream'] as const;
+export const TRANSPORTS = ['claude-stream', 'codex-app-server', 'agy-stream', 'acp'] as const;
 export type Transport = (typeof TRANSPORTS)[number];
 
 export interface LoginStatus {
@@ -25,6 +25,8 @@ export interface HarnessProfile {
   bin: string;
   /** Unset for a harness we can find but can't drive yet. */
   transport?: Transport;
+  /** Arguments that start the transport, e.g. ["acp"] for `opencode acp`. */
+  args?: string[];
   /** Extra environment for the harness, e.g. ANTHROPIC_BASE_URL for Claude Code on another provider. */
   env?: Record<string, string>;
   /** Where to get it, shown when it isn't installed. */
@@ -164,7 +166,36 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
   // Found and reported so the user knows where they stand; MetaHarness can't drive them yet.
   { id: 'cursor', title: 'Cursor CLI', bin: 'cursor-agent' },
   { id: 'gemini-cli', title: 'Gemini CLI', bin: 'gemini' },
-  { id: 'opencode', title: 'OpenCode', bin: 'opencode' },
+  {
+    id: 'opencode',
+    title: 'OpenCode',
+    bin: 'opencode',
+    transport: 'acp',
+    args: ['acp'],
+    install: 'npm install -g opencode-ai',
+    login: 'opencode auth login',
+    // Its inline config, which outranks the user's: ask MetaHarness before edits and commands
+    // (so the approval policy and the git guard's refusals apply), and leave delegation and
+    // questions to MetaHarness (spawn, send to human).
+    env: {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        permission: {
+          '*': 'ask', read: 'allow', glob: 'allow', grep: 'allow', lsp: 'allow', todowrite: 'allow', todoread: 'allow',
+          'metaharness_*': 'allow', task: 'deny', question: 'deny',
+        },
+      }),
+    },
+    loginStatus: async (bin, env) => {
+      const r = await run(bin, ['auth', 'list'], env);
+      const n = /(\d+)\s+credentials?/i.exec(r.out)?.[1];
+      return { signedIn: r.code === 0 ? (n ? Number(n) > 0 : undefined) : false, detail: r.out.split('\n').filter(Boolean).slice(-1)[0] ?? '' };
+    },
+    listModels: async (bin, env) => {
+      const r = await run(bin, ['models'], env, 30_000);
+      if (r.code !== 0) throw new Error(r.out.split('\n').pop() || `opencode models exited with ${r.code}`);
+      return modelsFromLines(r.out);
+    },
+  },
   { id: 'copilot', title: 'GitHub Copilot CLI', bin: 'copilot' },
   { id: 'qwen-code', title: 'Qwen Code', bin: 'qwen' },
   { id: 'goose', title: 'Goose', bin: 'goose' },
@@ -172,7 +203,7 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
 
 /**
  * A user profile: .metaharness/harnesses/<id>.md. Front matter keys: title, bin, transport,
- * env (KEY=value, comma separated), install, login, status_cmd (exit 0 means signed in),
+ * args (what starts the transport, e.g. "--experimental-acp"), env (KEY=value, comma separated), install, login, status_cmd (exit 0 means signed in),
  * models_cmd (one model per line) or models (comma separated), probe_model. It replaces a built-in
  * profile with the same id, keeping whatever it doesn't set.
  */
@@ -190,6 +221,7 @@ export function profileFromFile(file: string, text: string, base?: HarnessProfil
       if (eq > 0) p.env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
     }
   }
+  if (meta.args) p.args = words(meta.args);
   if (meta.install) p.install = meta.install;
   if (meta.login) p.login = meta.login;
   if (meta.status_cmd) {

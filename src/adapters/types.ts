@@ -6,6 +6,11 @@ export interface CapabilityManifest {
   harness: string;
   /** A message can be added to a turn that is already running. */
   injectMidTurn: boolean;
+  /**
+   * The adapter collects waiting messages itself at points in a running turn (a hook before each
+   * model call, a command's output) by calling SessionEvents.pull.
+   */
+  pullsMessages?: boolean;
   /** A finished session can take a new turn later. */
   resume: boolean;
   interrupt: boolean;
@@ -69,6 +74,10 @@ export interface SessionEvents {
   rateLimit(info: RateLimitInfo): void;
   /** The harness wants permission for something. Resolves when the human decides. */
   approval(tool: string, detail: string): Promise<ApprovalDecision>;
+  /** A tool call for the approval policy: allowed, refused, or the human decides. */
+  decide(t: ToolRequest): Promise<ApprovalDecision>;
+  /** Messages waiting for the agent, taken for the running turn; undefined if there are none. */
+  pull(): string | undefined;
 }
 
 export interface ApprovalDecision {

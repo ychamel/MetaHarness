@@ -117,8 +117,37 @@ Findings from the run:
 - [x] `mh test <harness>`: MCP, mid-turn message, follow-up, urgent interrupt, usage, rate
       limits. All three harnesses pass every check (2026-10-18; haiku, gpt-6-luna,
       gemini-3.8-flash-low)
-- [ ] An ACP transport (Gemini CLI, OpenCode, Goose, Qwen Code, Kimi) and a one-shot print-mode
-      transport, so most other harnesses are a profile
+- [x] **Messages mid-turn on every harness, never mid-step** (DESIGN.md §7): when a message
+      can't join the running turn (no native injection, or it's urgent), the turn is paused once
+      no tool is running, then continues in the same session with the message. Grace 20 s for a
+      hook or tool result to pick it up, 60 s at most waiting for a tool. Urgent messages no
+      longer cut commands short; `mh test` checks the turn pauses after the running command.
+      Live on 2026-10-18, every check passes on all four: Claude Code (haiku, $0.08, native),
+      Codex (gpt-6-luna, native), Antigravity (gemini-3.8-flash-low, by restarting the session
+      from its ID), OpenCode (free model, natively over ACP)
+- [x] **ACP transport** (`src/adapters/acp.ts`), with a built-in OpenCode profile (`opencode
+      acp`, asks before edits and commands, no native subagents or questions). Messages ride on
+      the output of commands run through our `terminal/*`, else the turn pauses between steps;
+      permission requests go through the policy; model via the `model` config option; resume via
+      `session/resume` or `session/load`; context and cost from `usage_update`. Tested against a
+      scripted ACP agent (`test/fixtures/fake-acp.mjs`) and live
+- [x] **Live: `mh test opencode` passes every check** (2026-10-18, OpenCode 2.0.32,
+      `opencode/deepseek-v4.1-flash-free`, $0, 55 s): MCP tools, message mid-turn (in a `wait`),
+      follow-up after done, urgent message pauses the turn after the running command, usage.
+      Learned: OpenCode v2 reaches MCP tools through "code mode" (one `execute` tool running
+      `await tools.metaharness.status(...)`), so the policy reads the code's `tools.<server>.<tool>`
+      calls; it runs commands with its own `shell` tool, never the client's `terminal/*`, so its
+      mid-turn messages come through `wait`, our tool results, or a pause between steps; its
+      `shell` permission requests carry the command and reach our policy. A server passed over
+      ACP replaces one in its config, so `codemode: false` can't be set that way (tried: direct
+      tools made the model search longer). `opencode/glm-5.3-flash-free` answered 429 "Endpoint
+      is unavailable" and OpenCode kept retrying; `MH_ACP_LOG=<file>` records the traffic
+- [ ] OpenCode retries reported as `session_info_update` `_meta["opencode/retry"]` (with
+      `provider.rate-limit`) could feed rate limits; an approval left in the Inbox when a pause
+      cancels the turn is answered to nobody
+- [ ] Other ACP harnesses as profiles (Gemini CLI, Goose, Qwen Code, Kimi): their `args` need
+      checking against each CLI
+- [ ] A one-shot print-mode transport: only for a harness that has nothing better
 - [ ] Drafting profiles for unknown harnesses, a shared profile registry, role presets
 - [ ] Handoff when a context window is nearly full (same mechanism as a move)
 - [ ] Antigravity isolation from the user's own global plugins and MCP servers (like
@@ -173,7 +202,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 44 tests, about ten seconds, no model calls
+npm install && npm test        # 52 tests, about ten seconds, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Daemon, type LimitPolicy } from '../src/daemon.ts';
+import { Daemon, type LimitPolicy, type PausePolicy } from '../src/daemon.ts';
 import type { HarnessAdapter } from '../src/adapters/types.ts';
 import { FakeAdapter, demoScripts, type FakeScript } from '../src/adapters/fake.ts';
 import { git } from '../src/git.ts';
@@ -41,7 +41,7 @@ export const settle = () => new Promise(r => setTimeout(r, 30));
  * A daemon with its own roles and adapters, no harness override: roles run where their files
  * say, so backups and accounts behave as they would for real. `roles` maps a role name to its file.
  */
-export function makeTeam(o: { roles: Record<string, string>; adapters: Record<string, HarnessAdapter>; limits?: Partial<LimitPolicy> }) {
+export function makeTeam(o: { roles: Record<string, string>; adapters: Record<string, HarnessAdapter>; limits?: Partial<LimitPolicy>; pause?: Partial<PausePolicy> }) {
   const configDir = mkdtempSync(join(tmpdir(), 'mh-config-'));
   mkdirSync(join(configDir, 'roles'));
   for (const [name, text] of Object.entries(o.roles)) writeFileSync(join(configDir, 'roles', `${name}.md`), text);
@@ -53,5 +53,6 @@ export function makeTeam(o: { roles: Record<string, string>; adapters: Record<st
     adapters: o.adapters,
     pollMs: 0,
     limits: o.limits,
+    pause: o.pause,
   });
 }

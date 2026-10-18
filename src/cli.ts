@@ -163,6 +163,7 @@ async function main(): Promise<void> {
       const { ClaudeAdapter } = await import('./adapters/claude.ts');
       const { CodexAdapter } = await import('./adapters/codex.ts');
       const { AgyAdapter } = await import('./adapters/agy.ts');
+      const { AcpAdapter } = await import('./adapters/acp.ts');
       const { loadProfiles, findBin } = await import('./harnesses.ts');
       const { startServer } = await import('./server.ts');
       const fake = opt.fake === true;
@@ -176,6 +177,7 @@ async function main(): Promise<void> {
         if (p.transport === 'claude-stream') adapters[p.id] = new ClaudeAdapter({ id: p.id, bin, env: p.env });
         else if (p.transport === 'codex-app-server') adapters[p.id] = new CodexAdapter({ bin, prices });
         else if (p.transport === 'agy-stream') adapters[p.id] = new AgyAdapter({ id: p.id, bin });
+        else if (p.transport === 'acp') adapters[p.id] = new AcpAdapter({ id: p.id, bin, args: p.args ?? [], env: p.env });
       }
       const d = new Daemon({ home: HOME, repo: process.cwd(), adapters, harnessOverride: fake ? 'fake' : undefined });
       await startServer(d, PORT, token(true)).catch((e: Error) => die(`Couldn't listen on ${BASE}: ${e.message}`));

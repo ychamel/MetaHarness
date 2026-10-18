@@ -76,6 +76,7 @@ class FakeSession implements Session {
   private cost = 0;
   interrupt?: () => Promise<void>;
   private turnScript?: FakeTurnScript;
+  private interruptedTurn = false;
   private cancelRun?: () => void;
 
   constructor(spec: SessionSpec, ev: SessionEvents, script: FakeScript | undefined, canInterrupt: boolean, resume?: string, turnScript?: FakeTurnScript) {
@@ -83,8 +84,15 @@ class FakeSession implements Session {
     this.ev = ev;
     this.turnScript = turnScript;
     this.nativeId = resume ?? 'fake-' + randomUUID().slice(0, 8);
-    // Interrupting a scripted turn hands it a message it can stop on; the turn then ends.
-    if (canInterrupt) this.interrupt = async () => (this.cancelRun ? this.cancelRun() : this.onMessage?.('[interrupted]'));
+    // Interrupting a scripted turn cuts its command short, or hands it a message it can stop on,
+    // or (between steps) makes its next command come back interrupted; the turn then ends.
+    if (canInterrupt) {
+      this.interrupt = async () => {
+        if (this.cancelRun) this.cancelRun();
+        else if (this.onMessage) this.onMessage('[interrupted]');
+        else this.interruptedTurn = true;
+      };
+    }
     if (!script) {
       if (spec.brief) setImmediate(() => void this.send(spec.brief, 'new_turn'));
       return;
@@ -136,6 +144,7 @@ class FakeSession implements Session {
       rateLimit: info => this.ev.rateLimit(info),
       stopped: () => this.stopped,
       run: (command, ms) => {
+        if (this.interruptedTurn) return Promise.resolve(false);
         this.ev.toolCall('Bash', command);
         return new Promise<boolean>(resolve => {
           const timer = setTimeout(() => finish(true), ms);
@@ -159,6 +168,7 @@ class FakeSession implements Session {
   private async turn(body: () => Promise<void>): Promise<void> {
     if (this.stopped) return;
     this.running = true;
+    this.interruptedTurn = false;
     this.ev.turnStarted();
     try {
       await body();
