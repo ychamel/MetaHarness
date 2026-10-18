@@ -81,6 +81,81 @@ export interface GoalSummary {
   lead: string;
   cost: number | null;
   agents: number;
+  working: number;
+  branch: string | null;
+  workflow: string | null;
+  /** The lead's done note: what the goal came to. */
+  result: string | null;
+  inbox: number;
+  needs: number;
+}
+
+export type Scope = 'personal' | 'repo';
+
+export interface RoleDef {
+  name: string;
+  scope: Scope;
+  file: string;
+  overrides?: Scope;
+  harness: string;
+  model: string;
+  fallback: string[];
+  goodAt: string;
+  instructions: string;
+  helper: boolean;
+  worktree: boolean;
+  workflow: string;
+  mcp: string[];
+  autoApprove: 'read-only' | 'none';
+  permissionMode: string;
+  allow: string[];
+}
+
+export interface WorkflowDef {
+  name: string;
+  scope: Scope;
+  file: string;
+  overrides?: Scope;
+  goodAt: string;
+  body: string;
+}
+
+export interface GuideDef {
+  text: string;
+  from: Scope | 'built-in';
+  builtIn: string;
+  files: Partial<Record<Scope, string>>;
+}
+
+export interface McpDef {
+  type?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+export interface ConfigView {
+  scopes: { scope: Scope; dir: string }[];
+  roles: RoleDef[];
+  workflows: WorkflowDef[];
+  methodology: GuideDef;
+  helperMethodology: GuideDef;
+  mcp: { name: string; scope: Scope; def: McpDef }[];
+  harnesses: { id: string; title: string; runnable: boolean; models: string[] }[];
+  /** Every role runs on this harness instead (the daemon was started with --fake). */
+  override: string | null;
+}
+
+export interface SharedFileView {
+  path: string;
+  version: number | null;
+  exists: boolean;
+  text: string | null;
+  binary: boolean;
+  size: number;
+  versions: { version: number; by: string }[];
 }
 
 export interface AgentDetail {
@@ -96,6 +171,7 @@ export interface AgentDetail {
   worktree: { path: string; branch: string; base: string; deps?: string[] } | null;
   nativeSession: string | null;
   open: { command?: string; note: string } | null;
+  roleFile?: string;
   live: boolean;
 }
 

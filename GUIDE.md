@@ -85,8 +85,11 @@ mkdir -p ~/.metaharness
 cp -r .metaharness/roles .metaharness/workflows .metaharness/methodology.md .metaharness/helper-methodology.md ~/.metaharness/
 ```
 
-Then edit `~/.metaharness/roles/*.md` so each role uses a harness and model you have. `mh doctor`
-lists the models. A role file looks like this:
+Then make each role use a harness and model you have. The easiest way is the web app's
+**Roles** page (section 5 shows how to open it): pick a role, choose its harness and model
+(**List … models** asks the harness what it offers), and save it to this repository or to your
+personal folder. `mh doctor` lists the models too. Roles are plain files, so you can also edit
+`~/.metaharness/roles/*.md` by hand. A role file looks like this:
 
 ```markdown
 ---
@@ -142,9 +145,9 @@ mh ui
 ```
 
 `mh ui` opens the app in your browser and signs you in with the daemon's token, which lives in
-`~/.metaharness/token`. Click **New goal** and describe what you want, as you would to a
-colleague. Leave the lead as `architect`, and leave the workflow on "let the lead choose" or
-pick one:
+`~/.metaharness/token`. It opens on **Home**: describe what you want under **Start a goal**,
+as you would to a colleague. Leave the lead as `architect`, and leave the workflow on "let the
+lead choose" or pick one:
 
 | Workflow | When |
 |---|---|
@@ -171,22 +174,33 @@ You review the result in your checkout like any other change, and push it yourse
 
 ## 6. Steering the team
 
-**The web app** shows four things:
+**The web app** has a rail on the left: **Home**, the current **Goal**, **New goal**, and
+**Setup** (roles, workflows, guidelines, tools).
 
-- **Team** (left): who spawned whom, with each agent's state, status line, cost and context use.
-  A `!` badge means an agent is waiting for your approval.
-- **Inbox** (left, below the team): everything waiting for you.
-  - **Approvals:** a command an agent wants to run. Approve, or deny with a reason.
-  - **Decisions:** "approve this design". Approve, or send it back saying what to change.
-  - **Questions:** answer in the box.
-  - **Results:** an agent finished. Clear it, or reply to send a follow-up.
-- **Center tabs:**
-  - **Activity:** everything that happens, as it happens.
-  - **Graph:** who talks to whom, and who writes which shared file.
-  - **Sequence:** messages in order.
-  - **Timeline:** who was working or waiting, and when.
-- **Agent** (right): the selected agent's live stream (what it says, its commands and their
-  output, its messages), its brief and full prompt, and its controls.
+- **Home:** what needs you across every goal, a box to start a goal, the running goals, and
+  past goals with what came of each (searchable).
+- **Goal:** the request, status, time, cost and branch at the top, with the lead's final note
+  as **Outcome** once it's done. Below that:
+  - **Needs you** (center, highlighted): what an agent is waiting on.
+    - **Approvals:** a command an agent wants to run. Approve, or deny (add a note if you like).
+    - **Decisions:** "approve this design". Approve, or send it back saying what to change.
+    - **Questions:** answer in the box.
+  - **Team** (left): who spawned whom, with each agent's state, status line, cost and context
+    use. **Updates** below it: results from agents that report to you; clear them, or follow up.
+  - **Center tabs:**
+    - **Story** (the default): what happened, the important parts first. Who started whom,
+      messages, results, commits, problems and your answers are cards; the steps in between
+      (status lines, tool calls, file updates) fold into one line you can open.
+    - **Files:** the shared folder: designs, reviews and reports, rendered, with every version
+      and who wrote it.
+    - **Graph**, **Sequence**, **Timeline:** who talks to whom, messages in order, who was
+      busy when.
+    - **Log:** every event, as `mh tail` shows it.
+  - **Agent** (right): what the selected agent is doing now (or its result), its controls, and
+    its conversation (its words, messages, and its tool calls folded into groups), its brief,
+    and its setup (prompt, folder, worktree, session).
+
+Long texts show their first lines with **Show more**.
 
 **Talking to an agent:** select it and type in the message box. The message reaches it while it
 works, without stopping it. Tick **Urgent** to pause its turn between steps (never in the middle
@@ -200,7 +214,9 @@ of a command) and deliver the message at once.
 | Stop | Ends the agent; whoever spawned it is told |
 | Open in harness | The command to open its session in the harness itself, e.g. `claude --resume …` (pause it first) |
 | + Helper, + Agent | Start an agent yourself; its result comes to you, or to the agent you pick |
+| Message | To the lead, everyone, every agent in a role, or one agent |
 | Pause all, End goal | The same for the whole goal; ending it also cleans up its worktrees |
+| Clean up | On a finished goal: removes its worktrees and merged branches, and asks before removing unmerged work |
 
 The terminal can do all of this too:
 
@@ -236,6 +252,11 @@ The terminal can do all of this too:
   up from a handoff.
 
 ## 8. Tailoring it
+
+Roles, workflows, the agent guidelines and MCP servers each have a page under **Setup** in the
+web app. Each item shows whether it lives in this repository or in your personal folder, and
+you choose where to save it. What you save applies to agents started from then on, without
+restarting the daemon. The pages write the same files described below.
 
 - **Workflows** are plain guides the lead follows: `.metaharness/workflows/<name>.md`, with a
   `good_at:` line at the top. A workflow can stop for your decision, and hand on to another

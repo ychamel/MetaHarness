@@ -1,102 +1,149 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, ApiError, loadToken, setToken } from './api.ts';
 import { useGoal } from './useGoal.ts';
-import type { GoalSummary } from './types.ts';
-import { Header } from './components/Header.tsx';
-import { TeamTree } from './components/TeamTree.tsx';
-import { Inbox } from './components/Inbox.tsx';
-import { AgentDetail } from './components/AgentDetail.tsx';
+import type { ConfigView, GoalSummary } from './types.ts';
 import { SpawnDialog, StartGoalDialog } from './components/Dialogs.tsx';
-import { useToast } from './components/common.tsx';
-import { Activity } from './views/Activity.tsx';
+import { ConfirmProvider, useToast } from './components/common.tsx';
+import { Home } from './pages/Home.tsx';
+import { GoalPage, type GoalTab } from './pages/GoalPage.tsx';
+import { Roles } from './pages/Roles.tsx';
+import { Workflows } from './pages/Workflows.tsx';
+import { Guidelines } from './pages/Guidelines.tsx';
+import { Tools } from './pages/Tools.tsx';
 
-// The flow views pull in React Flow; load them when first opened.
-const Graph = lazy(() => import('./views/Graph.tsx'));
-const Sequence = lazy(() => import('./views/Sequence.tsx'));
-const Timeline = lazy(() => import('./views/Timeline.tsx'));
-
-type Tab = 'activity' | 'graph' | 'sequence' | 'timeline';
-const TABS: [Tab, string][] = [
-  ['activity', 'Activity'],
-  ['graph', 'Graph'],
-  ['sequence', 'Sequence'],
-  ['timeline', 'Timeline'],
-];
+type Page = 'home' | 'goal' | 'roles' | 'workflows' | 'guidelines' | 'tools';
 
 /** Where you are, kept in the address so a reload or a shared link comes back to it. */
-function readHash(): { goal?: string; agent?: string; tab?: Tab } {
+interface Place {
+  page: Page;
+  goal?: string;
+  agent?: string;
+  tab?: GoalTab;
+  file?: string;
+  /** The role, workflow or server open in Setup: scope/name, or "new". */
+  item?: string;
+}
+
+function readHash(): Place {
   const p = new URLSearchParams(location.hash.slice(1));
-  return { goal: p.get('goal') ?? undefined, agent: p.get('agent') ?? undefined, tab: (p.get('tab') as Tab) ?? undefined };
+  const get = (k: string) => p.get(k) ?? undefined;
+  const page = (get('page') as Page) ?? (get('goal') ? 'goal' : 'home');
+  return { page, goal: get('goal'), agent: get('agent'), tab: get('tab') as GoalTab, file: get('file'), item: get('item') };
+}
+
+function writeHash(pl: Place): string {
+  const p = new URLSearchParams();
+  p.set('page', pl.page);
+  for (const k of ['goal', 'agent', 'tab', 'file', 'item'] as const) if (pl[k]) p.set(k, pl[k]!);
+  return `#${p}`;
 }
 
 export function App() {
+  return (
+    <ConfirmProvider>
+      <Shell />
+    </ConfirmProvider>
+  );
+}
+
+function Shell() {
   const [token, setTok] = useState(() => loadToken());
   const [authFailed, setAuthFailed] = useState(false);
   const [goals, setGoals] = useState<GoalSummary[]>([]);
-  const initial = useMemo(readHash, []);
-  const [goalId, setGoalId] = useState<string | undefined>(initial.goal);
-  const [agentName, setAgentName] = useState<string | undefined>(initial.agent);
-  const [tab, setTab] = useState<Tab>(initial.tab ?? 'activity');
-  const [dialog, setDialog] = useState<{ kind: 'goal' } | { kind: 'spawn'; parent?: string }>();
+  const [loaded, setLoaded] = useState(false);
+  const [config, setConfig] = useState<ConfigView>();
+  const [place, setPlace] = useState<Place>(readHash);
+  const [dialog, setDialog] = useState<{ kind: 'goal'; workflow?: string } | { kind: 'spawn'; parent?: string }>();
   const { toast, say } = useToast();
+
+  // Back and forward move between places.
+  useEffect(() => {
+    const on = () => setPlace(readHash());
+    window.addEventListener('hashchange', on);
+    return () => window.removeEventListener('hashchange', on);
+  }, []);
+  const go = useCallback((next: Partial<Place>, replace = false) => {
+    setPlace(prev => {
+      const pl = { ...prev, ...next };
+      const hash = writeHash(pl);
+      if (hash !== location.hash) (replace ? history.replaceState : history.pushState).call(history, null, '', hash);
+      return pl;
+    });
+  }, []);
 
   const loadGoals = useCallback(async () => {
     try {
-      const list = await api.goals();
-      setGoals(list);
+      setGoals(await api.goals());
+      setLoaded(true);
       setAuthFailed(false);
-      setGoalId(id => id ?? (list.find(g => g.status === 'running') ?? list[0])?.id);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) setAuthFailed(true);
     }
   }, []);
+  const loadConfig = useCallback(() => void api.config().then(setConfig, () => {}), []);
   useEffect(() => {
     if (!token) return;
     void loadGoals();
-    const t = setInterval(() => void loadGoals(), 8000);
+    loadConfig();
+    const t = setInterval(() => void loadGoals(), 4000);
     return () => clearInterval(t);
-  }, [token, loadGoals]);
+  }, [token, loadGoals, loadConfig]);
 
-  useEffect(() => {
-    const p = new URLSearchParams();
-    if (goalId) p.set('goal', goalId);
-    if (agentName) p.set('agent', agentName);
-    if (tab !== 'activity') p.set('tab', tab);
-    history.replaceState(null, '', `#${p}`);
-  }, [goalId, agentName, tab]);
-
-  const { snapshot, events, connected, error, refresh } = useGoal(token && !authFailed ? goalId : undefined);
+  // The goal page opens on the running goal, or the latest one.
+  const goalId = place.goal ?? (goals.find(g => g.status === 'running') ?? goals[0])?.id;
+  const onGoalPage = place.page === 'goal';
+  const { snapshot, events, connected, error, refresh } = useGoal(token && !authFailed && onGoalPage ? goalId : undefined);
   const goal = snapshot?.goals.find(g => g.id === goalId);
-  const agent = goal?.agents.find(a => a.name === agentName) ?? goal?.agents.find(a => a.name === goal.lead);
-  const inbox = useMemo(() => (snapshot?.inbox ?? []).filter(i => i.goal === goalId), [snapshot, goalId]);
 
-  // A browser notification when something new needs you, if you've allowed them.
-  const [seenInbox] = useState(() => new Set<string>());
+  // A browser notification when an agent starts waiting on you, if you've allowed them.
+  const needs = goals.reduce((n, g) => n + (g.needs ?? 0), 0);
+  const lastNeeds = useRef(needs);
   useEffect(() => {
-    for (const i of inbox) {
-      if (seenInbox.has(i.id)) continue;
-      const first = seenInbox.size === 0 && inbox.length > 1;
-      seenInbox.add(i.id);
-      if (!first && document.hidden && 'Notification' in window && Notification.permission === 'granted' && ['approval', 'decision', 'question'].includes(i.kind)) {
-        new Notification(`MetaHarness: ${i.agent}`, { body: i.text.slice(0, 200) });
-      }
+    if (needs > lastNeeds.current && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification('MetaHarness', { body: needs === 1 ? 'An agent is waiting on you.' : `${needs} things are waiting on you.` });
     }
-  }, [inbox, seenInbox]);
+    lastNeeds.current = needs;
+  }, [needs]);
+  useEffect(() => {
+    document.title = needs ? `(${needs}) MetaHarness` : 'MetaHarness';
+  }, [needs]);
 
   const command = useCallback(
-    async (body: Record<string, unknown>, confirmText?: string) => {
-      if (confirmText && !window.confirm(confirmText)) return undefined;
+    async (body: Record<string, unknown>) => {
       try {
         const r = await api.command(body);
-        if (typeof r.result === 'string' && body.cmd !== 'agent.message') say(r.result);
+        if (typeof r.result === 'string' && !['agent.message', 'inbox.resolve'].includes(String(body.cmd))) say(r.result);
+        if (body.cmd === 'agent.message') say('Sent.');
         void refresh();
-        return r;
+        void loadGoals();
+        return r as Record<string, unknown>;
       } catch (e) {
         say((e as Error).message);
         return undefined;
       }
     },
-    [refresh, say],
+    [refresh, say, loadGoals],
+  );
+
+  const saveConfig = useCallback(
+    async (body: Record<string, unknown>) => {
+      const r = (await command(body)) as { config?: ConfigView } | undefined;
+      if (r?.config) setConfig(r.config);
+      return r?.config;
+    },
+    [command],
+  );
+
+  const startGoal = useCallback(
+    async (b: Record<string, unknown>) => {
+      if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission();
+      const r = (await command(b)) as { goal?: string } | undefined;
+      if (!r?.goal) return false;
+      setDialog(undefined);
+      go({ page: 'goal', goal: r.goal, agent: undefined, tab: 'story', file: undefined });
+      return true;
+    },
+    [command, go],
   );
 
   if (!token || authFailed) {
@@ -112,91 +159,69 @@ export function App() {
     );
   }
 
+  const current = goals.find(g => g.id === goalId);
+  const setup = (page: Page) => ({ selected: place.page === page ? place.item : undefined, onSelect: (item?: string) => go({ item }), onSave: saveConfig, onCommand: command, config });
+
   return (
-    <div className="app">
-      <Header
-        goals={goals}
-        goal={goal}
-        inboxCount={inbox.length}
-        connected={connected}
-        onPick={id => {
-          setGoalId(id);
-          setAgentName(undefined);
-        }}
-        onNewGoal={() => {
-          if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission();
-          setDialog({ kind: 'goal' });
-        }}
-        onSpawn={() => setDialog({ kind: 'spawn' })}
-        onCommand={(b, c) => void command(b, c)}
-      />
-      {error && <div className="error-bar">{error}</div>}
-      <div className="main">
-        <aside className="col">
-          <div className="section-title">Team</div>
-          <div className="scroll">{goal ? <TeamTree goal={goal} selected={agent?.name} onSelect={setAgentName} /> : <div className="empty">{goals.length ? 'Pick a goal above.' : 'No goals yet. Start one with “New goal”.'}</div>}</div>
-          <Inbox
-            items={inbox}
-            onResolve={(item, decision, reply) => void command({ cmd: 'inbox.resolve', item, decision, reply })}
-            onSelectAgent={setAgentName}
+    <div className="shell">
+      <nav className="rail" aria-label="Main">
+        <div className="rail-brand" title="MetaHarness">
+          <svg viewBox="0 0 16 16" aria-hidden>
+            <circle cx="4" cy="8" r="3" fill="var(--accent)" />
+            <circle cx="12" cy="4" r="2.5" fill="var(--done)" />
+            <circle cx="12" cy="12" r="2.5" fill="var(--waiting)" />
+          </svg>
+        </div>
+        <RailButton icon={ICONS.home} label="Home" on={place.page === 'home'} badge={needs} onClick={() => go({ page: 'home', item: undefined })} />
+        <RailButton icon={ICONS.goal} label="Goal" on={onGoalPage} dot={current?.status === 'running'} disabled={!goals.length} onClick={() => go({ page: 'goal', goal: goalId, item: undefined })} />
+        <RailButton icon={ICONS.plus} label="New goal" onClick={() => setDialog({ kind: 'goal' })} />
+        <div className="rail-sep" />
+        <div className="rail-group">Setup</div>
+        <RailButton icon={ICONS.roles} label="Roles" on={place.page === 'roles'} onClick={() => go({ page: 'roles', item: undefined })} />
+        <RailButton icon={ICONS.workflows} label="Workflows" on={place.page === 'workflows'} onClick={() => go({ page: 'workflows', item: undefined })} />
+        <RailButton icon={ICONS.guide} label="Guidelines" on={place.page === 'guidelines'} onClick={() => go({ page: 'guidelines', item: undefined })} />
+        <RailButton icon={ICONS.tools} label="Tools" on={place.page === 'tools'} onClick={() => go({ page: 'tools', item: undefined })} />
+      </nav>
+
+      <main className="content">
+        {error && onGoalPage && <div className="error-bar">{error}</div>}
+        {place.page === 'home' && (
+          <Home goals={goals} loaded={loaded} config={config} onOpen={(g, agent) => go({ page: 'goal', goal: g, agent, tab: place.tab ?? 'story', file: undefined })} onStart={startGoal} onCommand={command} onSetup={() => go({ page: 'roles', item: 'new' })} />
+        )}
+        {onGoalPage && (
+          <GoalPage
+            goals={goals}
+            loaded={loaded}
+            goal={goal}
+            snapshot={snapshot}
+            events={events}
+            connected={connected}
+            agentName={place.agent}
+            tab={place.tab ?? 'story'}
+            file={place.file}
+            onTab={tab => go({ tab }, true)}
+            onFile={file => go({ file }, true)}
+            onAgent={agent => go({ agent }, true)}
+            onGoal={g => go({ goal: g, agent: undefined, file: undefined })}
+            onCommand={command}
+            onSpawn={parent => setDialog({ kind: 'spawn', parent })}
+            onNewGoal={() => setDialog({ kind: 'goal' })}
+            onEditRole={role => {
+              const r = config?.roles.find(x => x.name === role);
+              go({ page: 'roles', item: r ? `${r.scope}/${r.name}` : undefined });
+            }}
           />
-        </aside>
+        )}
+        {place.page === 'roles' && <Roles {...setup('roles')} />}
+        {place.page === 'workflows' && <Workflows {...setup('workflows')} onStartWith={workflow => setDialog({ kind: 'goal', workflow })} />}
+        {place.page === 'guidelines' && <Guidelines config={config} onSave={saveConfig} />}
+        {place.page === 'tools' && <Tools {...setup('tools')} />}
+      </main>
 
-        <section className="col center">
-          <nav className="tabs">
-            {TABS.map(([t, label]) => (
-              <button key={t} className={`tab${tab === t ? ' on' : ''}`} onClick={() => setTab(t)}>
-                {label}
-              </button>
-            ))}
-          </nav>
-          {goal ? (
-            <Suspense fallback={<div className="empty">Loading…</div>}>
-              {tab === 'activity' && <Activity events={events} agents={goal.agents.map(a => a.name)} onSelectAgent={setAgentName} />}
-              {tab === 'graph' && <Graph goal={goal} events={events} selected={agent?.name} onSelect={setAgentName} />}
-              {tab === 'sequence' && <Sequence goal={goal} events={events} onSelect={setAgentName} />}
-              {tab === 'timeline' && <Timeline goal={goal} events={events} onSelect={setAgentName} />}
-            </Suspense>
-          ) : (
-            <div className="empty">No goal selected.</div>
-          )}
-        </section>
-
-        <aside className="col">
-          {goal && agent ? (
-            <AgentDetail
-              key={`${goal.id}/${agent.name}`}
-              goal={goal}
-              agent={agent}
-              events={events}
-              manifest={snapshot?.harnesses[agent.harness]}
-              onCommand={command}
-              onSpawnUnder={name => setDialog({ kind: 'spawn', parent: name })}
-            />
-          ) : (
-            <div className="empty">Pick an agent to see what it's doing.</div>
-          )}
-        </aside>
-      </div>
-
-      {dialog?.kind === 'goal' && (
-        <StartGoalDialog
-          snapshot={snapshot}
-          onClose={() => setDialog(undefined)}
-          onStart={async b => {
-            const r = (await command(b)) as { goal?: string } | undefined;
-            if (r?.goal) {
-              setDialog(undefined);
-              setGoalId(r.goal);
-              setAgentName(undefined);
-              void loadGoals();
-            }
-          }}
-        />
-      )}
+      {dialog?.kind === 'goal' && <StartGoalDialog key={dialog.workflow} config={config} initialWorkflow={dialog.workflow} onClose={() => setDialog(undefined)} onStart={startGoal} />}
       {dialog?.kind === 'spawn' && goal && (
         <SpawnDialog
-          snapshot={snapshot}
+          config={config}
           goal={goal}
           parent={dialog.parent}
           onClose={() => setDialog(undefined)}
@@ -204,7 +229,7 @@ export function App() {
             const r = (await command(b)) as { agent?: string } | undefined;
             if (r?.agent) {
               setDialog(undefined);
-              setAgentName(r.agent);
+              go({ agent: r.agent }, true);
             }
           }}
         />
@@ -214,14 +239,66 @@ export function App() {
   );
 }
 
+function RailButton({ icon, label, on, badge, dot, disabled, onClick }: { icon: ReactNode; label: string; on?: boolean; badge?: number; dot?: boolean; disabled?: boolean; onClick: () => void }) {
+  return (
+    <button className={`rail-btn${on ? ' on' : ''}`} onClick={onClick} disabled={disabled} aria-current={on ? 'page' : undefined} title={label}>
+      <span className="rail-icon">
+        {icon}
+        {badge ? <span className="rail-badge">{badge}</span> : dot ? <span className="rail-dot" /> : null}
+      </span>
+      <span className="rail-label">{label}</span>
+    </button>
+  );
+}
+
+const svg = (d: ReactNode) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    {d}
+  </svg>
+);
+const ICONS = {
+  home: svg(<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z" />),
+  goal: svg(
+    <>
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="4" />
+      <circle cx="12" cy="12" r="0.8" fill="currentColor" />
+    </>,
+  ),
+  plus: svg(<path d="M12 5v14M5 12h14" />),
+  roles: svg(
+    <>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3.5 19c.8-3.2 3-5 5.5-5s4.7 1.8 5.5 5" />
+      <circle cx="17" cy="9" r="2.4" />
+      <path d="M16 14.2c2.2.2 3.8 1.8 4.5 4.3" />
+    </>,
+  ),
+  workflows: svg(
+    <>
+      <rect x="3" y="4" width="6" height="5" rx="1" />
+      <rect x="15" y="4" width="6" height="5" rx="1" />
+      <rect x="9" y="15" width="6" height="5" rx="1" />
+      <path d="M9 6.5h6M18 9v3H12v3" />
+    </>,
+  ),
+  guide: svg(
+    <>
+      <path d="M5 4h10l4 4v12H5z" />
+      <path d="M8 11h8M8 15h8M8 7h4" />
+    </>,
+  ),
+  tools: svg(<path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L4 17l3 3 5.2-5.2a4 4 0 0 0 5.3-5.3l-2.6 2.6-2.4-.6-.6-2.4z" />),
+};
+
 function SignIn({ failed, onToken }: { failed: boolean; onToken: (t: string) => void }) {
   const [t, setT] = useState('');
+  const hint = useMemo(() => (failed ? "That token doesn't match this daemon's." : 'This page needs the daemon’s token.'), [failed]);
   return (
     <div className="welcome">
       <h1>MetaHarness</h1>
       <p>
-        {failed ? "That token doesn't match this daemon's." : 'This page needs the daemon’s token.'} The easiest way in is to run <code>mh ui</code>, which opens it for you. Or paste the
-        token from <code>~/.metaharness/token</code>:
+        {hint} The easiest way in is to run <code>mh ui</code>, which opens it for you. Or paste the token from <code>~/.metaharness/token</code>:
       </p>
       <input type="text" value={t} onChange={e => setT(e.target.value)} onKeyDown={e => e.key === 'Enter' && t.trim() && onToken(t)} placeholder="token" aria-label="Token" />
       <div>

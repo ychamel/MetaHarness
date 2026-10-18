@@ -62,6 +62,11 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
       if (!goal || !name) return json(res, 400, { error: 'GET /agent needs ?goal=<id>&name=<agent>.' });
       return json(res, 200, d.agentDetail(goal, name));
     }
+    if (req.method === 'GET' && url.pathname === '/file') {
+      const goal = url.searchParams.get('goal'), path = url.searchParams.get('path'), v = url.searchParams.get('version');
+      if (!goal || !path) return json(res, 400, { error: 'GET /file needs ?goal=<id>&path=<path in the shared folder>.' });
+      return json(res, 200, d.sharedFile(goal, path, v ? Number(v) : undefined));
+    }
     if (req.method === 'POST' && url.pathname === '/commands') {
       const body = await readBody(req);
       return json(res, 200, await d.command(body ? JSON.parse(body) : {}));
@@ -91,7 +96,7 @@ function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse):
   });
 }
 
-const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/commands']);
+const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/commands']);
 
 /** The built web app (ui/dist). */
 export const UI_DIR = join(import.meta.dirname, '..', 'ui', 'dist');

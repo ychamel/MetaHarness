@@ -1,4 +1,4 @@
-import type { AgentDetail, GoalSummary, MhEvent, Snapshot } from './types.ts';
+import type { AgentDetail, ConfigView, GoalSummary, MhEvent, SharedFileView, Snapshot } from './types.ts';
 
 /**
  * The daemon's API (design §13). `mh ui` opens the app with ?token=…; it's kept in this
@@ -52,6 +52,9 @@ export const api = {
   state: (goal?: string) => call<Snapshot>(`/state${goal ? `?goal=${encodeURIComponent(goal)}` : ''}`),
   goals: () => call<{ goals: GoalSummary[] }>('/goals').then(r => r.goals),
   agent: (goal: string, name: string) => call<AgentDetail>(`/agent?goal=${encodeURIComponent(goal)}&name=${encodeURIComponent(name)}`),
+  file: (goal: string, path: string, version?: number) =>
+    call<SharedFileView>(`/file?goal=${encodeURIComponent(goal)}&path=${encodeURIComponent(path)}${version != null ? `&version=${version}` : ''}`),
+  config: () => call<ConfigView>('/commands', { method: 'POST', body: JSON.stringify({ cmd: 'config.get' }) }),
   command: <T = { result?: string }>(body: Record<string, unknown>) => call<T & Record<string, unknown>>('/commands', { method: 'POST', body: JSON.stringify(body) }),
 };
 

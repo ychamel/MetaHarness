@@ -243,6 +243,15 @@ export const demoScripts: Record<string, FakeScript> = {
     await ctx.tool('done', { note: `Part B is done. Notes in shared/notes/${ctx.spec.agent}.md` });
   },
 
+  /** For trying the human's side (`mh spawn designer …` on a fake daemon): it asks you to decide, then waits. */
+  designer: async ctx => {
+    await ctx.tool('status', { text: 'Comparing two layouts' });
+    ctx.writeShared('layouts.md', '# Two layouts\n\n## A: sidebar\nSettings in a left sidebar, sections stacked.\n\n## B: tabs\nOne tab per section.\n\n| | A | B |\n|---|---|---|\n| Discoverable | yes | partly |\n| Mobile | needs a drawer | fine |\n');
+    await ctx.tool('send', { to: 'human', decision: true, text: 'I compared two layouts in **shared/layouts.md**. I recommend **A (sidebar)**: everything is visible at once. Approve A, or tell me what to change.' });
+    const answer = await ctx.tool('wait', { timeout: 3600 });
+    await ctx.tool('done', { note: `Settled the layout. Your answer: ${answer.split('\n').pop()}` });
+  },
+
   scout: async ctx => {
     ctx.say('Searching the codebase.');
     await ctx.sleep(20);

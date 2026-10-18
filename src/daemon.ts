@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, normalize, sep } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventStore } from './store.ts';
 import { loadConfig, type Config } from './config.ts';
@@ -11,9 +11,11 @@ import type { ApprovalDecision, HarnessAdapter, HookRequest, RateLimitInfo, Sess
 import { MCP_SERVER_NAME } from './mcp.ts';
 import { readOnlyCommand } from './readonly.ts';
 import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } from './recover.ts';
-import { SharedFolder } from './shared.ts';
+import { HISTORY, SharedFolder } from './shared.ts';
 import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
 import { deniedCommandPrefixes, guardEnv, installGuard, refusedGitCommand } from './guard.ts';
+import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveWorkflow, scopesOf } from './configedit.ts';
+import { loadProfiles } from './harnesses.ts';
 
 export interface InboxEntry {
   id: string;
@@ -238,6 +240,10 @@ export class Daemon {
   readonly humanInbox: HumanInboxItem[] = [];
   readonly quickTimeoutMs: number;
   config: Config;
+  /** Where the config comes from, later ones overriding earlier ones: personal, then the repository's. */
+  readonly configDirs: string[];
+  /** Model lists asked of each harness's CLI, for the role editor. */
+  private modelLists = new Map<string, { at: number; models: string[]; error?: string }>();
   /** Base URL of the running server, e.g. http://127.0.0.1:7777. Real harnesses reach /mcp/<token> under it. */
   mcpBase?: string;
   private adapters: Record<string, HarnessAdapter>;
@@ -258,7 +264,8 @@ export class Daemon {
     this.repo = o.repo;
     mkdirSync(o.home, { recursive: true });
     this.store = new EventStore(o.dbPath ?? join(o.home, 'mh.db'));
-    this.config = loadConfig(o.configDirs ?? [o.home, join(o.repo, '.metaharness')]);
+    this.configDirs = o.configDirs ?? [o.home, join(o.repo, '.metaharness')];
+    this.config = loadConfig(this.configDirs);
     this.adapters = o.adapters ?? {};
     this.harnessOverride = o.harnessOverride;
     this.quickTimeoutMs = o.quickTimeoutMs ?? 120_000;
@@ -1972,18 +1979,22 @@ export class Daemon {
 
   /** Every goal in the log, newest first: the Goals list. */
   listGoals() {
+    // What the Goals list shows of each: its outcome (the lead's note), who's at work, what waits for the human.
+    const summary = (v: ReturnType<Daemon['goalView']>) => ({
+      id: v.id, request: v.request, status: v.status, live: v.live, createdAt: v.createdAt, dir: v.dir, lead: v.lead, cost: v.cost,
+      agents: v.agents.length, working: v.agents.filter(a => ['starting', 'working', 'waiting', 'limited'].includes(a.state)).length,
+      branch: v.branch, workflow: v.workflow, result: v.agents.find(a => a.name === v.lead)?.doneNote ?? null,
+      inbox: this.humanInbox.filter(i => i.goal === v.id).length,
+      /** Approvals, decisions and questions: an agent waits on each. */
+      needs: this.humanInbox.filter(i => i.goal === v.id && ['approval', 'decision', 'question'].includes(i.kind)).length,
+    });
     return this.store
       .ofType('goal.started')
       .map(e => {
         const g = this.goals.get(e.goal);
-        if (g) {
-          const v = this.goalView(g);
-          return { id: v.id, request: v.request, status: v.status, live: true, createdAt: v.createdAt, dir: v.dir, lead: v.lead, cost: v.cost, agents: v.agents.length };
-        }
+        if (g) return summary(this.goalView(g));
         const r = replayGoal(this.store.since(e.goal));
-        if (!r) return undefined;
-        const v = this.replayView(r);
-        return { id: v.id, request: v.request, status: v.status, live: false, createdAt: v.createdAt, dir: v.dir, lead: v.lead, cost: v.cost, agents: v.agents.length };
+        return r ? summary(this.replayView(r)) : undefined;
       })
       .filter(<T>(x: T | undefined): x is T => x !== undefined)
       .reverse();
@@ -2075,9 +2086,109 @@ export class Daemon {
         const { probeHarness } = await import('./probe.ts');
         return { ...(await probeHarness(this, harness, s('model') ?? '')) };
       }
+      case 'config.get':
+        return this.configView();
+      case 'role.save':
+      case 'role.delete':
+      case 'workflow.save':
+      case 'workflow.delete':
+      case 'guide.save':
+      case 'mcp.save': {
+        const scopes = scopesOf(this.configDirs);
+        const file =
+          b.cmd === 'role.save' ? saveRole(scopes, b)
+          : b.cmd === 'workflow.save' ? saveWorkflow(scopes, b)
+          : b.cmd === 'guide.save' ? saveGuide(scopes, b)
+          : b.cmd === 'mcp.save' ? saveMcp(scopes, b)
+          : deleteItem(scopes, b.cmd === 'role.delete' ? 'role' : 'workflow', b);
+        this.reloadConfig();
+        const what = String(b.cmd).endsWith('.delete') ? 'Deleted' : 'Saved';
+        return { result: `${what} ${file}. Agents started from now on use it.`, file, config: this.configView() };
+      }
+      case 'harness.models': {
+        const harness = s('harness');
+        if (!harness) throw new Error('harness.models needs "harness".');
+        return await this.harnessModels(harness, b.refresh === true);
+      }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.models, config.get, role.save, role.delete, workflow.save, workflow.delete, guide.save, mcp.save.`);
     }
+  }
+
+  /* ---------------- configuration from clients ---------------- */
+
+  /** Reads the config files again: what's saved applies to agents started from now on. */
+  reloadConfig(): void {
+    this.config = loadConfig(this.configDirs);
+  }
+
+  /** Roles, workflows, guidelines and MCP servers with the folder each comes from, plus the harnesses a role can name. */
+  configView() {
+    const profiles = loadProfiles(this.configDirs);
+    // The scripted harness is for tests and demos, never a role's own choice.
+    const ids = new Set([...profiles.keys(), ...Object.keys(this.adapters).filter(id => id !== 'fake')]);
+    const harnesses = [...ids].map(id => ({
+      id,
+      title: profiles.get(id)?.title ?? id,
+      /** MetaHarness can run it here: it's installed and has a transport. */
+      runnable: !!this.adapters[id],
+      models: profiles.get(id)?.models ?? [],
+    }));
+    return { ...configView(scopesOf(this.configDirs)), harnesses, override: this.harnessOverride ?? null };
+  }
+
+  /** The models a harness offers: those its profile knows, plus what its CLI lists (asked once every ten minutes). */
+  async harnessModels(id: string, refresh = false): Promise<{ harness: string; models: string[]; error: string | null }> {
+    const p = loadProfiles(this.configDirs).get(id);
+    if (!p) return { harness: id, models: [], error: `There's no harness profile called ${id}.` };
+    const cached = this.modelLists.get(id);
+    if (cached && !refresh && Date.now() - cached.at < 600_000) return { harness: id, models: cached.models, error: cached.error ?? null };
+    const { findBin } = await import('./harnesses.ts');
+    const bin = findBin(p.bin);
+    let models = [...(p.models ?? [])];
+    let error: string | undefined;
+    if (bin && p.listModels) {
+      try {
+        models = [...new Set([...models, ...(await p.listModels(bin, { ...process.env, ...p.env }))])];
+      } catch (e) {
+        error = (e as Error).message;
+      }
+    } else if (!bin) error = `${p.bin} isn't installed here.`;
+    this.modelLists.set(id, { at: Date.now(), models, error });
+    return { harness: id, models, error: error ?? null };
+  }
+
+  /**
+   * A file in a goal's shared folder: its latest text, or one version from .history/, with the
+   * versions kept. Paths outside the folder are refused.
+   */
+  sharedFile(goalId: string, path: string, version?: number) {
+    if (!/^[0-9a-f-]+$/i.test(goalId)) throw new Error(`There's no goal ${goalId}.`);
+    const dir = this.goals.get(goalId)?.sharedDir ?? join(this.home, 'goals', goalId, 'shared');
+    const rel = normalize(path).replace(/^([/\\])+/, '');
+    if (!rel || rel.startsWith('..') || rel.split(sep)[0] === HISTORY) throw new Error(`${path} isn't a file in the shared folder.`);
+    const histDir = join(dir, HISTORY, rel);
+    const versions = existsSync(histDir)
+      ? readdirSync(histDir)
+          .map(f => /^(\d+)-(.+?)(\.[^.]*)?$/.exec(f))
+          .filter((m): m is RegExpExecArray => !!m)
+          .map(m => ({ version: Number(m[1]), by: m[2], file: join(histDir, m[0]) }))
+          .sort((a, b) => a.version - b.version)
+      : [];
+    const pick = version !== undefined ? versions.find(v => v.version === version) : undefined;
+    if (version !== undefined && !pick) throw new Error(`Version ${version} of ${rel} wasn't kept.`);
+    const file = pick?.file ?? join(dir, rel);
+    if (!file.startsWith(dir + sep) || !existsSync(file) || !statSync(file).isFile()) {
+      return { path: rel, version: version ?? null, exists: false, text: null, binary: false, size: 0, versions: versions.map(({ version, by }) => ({ version, by })) };
+    }
+    const size = statSync(file).size;
+    const buf = readFileSync(file).subarray(0, 512 * 1024);
+    const binary = buf.includes(0);
+    return {
+      path: rel, version: pick?.version ?? versions.at(-1)?.version ?? null, exists: true, size, binary,
+      text: binary ? null : buf.toString('utf8') + (size > buf.length ? '\n\n[… cut: the file is larger than 512 KB]' : ''),
+      versions: versions.map(({ version, by }) => ({ version, by })),
+    };
   }
 
   async close(): Promise<void> {

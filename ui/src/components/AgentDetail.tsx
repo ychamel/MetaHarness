@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.ts';
-import { clock, isOwnTool, money, oneLine, STATE_LABEL } from '../format.ts';
+import { BUSY, clock, isOwnTool, money, oneLine, STATE_LABEL } from '../format.ts';
 import type { Agent, AgentDetail as Detail, Goal, Manifest, MhEvent } from '../types.ts';
-import { CopyText, Ctx, Dialog, Dot } from './common.tsx';
+import { CopyText, Ctx, Dialog, Dot, Markdown, More, useConfirm } from './common.tsx';
 
 type Item =
   | { kind: 'say'; seq: number; ts: string; text: string }
   | { kind: 'done'; seq: number; ts: string; text: string }
-  | { kind: 'msg'; seq: number; ts: string; dir: 'in' | 'out'; who: string; text: string; urgent: boolean }
+  | { kind: 'msg'; seq: number; ts: string; dir: 'in' | 'out'; who: string; text: string; urgent: boolean; decision?: boolean }
   | { kind: 'tool'; seq: number; ts: string; tool: string; summary: string; result?: string; ok?: boolean }
   | { kind: 'note'; seq: number; ts: string; text: string; warn?: boolean };
 
@@ -30,7 +30,7 @@ function streamOf(events: MhEvent[], name: string): Item[] {
         out.push({ kind: 'done', seq: e.seq, ts: e.ts, text: d.note });
         break;
       case 'message.sent':
-        out.push({ kind: 'msg', seq: e.seq, ts: e.ts, dir: 'out', who: d.to === 'human' ? 'you' : d.to, text: d.text, urgent: !!d.urgent });
+        out.push({ kind: 'msg', seq: e.seq, ts: e.ts, dir: 'out', who: d.to === 'human' ? 'you' : d.to, text: d.text, urgent: !!d.urgent, decision: !!d.decision });
         break;
       case 'agent.tool_call': {
         // Its result still comes, so it keeps its place in line without being shown.
@@ -59,7 +59,7 @@ function streamOf(events: MhEvent[], name: string): Item[] {
         break;
       case 'inbox.item':
         // A decision it asked for is already in the stream as its message to you.
-        if (d.kind === 'approval') out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: `asked you (${d.kind}): ${oneLine(d.text, 200)}`, warn: true });
+        if (d.kind === 'approval') out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: `asked your approval: ${oneLine(d.text, 200)}`, warn: true });
         break;
       case 'agent.paused':
       case 'agent.resumed':
@@ -75,7 +75,7 @@ function streamOf(events: MhEvent[], name: string): Item[] {
       case 'git.conflict':
       case 'shared.write':
       case 'shared.clash':
-        out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: noteText(e), warn: ['agent.crashed', 'git.conflict', 'shared.clash', 'agent.limited'].includes(e.type) });
+        out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: noteText(e), warn: ['agent.crashed', 'git.conflict', 'shared.clash', 'agent.limited', 'agent.moved'].includes(e.type) });
         break;
     }
   }
@@ -103,21 +103,48 @@ function noteText(e: MhEvent): string {
   }
 }
 
+/** Tool calls and plain notes in a row fold into one line; words, messages, results and warnings stay out. */
+type Row = { kind: 'item'; item: Item } | { kind: 'steps'; id: number; items: Item[] };
+function rowsOf(items: Item[]): Row[] {
+  const out: Row[] = [];
+  let run: Item[] = [];
+  const flush = () => {
+    if (run.length === 1) out.push({ kind: 'item', item: run[0] });
+    else if (run.length) out.push({ kind: 'steps', id: run[0].seq, items: run });
+    run = [];
+  };
+  for (const i of items) {
+    if (i.kind === 'tool' || (i.kind === 'note' && !i.warn)) run.push(i);
+    else {
+      flush();
+      out.push({ kind: 'item', item: i });
+    }
+  }
+  flush();
+  return out;
+}
+
 interface Props {
   goal: Goal;
   agent: Agent;
   events: MhEvent[];
   manifest?: Manifest;
-  onCommand: (body: Record<string, unknown>, confirm?: string) => Promise<unknown>;
+  onCommand: (body: Record<string, unknown>) => Promise<unknown>;
   onSpawnUnder: (name: string) => void;
+  onEditRole: (role: string) => void;
 }
 
-export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnUnder }: Props) {
+type Tab = 'talk' | 'brief' | 'setup';
+
+export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnUnder, onEditRole }: Props) {
   const items = useMemo(() => streamOf(events, agent.name), [events, agent.name]);
+  const rows = useMemo(() => rowsOf(items), [items]);
+  const [tab, setTab] = useState<Tab>('talk');
   const [detail, setDetail] = useState<Detail>();
   const [text, setText] = useState('');
   const [urgent, setUrgent] = useState(false);
   const [openNative, setOpenNative] = useState<{ command?: string; note: string }>();
+  const confirm = useConfirm();
   const bottom = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const scroller = useRef<HTMLDivElement>(null);
@@ -127,11 +154,16 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
     void api.agent(goal.id, agent.name).then(setDetail, () => {});
   }, [goal.id, agent.name]);
   useEffect(() => {
-    if (stick.current) bottom.current?.scrollIntoView({ block: 'end' });
-  }, [items.length]);
+    if (stick.current && tab === 'talk') bottom.current?.scrollIntoView({ block: 'end' });
+  }, [rows.length, tab]);
 
-  const live = goal.live && goal.status !== 'ended' && !['ended', 'crashed'].includes(agent.state);
+  const goalLive = goal.live && goal.status !== 'ended';
+  const gone = ['ended', 'crashed'].includes(agent.state);
   const paused = agent.state === 'paused' || agent.pausing;
+  const busy = BUSY.includes(agent.state);
+  const canMessage = goalLive && !gone;
+  const lastProblem = useMemo(() => [...events].reverse().find(e => e.agent === agent.name && ['agent.crashed', 'agent.ended', 'agent.idle'].includes(e.type)), [events, agent.name]);
+
   const send = async () => {
     if (!text.trim()) return;
     await onCommand({ cmd: 'agent.message', goal: goal.id, to: agent.name, text: text.trim(), urgent });
@@ -144,48 +176,73 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
       <div className="detail-head">
         <h2>
           <Dot state={agent.pausing ? 'paused' : agent.state} /> {agent.name}
-          <span className="pill">{agent.pausing ? 'pausing…' : STATE_LABEL[agent.state]}</span>
+          <span className={`pill state-${agent.state}`}>{agent.pausing ? 'pausing…' : STATE_LABEL[agent.state]}</span>
         </h2>
         <div className="sub">
-          {agent.role} · {agent.harness} · {agent.model}
-          {agent.parent !== 'human' ? ` · spawned by ${agent.parent}` : ' · started by you'}
+          {agent.role} · {agent.harness} · {agent.model} · {agent.parent !== 'human' ? `started by ${agent.parent}` : 'started by you'}
         </div>
-        {agent.status && !['done', 'ended'].includes(agent.state) && <div className="status-line">“{agent.status}”</div>}
-        <div className="row muted" style={{ fontSize: 12.5 }}>
-          {manifest?.reportsCost !== false && <span>{money(agent.cost)}</span>}
+
+        <Now agent={agent} problem={lastProblem} />
+
+        <div className="facts">
+          {manifest?.reportsCost !== false && <span title="Cost so far">{money(agent.cost)}</span>}
           {agent.contextPct != null && (
-            <span style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
-              <Ctx pct={agent.contextPct} /> context {agent.contextPct}%
+            <span className="ctx-fact" title="How full its context window is">
+              <Ctx pct={agent.contextPct} /> {agent.contextPct}% context
             </span>
           )}
-          {agent.branch && <span className="mono">{agent.branch}</span>}
-          {agent.limitedUntil && <span>rate limited until {clock(agent.limitedUntil)}</span>}
+          {agent.branch && <span className="mono" title="Its branch">{agent.branch}</span>}
+          {agent.awaitingApproval > 0 && <span className="warn-text">{agent.awaitingApproval} waiting for your approval</span>}
+          {agent.unread > 0 && <span>{agent.unread} unread message{agent.unread > 1 ? 's' : ''}</span>}
         </div>
-        {live && (
-          <div className="row">
+
+        {goalLive && !gone && (
+          <div className="row actions">
             {paused ? (
               <button className="btn small" onClick={() => onCommand({ cmd: 'agent.resume', goal: goal.id, agent: agent.name })}>
                 ▶ Resume
               </button>
-            ) : (
-              <button className="btn small" onClick={() => onCommand({ cmd: 'agent.pause', goal: goal.id, agent: agent.name })} title="Stops after its current step; messages wait">
+            ) : busy ? (
+              <button className="btn small" onClick={() => onCommand({ cmd: 'agent.pause', goal: goal.id, agent: agent.name })} title="Stops after its current step; messages wait until you resume it">
                 ⏸ Pause
               </button>
-            )}
-            <button className="btn small danger" onClick={() => onCommand({ cmd: 'agent.stop', goal: goal.id, agent: agent.name }, `Stop ${agent.name}? Its session ends; whoever spawned it is told.`)}>
-              Stop
-            </button>
-            <button className="btn small" onClick={() => void onCommand({ cmd: 'agent.open_native', goal: goal.id, agent: agent.name }).then(r => setOpenNative(r as { command?: string; note: string }))}>
-              Open in {agent.harness}
-            </button>
-            {!agent.quick && (
-              <button className="btn small" onClick={() => onSpawnUnder(agent.name)}>
+            ) : null}
+            {!agent.quick && agent.state !== 'done' && (
+              <button className="btn small" onClick={() => onSpawnUnder(agent.name)} title="Start an agent that reports to this one">
                 + Helper
               </button>
             )}
+            {agent.nativeSession && (
+              <button className="btn small" onClick={() => void onCommand({ cmd: 'agent.open_native', goal: goal.id, agent: agent.name }).then(r => setOpenNative(r as { command?: string; note: string }))}>
+                Open in {agent.harness}
+              </button>
+            )}
+            <button
+              className="btn small ghost danger"
+              onClick={async () => {
+                if (await confirm({ title: `Stop ${agent.name}?`, body: 'Its session ends and whoever started it is told. This can’t be undone; you can start a new agent in its place.', confirm: 'Stop it', danger: true }))
+                  void onCommand({ cmd: 'agent.stop', goal: goal.id, agent: agent.name });
+              }}
+            >
+              Stop
+            </button>
           </div>
         )}
       </div>
+
+      <nav className="tabs small">
+        {(
+          [
+            ['talk', 'Conversation'],
+            ['brief', 'Brief'],
+            ['setup', 'Setup'],
+          ] as [Tab, string][]
+        ).map(([t, label]) => (
+          <button key={t} className={`tab${tab === t ? ' on' : ''}`} onClick={() => setTab(t)}>
+            {label}
+          </button>
+        ))}
+      </nav>
 
       <div
         className="scroll"
@@ -195,16 +252,33 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
           stick.current = s.scrollHeight - s.scrollTop - s.clientHeight < 40;
         }}
       >
-        <details className="block">
-          <summary>Brief</summary>
-          <div className="content">
-            <pre>{agent.brief}</pre>
+        {tab === 'talk' && (
+          <div className="stream">
+            {rows.map(r => (r.kind === 'steps' ? <StepRun key={`s${r.id}`} items={r.items} /> : <StreamItem key={r.item.seq} item={r.item} />))}
+            {!rows.length && <div className="empty">Nothing yet.</div>}
+            <div ref={bottom} />
           </div>
-        </details>
-        <details className="block">
-          <summary>Prompt and where it works</summary>
-          <div className="content">
-            <dl className="kv" style={{ padding: '0 0 8px' }}>
+        )}
+        {tab === 'brief' && (
+          <div className="pane-body">
+            <div className="kicker">What it was asked to do</div>
+            <Markdown text={agent.brief || '—'} />
+          </div>
+        )}
+        {tab === 'setup' && (
+          <div className="pane-body">
+            <dl className="kv">
+              <dt>Role</dt>
+              <dd>
+                {agent.role}{' '}
+                <button className="btn ghost small" onClick={() => onEditRole(agent.role)}>
+                  Edit role
+                </button>
+              </dd>
+              <dt>Runs on</dt>
+              <dd>
+                {agent.harness} · {agent.model}
+              </dd>
               <dt>Folder</dt>
               <dd className="mono">{agent.cwd}</dd>
               {detail?.worktree && (
@@ -222,31 +296,30 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
                   <dd className="mono">{agent.nativeSession}</dd>
                 </>
               )}
+              {agent.limitedUntil && (
+                <>
+                  <dt>Rate limit</dt>
+                  <dd>until {clock(agent.limitedUntil)}</dd>
+                </>
+              )}
             </dl>
-            {detail?.systemPrompt ? <pre>{detail.systemPrompt}</pre> : <div className="muted">{detail ? 'The prompt is only kept while the goal runs here.' : 'Loading…'}</div>}
+            <div className="kicker">The prompt it was given</div>
+            {detail?.systemPrompt ? (
+              <More lines={12}>
+                <pre className="code">{detail.systemPrompt}</pre>
+              </More>
+            ) : (
+              <div className="muted">{detail ? 'The prompt is only kept while the goal runs here.' : 'Loading…'}</div>
+            )}
           </div>
-        </details>
-        {agent.doneNote && agent.state !== 'done' && (
-          <details className="block" open>
-            <summary>Note</summary>
-            <div className="content">
-              <pre>{agent.doneNote}</pre>
-            </div>
-          </details>
         )}
-
-        <div className="stream">
-          {items.map(i => <StreamItem key={i.seq} item={i} />)}
-          {!items.length && <div className="empty">Nothing yet.</div>}
-          <div ref={bottom} />
-        </div>
       </div>
 
-      {live && (
+      {canMessage && (
         <div className="composer">
           <textarea
             rows={2}
-            placeholder={`Message ${agent.name}${paused ? ' (it waits until you resume it)' : ''}… (Ctrl+Enter to send)`}
+            placeholder={`Message ${agent.name}${paused ? ' (it reads it when you resume it)' : agent.state === 'done' ? ' (it picks up again to answer)' : ''}…`}
             value={text}
             onChange={e => setText(e.target.value)}
             onKeyDown={e => {
@@ -254,9 +327,10 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
             }}
           />
           <div className="row">
-            <label className="check" title="Pauses its turn between steps to deliver this now">
+            <label className="check" title="Pauses its turn after the current step to deliver this now">
               <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} /> Urgent
             </label>
+            <span className="muted kbd-hint">Ctrl+Enter</span>
             <button className="btn primary small" disabled={!text.trim()} onClick={() => void send()}>
               Send
             </button>
@@ -279,24 +353,97 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
   );
 }
 
+/** The one thing to know about the agent right now. */
+function Now({ agent, problem }: { agent: Agent; problem?: MhEvent }) {
+  if (agent.state === 'done')
+    return (
+      <div className="now done">
+        <div className="kicker">Result</div>
+        <More lines={5}>
+          <Markdown text={agent.doneNote || 'It finished without a note.'} />
+        </More>
+      </div>
+    );
+  if (agent.state === 'crashed' || agent.state === 'ended' || agent.state === 'idle') {
+    const why = problem?.type === 'agent.idle' ? 'It stopped without calling done. Message it to carry on.' : problem ? String(problem.data.reason ?? '') : '';
+    return (
+      <div className={`now ${agent.state === 'crashed' ? 'bad' : 'quiet'}`}>
+        <div className="kicker">{agent.state === 'crashed' ? 'Crashed' : agent.state === 'idle' ? 'Stopped' : 'Ended'}</div>
+        {why && <div>{why}</div>}
+        {agent.doneNote && (
+          <More lines={3}>
+            <Markdown text={agent.doneNote} />
+          </More>
+        )}
+      </div>
+    );
+  }
+  if (agent.state === 'limited') return <div className="now warn">Rate limited{agent.limitedUntil ? ` until ${clock(agent.limitedUntil)}` : ''}. It continues by itself, or moves to a backup.</div>;
+  if (agent.state === 'paused' || agent.pausing) return <div className="now paused">{agent.pausing ? 'Pausing after its current step…' : 'Paused. Messages wait until you resume it.'}</div>;
+  return (
+    <div className="now">
+      <div className="kicker">{agent.state === 'waiting' ? 'Waiting' : agent.state === 'starting' ? 'Starting' : 'Now'}</div>
+      <div>{agent.status || (agent.state === 'waiting' ? 'Waiting for a teammate.' : 'Working…')}</div>
+    </div>
+  );
+}
+
+function StepRun({ items }: { items: Item[] }) {
+  const [open, setOpen] = useState(false);
+  const tools = items.filter(i => i.kind === 'tool').length;
+  const failed = items.some(i => i.kind === 'tool' && i.ok === false);
+  const last = [...items].reverse().find(i => i.kind === 'note' && i.text.startsWith('status: ')) as Extract<Item, { kind: 'note' }> | undefined;
+  return (
+    <div className={`steps${open ? ' open' : ''}`}>
+      <button className="steps-head" onClick={() => setOpen(o => !o)} aria-expanded={open}>
+        <span className="caret">{open ? '▾' : '▸'}</span>
+        <span className="count">
+          {tools ? `${tools} tool call${tools > 1 ? 's' : ''}` : `${items.length} steps`}
+          {failed && <span className="warn-text"> · one failed</span>}
+        </span>
+        {last && <span className="steps-who">{oneLine(last.text.slice(8), 80)}</span>}
+      </button>
+      {open && (
+        <div className="steps-body">
+          {items.map(i => (
+            <StreamItem key={i.seq} item={i} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StreamItem({ item }: { item: Item }) {
   switch (item.kind) {
     case 'say':
-      return <div className="item-say" title={clock(item.ts)}>{item.text}</div>;
+      return (
+        <div className="item-say" title={clock(item.ts)}>
+          <More lines={4}>
+            <Markdown text={item.text} />
+          </More>
+        </div>
+      );
     case 'done':
       return (
         <div className="item-done" title={clock(item.ts)}>
-          <b>Done.</b> {item.text}
+          <div className="kicker">Finished</div>
+          <More lines={6}>
+            <Markdown text={item.text} />
+          </More>
         </div>
       );
     case 'msg':
       return (
-        <div className={`item-msg ${item.dir}`}>
+        <div className={`item-msg ${item.dir}${item.who === 'you' ? ' you' : ''}`}>
           <div className="from">
             {item.dir === 'in' ? `from ${item.who}` : `to ${item.who}`}
+            {item.decision ? ' · decision' : ''}
             {item.urgent ? ' · urgent' : ''} · {clock(item.ts)}
           </div>
-          {item.text}
+          <More lines={5}>
+            <Markdown text={item.text} />
+          </More>
         </div>
       );
     case 'tool':
@@ -312,6 +459,10 @@ function StreamItem({ item }: { item: Item }) {
         </details>
       );
     case 'note':
-      return <div className={`item-note${item.warn ? ' warn' : ''}`}>{clock(item.ts)} · {item.text}</div>;
+      return (
+        <div className={`item-note${item.warn ? ' warn' : ''}`}>
+          {clock(item.ts)} · {item.text}
+        </div>
+      );
   }
 }

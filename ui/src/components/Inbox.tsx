@@ -1,56 +1,87 @@
 import { useState } from 'react';
 import { ago } from '../format.ts';
 import type { InboxItem } from '../types.ts';
+import { Markdown, More } from './common.tsx';
+
+type Resolve = (item: string, decision: 'approve' | 'deny' | 'dismiss', reply?: string) => void;
+
+/** Approvals, decisions and questions block an agent until you answer; the rest are updates. */
+export const ACTIONABLE: InboxItem['kind'][] = ['approval', 'decision', 'question'];
 
 const KIND: Record<InboxItem['kind'], string> = {
-  approval: 'needs your approval',
+  approval: 'wants to run',
   decision: 'asks you to decide',
-  question: 'asks',
+  question: 'asks you',
   done: 'finished',
   stopped: 'stopped',
   crash: 'crashed',
 };
 
-/** Approvals, decisions, questions and results waiting for you, oldest first. */
-export function Inbox({ items, onResolve, onSelectAgent }: { items: InboxItem[]; onResolve: (item: string, decision: 'approve' | 'deny' | 'dismiss', reply?: string) => void; onSelectAgent: (name: string) => void }) {
+/** What's waiting on you, most prominent: an agent can't go on until you answer. */
+export function NeedsYou({ items, onResolve, onSelectAgent, goalLabel }: { items: InboxItem[]; onResolve: Resolve; onSelectAgent: (name: string, goal: string) => void; goalLabel?: (goal: string) => string }) {
+  if (!items.length) return null;
+  return (
+    <section className="needs-you" aria-label="Needs you">
+      <div className="needs-head">
+        <span className="pulse" aria-hidden />
+        <b>Needs you</b>
+        <span className="muted">
+          {items.length} waiting on your answer
+        </span>
+      </div>
+      <div className="needs-list">
+        {items.map(i => (
+          <InboxCard key={i.id} item={i} onResolve={onResolve} onSelectAgent={onSelectAgent} goalLabel={goalLabel?.(i.goal)} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Results and stops: worth reading, nothing waits on them. */
+export function Updates({ items, onResolve, onSelectAgent }: { items: InboxItem[]; onResolve: Resolve; onSelectAgent: (name: string, goal: string) => void }) {
   return (
     <div className="inbox">
       <div className="section-title">
-        Inbox {items.length > 0 && <span className="badge">{items.length}</span>}
+        Updates {items.length > 0 && <span className="badge quiet">{items.length}</span>}
+        <span className="spacer" />
+        {items.length > 1 && (
+          <button className="btn ghost small" onClick={() => items.forEach(i => onResolve(i.id, 'dismiss'))}>
+            Clear all
+          </button>
+        )}
       </div>
       <div className="scroll">
         {items.map(i => (
-          <Item key={i.id} item={i} onResolve={onResolve} onSelectAgent={onSelectAgent} />
+          <InboxCard key={i.id} item={i} onResolve={onResolve} onSelectAgent={onSelectAgent} compact />
         ))}
-        {!items.length && <div className="empty">Nothing for you right now.</div>}
+        {!items.length && <div className="empty">Results from agents that report to you show up here.</div>}
       </div>
     </div>
   );
 }
 
-function Item({ item, onResolve, onSelectAgent }: { item: InboxItem; onResolve: (item: string, decision: 'approve' | 'deny' | 'dismiss', reply?: string) => void; onSelectAgent: (name: string) => void }) {
+export function InboxCard({ item, onResolve, onSelectAgent, goalLabel, compact }: { item: InboxItem; onResolve: Resolve; onSelectAgent: (name: string, goal: string) => void; goalLabel?: string; compact?: boolean }) {
   const [reply, setReply] = useState('');
-  const [open, setOpen] = useState(false);
-  // About six lines fit; past that it folds.
-  const long = item.text.length > 200 || item.text.split('\n').length > 5;
+  const [replying, setReplying] = useState(false);
   const r = reply.trim() || undefined;
   return (
-    <div className={`inbox-item ${item.kind}`}>
+    <div className={`inbox-item ${item.kind}${compact ? ' compact' : ''}`}>
       <div className="head">
-        <b style={{ cursor: 'pointer' }} onClick={() => onSelectAgent(item.agent)}>
+        <button className="name-link" onClick={() => onSelectAgent(item.agent, item.goal)}>
           {item.agent}
-        </b>
-        {KIND[item.kind]} · {ago(item.ts)}
-      </div>
-      <div className={`body${open ? ' open' : long ? ' clipped' : ''}`}>{item.text}</div>
-      {long && (
-        <button className="btn ghost small" onClick={() => setOpen(o => !o)}>
-          {open ? 'Show less' : 'Show all'}
         </button>
-      )}
+        <span>{KIND[item.kind]}</span>
+        <span className="spacer" />
+        {goalLabel && <span className="goal-label" title={goalLabel}>{goalLabel}</span>}
+        <span className="muted">{ago(item.ts)}</span>
+      </div>
+      <More lines={compact ? 3 : 6} className="body">
+        {item.kind === 'approval' ? <pre className="code">{item.text}</pre> : <Markdown text={item.text} />}
+      </More>
       {item.kind === 'approval' && (
         <>
-          <input type="text" placeholder="Note or reason (optional)" value={reply} onChange={e => setReply(e.target.value)} />
+          {replying && <input type="text" autoFocus placeholder="Note or reason for the agent (optional)" value={reply} onChange={e => setReply(e.target.value)} />}
           <div className="actions">
             <button className="btn primary small" onClick={() => onResolve(item.id, 'approve', r)}>
               Approve
@@ -58,17 +89,22 @@ function Item({ item, onResolve, onSelectAgent }: { item: InboxItem; onResolve: 
             <button className="btn small" onClick={() => onResolve(item.id, 'deny', r)}>
               Deny
             </button>
+            {!replying && (
+              <button className="btn ghost small" onClick={() => setReplying(true)}>
+                Add a note
+              </button>
+            )}
           </div>
         </>
       )}
       {item.kind === 'decision' && (
         <>
-          <input type="text" placeholder="What to change (to send it back)" value={reply} onChange={e => setReply(e.target.value)} />
+          <textarea rows={2} placeholder="What to change, to send it back (optional when approving)" value={reply} onChange={e => setReply(e.target.value)} />
           <div className="actions">
             <button className="btn primary small" onClick={() => onResolve(item.id, 'approve', r)}>
               Approve
             </button>
-            <button className="btn small" disabled={!r} onClick={() => onResolve(item.id, 'deny', r)}>
+            <button className="btn small" disabled={!r} onClick={() => onResolve(item.id, 'deny', r)} title={r ? '' : 'Say what to change first'}>
               Send back
             </button>
           </div>
@@ -76,23 +112,38 @@ function Item({ item, onResolve, onSelectAgent }: { item: InboxItem; onResolve: 
       )}
       {item.kind === 'question' && (
         <>
-          <input type="text" placeholder="Your answer" value={reply} onChange={e => setReply(e.target.value)} onKeyDown={e => e.key === 'Enter' && r && onResolve(item.id, 'dismiss', r)} />
+          <textarea
+            rows={2}
+            placeholder="Your answer (Ctrl+Enter to send)"
+            value={reply}
+            onChange={e => setReply(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && r && onResolve(item.id, 'dismiss', r)}
+          />
           <div className="actions">
             <button className="btn primary small" disabled={!r} onClick={() => onResolve(item.id, 'dismiss', r)}>
               Answer
             </button>
-            <button className="btn small" onClick={() => onResolve(item.id, 'dismiss')}>
+            <button className="btn ghost small" onClick={() => onResolve(item.id, 'dismiss')}>
               Dismiss
             </button>
           </div>
         </>
       )}
-      {(item.kind === 'done' || item.kind === 'stopped' || item.kind === 'crash') && (
+      {!ACTIONABLE.includes(item.kind) && (
         <>
-          <input type="text" placeholder="Reply to follow up (optional)" value={reply} onChange={e => setReply(e.target.value)} />
+          {replying && <input type="text" autoFocus placeholder="Follow up: it picks up again to answer" value={reply} onChange={e => setReply(e.target.value)} onKeyDown={e => e.key === 'Enter' && r && onResolve(item.id, 'dismiss', r)} />}
           <div className="actions">
-            <button className="btn small" onClick={() => onResolve(item.id, 'dismiss', r)}>
-              {r ? 'Send and clear' : 'Clear'}
+            {replying ? (
+              <button className="btn primary small" disabled={!r} onClick={() => onResolve(item.id, 'dismiss', r)}>
+                Send
+              </button>
+            ) : (
+              <button className="btn ghost small" onClick={() => setReplying(true)}>
+                Follow up
+              </button>
+            )}
+            <button className="btn ghost small" onClick={() => onResolve(item.id, 'dismiss')}>
+              Clear
             </button>
           </div>
         </>

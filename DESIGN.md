@@ -593,16 +593,20 @@ fetches `/state` again, a few times a second at most, when events say something 
 nothing is folded twice. `npm run ui:dev` serves it with hot reload and proxies the API to a
 running daemon. Where you are (goal, agent, tab) lives in the address's hash.
 
-Built so far (build steps 1 and 2): header (goal picker, cost, working count, Inbox count, pause
-all / resume all, end goal, new goal, start an agent), team tree (helpers folded), Inbox
-(approve / deny with a note, approve / send back a decision, answer a question, follow up on a
-result; browser notifications), agent detail (stream of words, tool calls with results,
-messages either way, notes; brief; prompt and where it works; pause / resume / stop / open in its
-harness / start a helper; message box with urgent), activity feed with filters, graph (cards,
-spawn / message / file-write lines, helpers fold into a badge, focus, time window), sequence
-(lanes, messages and spawns, filter), timeline (state bars, now line). Diffs, the shared-folder
-browser and the rest of build step 3 are next.
-
+Built so far (build steps 1 and 2, then a usability pass on 2026-10-18): a nav rail with
+**Home** (what needs you across goals, start a goal, running and past goals with their
+outcomes, accounts), the **goal workspace**, and **Setup** (roles, workflows, guidelines, MCP
+servers: list, edit, create, duplicate, delete, saved to the repository's or the personal
+config folder through `role.save`, `workflow.save`, `guide.save`, `mcp.save` and the like, with
+the config reloaded at once). The goal workspace: header (switcher, status, time, cost, branch,
+workflow; message the team, start an agent, pause all, end, clean up; the lead's note as the
+outcome), **Needs you** band (approvals, decisions, questions) apart from **Updates** (results),
+team tree, and tabs: **Story** (key events as cards, the steps between them folded), **Files**
+(the shared folder rendered, every version, from `GET /file`), graph, sequence, timeline and
+**Log** (every event). Agent detail leads with what it's doing now or its result, shows only
+the controls that apply, and folds tool calls into groups. Long text shows a few lines with
+"Show more"; markdown is rendered as elements, never as HTML. Diffs and the git view, costs,
+replay and search are next.
 ---
 
 ## 15. Stack

@@ -203,6 +203,20 @@ Findings from the run:
       focus, time window; SVG sequence lanes and state timeline
 - [x] Checked in headless Chrome against a scripted team on the real daemon and server (desktop
       and phone widths): approving a decision and an approval, pausing and resuming from the page
+- [x] **Usability pass, and setup in the app** (2026-10-18): nav rail (Home, Goal, New goal,
+      Setup); Home with what needs you across goals, a start box, running and past goals with
+      outcomes and search; goal header with the outcome, message-the-team (lead, all, role,
+      agent), clean up; Needs you apart from Updates; Story tab (key events as cards, steps
+      folded) as the default, Files tab (shared folder rendered, versions, `GET /file`), Log;
+      agent panel led by what it's doing or its result, only the controls that apply, tool calls
+      folded. Setup pages edit roles, workflows, guidelines and MCP servers in the repository's
+      or the personal folder (`src/configedit.ts`; `config.get`, `role.save|delete`,
+      `workflow.save|delete`, `guide.save`, `mcp.save`, `harness.models`), and the daemon reloads
+      its config on save. Unknown front-matter keys and leading comments survive a save; a
+      workflow saved from `playbooks/` moves to `workflows/`. `--fake` has a scripted designer
+      that asks you for a decision. Checked by driving headless Chrome on a scripted team:
+      approve and send back from Home and the goal page, edit, create and save roles,
+      workflows, a server and the guidelines, message the team, files, phone width
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,
       replay, search
@@ -224,7 +238,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 57 tests, about ten seconds, no model calls
+npm install && npm test        # 62 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

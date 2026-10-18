@@ -1,6 +1,6 @@
 ---
 harness: codex
-model: gpt-6-luna
+model: gpt-5.6-luna
 good_at: updating docs, READMEs and comments to match a change, cheaply
 ---
 You keep the documentation in step with the code. Read what changed and the design notes,

@@ -83,3 +83,43 @@ export function eventKind(e: MhEvent): 'say' | 'tool' | 'message' | 'git' | 'sha
   if (e.type === 'agent.crashed' || e.type === 'agent.limited') return 'warn';
   return 'life';
 }
+
+/**
+ * How much an event matters to someone following the goal. key: shown as its own card (who
+ * started whom, messages, results, commits, problems, what you decided). minor: folded into a
+ * "steps" group (words, tool calls, status lines, file updates). hidden: never a line of its own.
+ */
+export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
+  if (isOwnTool(e)) return 'hidden';
+  switch (e.type) {
+    case 'goal.started': case 'goal.ended': case 'goal.paused': case 'goal.resumed': case 'goal.recovered': case 'goal.cleaned':
+    case 'agent.spawned': case 'agent.done': case 'agent.crashed': case 'agent.ended': case 'agent.idle': case 'agent.moved': case 'agent.limited':
+    case 'message.sent': case 'git.commit': case 'git.merge': case 'git.conflict': case 'git.conflict_resolved': case 'shared.clash': case 'inbox.resolved':
+      return 'key';
+    case 'inbox.item':
+      // Decisions and questions show as the message that asked them; results as the done note.
+      return e.data.kind === 'approval' ? 'key' : 'hidden';
+    case 'shared.write':
+      return e.data.version === 1 ? 'key' : 'minor';
+    case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'shared.delete':
+    case 'agent.paused': case 'agent.resumed': case 'agent.paused_between_steps': case 'agent.interrupted': case 'account.limit':
+      return 'minor';
+    default:
+      return 'hidden';
+  }
+}
+
+/** Who did it, for people: "you" for the human. */
+export const who = (name: string | undefined) => (name === 'human' ? 'you' : (name ?? ''));
+
+export function duration(fromTs: string | number, to: number = Date.now()): string {
+  const s = Math.max(0, Math.round((to - new Date(fromTs).getTime()) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h} h ${m % 60} min` : `${Math.round(h / 24)} days`;
+}
+
+/** The first line of a note, for a one-line summary. */
+export const firstLine = (s: string | null | undefined) => (s ?? '').trim().split('\n')[0];
