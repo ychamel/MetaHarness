@@ -195,8 +195,17 @@ Findings from the run:
       harness manifests; the daemon serves `ui/dist` at `/` and `mh ui` opens it. CLI: `mh
       pause|resume|end|spawn|open|ui`. `goal.set_lead` (a human as lead) left for later
 
-- [ ] Team tree, agent detail, messaging and controls, Inbox (build order 1 in DESIGN.md §14)
-- [ ] Graph (card style), sequence, timeline (build order 2)
+- [x] Team tree, agent detail, messaging and controls, Inbox (build order 1 in DESIGN.md §14):
+      React + Vite in `ui/`, served from `ui/dist` (`npm run ui:build`, `mh ui`); activity feed;
+      start a goal, start an agent; browser notifications for new approvals and questions
+- [x] Graph (card style), sequence, timeline (build order 2): React Flow cards with spawn,
+      message (count, animated while recent) and shared-file lines, helpers folded into a badge,
+      focus, time window; SVG sequence lanes and state timeline
+- [x] Checked in headless Chrome against a scripted team on the real daemon and server (desktop
+      and phone widths): approving a decision and an approval, pausing and resuming from the page
+- [ ] Your own runs with the UI (live harnesses); fix what they turn up
+- [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,
+      replay, search
 
 ## Milestone 3: improve
 

@@ -1881,6 +1881,9 @@ export class Daemon {
     return {
       goals,
       inbox,
+      // What a client offers when starting a goal or spawning an agent.
+      roles: [...this.config.roles.values()].map(r => ({ name: r.name, harness: r.harness, model: r.model, goodAt: r.goodAt, helper: r.helper, worktree: r.worktree })),
+      workflows: [...this.config.workflows.values()].map(w => ({ name: w.name, goodAt: w.goodAt })),
       accounts: [...this.accounts.values()].map(a => ({ id: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ?? null, window: a.window ?? null })),
       harnesses,
     };

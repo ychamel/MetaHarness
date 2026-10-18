@@ -117,6 +117,8 @@ class FakeSession implements Session {
       tool: async (name, args) => {
         // A real harness process is gone once stopped; a script that keeps going reaches nothing.
         if (this.stopped) throw new Error('this session was stopped');
+        // Interrupted between steps, a real model stops making calls; a script that goes on gets nowhere.
+        if (this.interruptedTurn) return '[interrupted]';
         this.ev.toolCall(name, JSON.stringify(args ?? {}).slice(0, 160));
         this.bill();
         const r = await this.spec.callTool(name, args ?? {});

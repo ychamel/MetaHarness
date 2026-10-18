@@ -42,7 +42,8 @@ Needs Node 24 or newer (it runs the TypeScript sources directly), and at least o
 Code, Codex or Antigravity CLI, signed in.
 
 ```sh
-npm install                    # the MCP SDK, plus TypeScript for type-checking
+npm install                    # the MCP SDK; TypeScript, React and Vite for the web app
+npm run ui:build               # build the web app the daemon serves (ui/dist)
 node src/cli.ts doctor         # which harnesses are here, signed in, with which models; can each role run?
 node src/cli.ts daemon         # terminal 1 (add --fake for scripted agents, no model calls).
                                # Restarted, it picks up the goals left running (--no-resume: don't)
@@ -54,7 +55,7 @@ node src/cli.ts status         # who's doing what
 node src/cli.ts send implementer-1 "Did you add tests?"
 node src/cli.ts approve <id>   # answer a permission request or a decision listed by status
 node src/cli.ts pause impl-1   # stop after its current step; mh resume impl-1 lets it go on
-node src/cli.ts ui             # the web app (Milestone 2, in progress)
+node src/cli.ts ui             # the web app: team tree, Inbox, agent detail, graph, sequence, timeline
 node src/cli.ts clean <goal> --force   # remove worktrees or branches kept for unsaved work
 ```
 

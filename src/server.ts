@@ -75,7 +75,8 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
 /** Replays events after `since`, then streams new ones. Reconnecting clients pass the last seq they saw. */
 function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse): void {
   const goal = url.searchParams.get('goal') ?? undefined;
-  const since = Number(url.searchParams.get('since') ?? req.headers['last-event-id'] ?? 0) || 0;
+  // A reconnecting EventSource repeats the same URL and says where it got to in Last-Event-ID.
+  const since = Number(req.headers['last-event-id'] ?? url.searchParams.get('since') ?? 0) || 0;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   const write = (e: MhEvent) => {
     if (!goal || e.goal === goal) res.write(`id: ${e.seq}\ndata: ${JSON.stringify(e)}\n\n`);
@@ -104,7 +105,7 @@ function serveUi(path: string, res: ServerResponse): void {
   const index = join(UI_DIR, 'index.html');
   if (!existsSync(index)) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    return void res.end('<!doctype html><title>MetaHarness</title><p>The web app isn\'t built yet (there\'s no <code>ui/dist</code> in the MetaHarness folder). The API is up: <code>/state</code>, <code>/events</code>, <code>/goals</code>, <code>/agent</code>, <code>/commands</code>.</p>');
+    return void res.end('<!doctype html><title>MetaHarness</title><p>The web app isn\'t built yet. Run <code>npm run ui:build</code> in the MetaHarness folder, then reload. The API is up: <code>/state</code>, <code>/events</code>, <code>/goals</code>, <code>/agent</code>, <code>/commands</code>.</p>');
   }
   const file = normalize(join(UI_DIR, decodeURIComponent(path)));
   // Anything outside the app, or a route the app handles itself, gets index.html.
