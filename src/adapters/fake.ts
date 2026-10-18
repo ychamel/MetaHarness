@@ -22,6 +22,8 @@ export interface FakeCtx {
   stopped(): boolean;
   /** A shell command that takes `ms`, as a tool call; an interrupt cuts it short. Resolves false if interrupted. */
   run(command: string, ms: number): Promise<boolean>;
+  /** Reports how full the context window is, as a real harness would after a model call. */
+  context(pct: number, tokens?: number): void;
 }
 
 /** A role's later turns: each message that starts a new turn, after the first script. */
@@ -78,6 +80,8 @@ class FakeSession implements Session {
   private queue: string[] = [];
   private onMessage: ((m: string) => void) | null = null;
   private cost = 0;
+  /** Set by a script's context(); later calls report it instead of the made-up growth. */
+  private contextPct?: number;
   interrupt?: () => Promise<void>;
   private turnScript?: FakeTurnScript;
   private interruptedTurn = false;
@@ -148,6 +152,10 @@ class FakeSession implements Session {
         this.ev.toolCall('Write', `shared/${relPath}`);
       },
       rateLimit: info => this.ev.rateLimit(info),
+      context: (pct, tokens) => {
+        this.contextPct = pct;
+        this.ev.usage({ costUsd: Number(this.cost.toFixed(4)), contextPct: pct, ...(tokens ? { contextTokens: tokens } : {}) });
+      },
       stopped: () => this.stopped,
       run: (command, ms) => {
         if (this.interruptedTurn) return Promise.resolve(false);
@@ -168,7 +176,8 @@ class FakeSession implements Session {
 
   private bill(): void {
     this.cost += 0.001;
-    this.ev.usage({ costUsd: Number(this.cost.toFixed(4)), contextPct: Math.min(95, Math.round(this.cost * 2000)) });
+    // Grows with each call, but stays clear of the context handoff: scripts that want one call context().
+    this.ev.usage({ costUsd: Number(this.cost.toFixed(4)), contextPct: this.contextPct ?? Math.min(60, Math.round(this.cost * 2000)) });
   }
 
   private async turn(body: () => Promise<void>): Promise<void> {

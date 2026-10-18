@@ -67,6 +67,12 @@ export function eventLine(e: MhEvent): string {
       return `${t}  ${who}refused: ${oneLine(d.detail, 80)} (${oneLine(d.why, 80)})`;
     case 'approval.auto':
       return `${t}  ${who}ran without asking (read-only): ${oneLine(d.detail, 110)}`;
+    case 'agent.context_full':
+      return `${t}  ${who}context ${d.pct}% full${d.notesAsked ? '; asked to write notes, then continues in a fresh session' : '; its next message starts a fresh session'}`;
+    case 'agent.context_handoff':
+      return `${t}  ${who}continues in a fresh session from a handoff (context was ${d.pct}% full)`;
+    case 'goal.stalled':
+      return `${t}  ${'goal'.padEnd(15)}⚠ stuck waiting: ${(d.agents as { name: string; minutes: number; why?: string }[]).map(a => `${a.name} (${a.minutes} min${a.why ? `, ${a.why}` : ''})`).join('; ')}; told ${d.told === 'human' ? 'you' : 'the lead'}`;
     case 'agent.moved':
       return `${t}  ${who}moved from ${d.from.harness} · ${d.from.model} to ${d.to.harness} · ${d.to.model}: ${oneLine(d.reason)}`;
     case 'agent.limited':

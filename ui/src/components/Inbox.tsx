@@ -6,7 +6,7 @@ import { Markdown, More } from './common.tsx';
 type Resolve = (item: string, decision: 'approve' | 'deny' | 'dismiss', reply?: string) => void;
 
 /** Approvals, decisions and questions block an agent until you answer; the rest are updates. */
-export const ACTIONABLE: InboxItem['kind'][] = ['approval', 'decision', 'question'];
+export const ACTIONABLE: InboxItem['kind'][] = ['approval', 'decision', 'question', 'stalled'];
 
 const KIND: Record<InboxItem['kind'], string> = {
   approval: 'wants to run',
@@ -15,6 +15,7 @@ const KIND: Record<InboxItem['kind'], string> = {
   done: 'finished',
   stopped: 'stopped',
   crash: 'crashed',
+  stalled: 'is stuck waiting',
 };
 
 /** What's waiting on you, most prominent: an agent can't go on until you answer. */
@@ -111,18 +112,18 @@ export function InboxCard({ item, onResolve, onSelectAgent, goalLabel, compact }
           </div>
         </>
       )}
-      {item.kind === 'question' && (
+      {(item.kind === 'question' || item.kind === 'stalled') && (
         <>
           <textarea
             rows={2}
-            placeholder="Your answer (Ctrl+Enter to send)"
+            placeholder={item.kind === 'stalled' ? `A message to ${item.agent} (Ctrl+Enter to send)` : 'Your answer (Ctrl+Enter to send)'}
             value={reply}
             onChange={e => setReply(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && r && onResolve(item.id, 'dismiss', r)}
           />
           <div className="actions">
             <button className="btn primary small" disabled={!r} onClick={() => onResolve(item.id, 'dismiss', r)}>
-              Answer
+              {item.kind === 'stalled' ? 'Send' : 'Answer'}
             </button>
             <button className="btn ghost small" onClick={() => onResolve(item.id, 'dismiss')}>
               Dismiss

@@ -1,7 +1,7 @@
 # Tracker
 
 Where MetaHarness stands against the plan in [DESIGN.md §18](DESIGN.md). Update this file when a
-step lands. Last updated 2026-10-18.
+step lands. Last updated 2026-10-19.
 
 ## Milestone 0: a small team works ✅
 
@@ -149,7 +149,16 @@ Findings from the run:
       checking against each CLI
 - [ ] A one-shot print-mode transport: only for a harness that has nothing better
 - [ ] Drafting profiles for unknown harnesses, a shared profile registry, role presets
-- [ ] Handoff when a context window is nearly full (same mechanism as a move)
+- [x] **Fresh session when a context window is nearly full** (2026-10-19): at `contextHandoffPct`
+      (80) an agent mid-turn is asked to write notes, then a new session on the same harness and
+      model starts at the next step boundary (never mid-command, never with an approval open),
+      from a handoff that now also carries the goal, the team and its helpers' results, and the
+      waiting messages. Between turns nothing happens until a message comes, which starts the
+      fresh session (no turn spent). Not again for a session that began within 20 points of the
+      threshold; a harness that compacts first cancels it. Claude Code's window is assumed 200k
+      (1M for `[1m]`) until a turn ends. Live on haiku with the threshold at 35%: asked at 37%,
+      notes written, fresh session at once, which read the notes and carried on where the old
+      one stopped reading
 - [ ] Antigravity isolation from the user's own global plugins and MCP servers (like
       `--strict-mcp-config`); none are set up on this machine yet
 - [x] Change notices when shared files change, plus `shared/.history/` (`src/shared.ts`): a
@@ -181,7 +190,13 @@ Findings from the run:
       state, re-ran the cut-off command, committed and finished, and the lead merged ($0.11).
       The fast-forward merge in the checkout was named after the lead
 - [ ] Warm pool for quick-helper roles
-- [ ] Idle nudges, and detecting two agents waiting on each other
+- [x] **Stuck agents reported to the lead** (2026-10-19, DESIGN.md §8): after `stallMinutes` (10) of
+      nothing but `wait`, when the teammate an agent last dealt with is waiting too or has
+      finished, or nobody on the team is working; not when it waits on the human, an approval,
+      or helpers of its own that still work. Once per stuck spell; the human gets a `stalled`
+      Inbox item (reply goes to the lead) when the lead has finished, or the whole team stays
+      stuck another `stallMinutes` after the lead was told. Scripted tests only; not seen live
+- [ ] An agent that goes quiet mid-turn for a long time (no tool calls, no text): not detected
 - [ ] Test each workflow on its own, once more workflows and roles exist (quality, cost, time,
       interventions). A single-model baseline comparison is dropped for now (2026-10-18)
 
@@ -266,7 +281,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 73 tests, about half a minute, no model calls
+npm install && npm test        # 80 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

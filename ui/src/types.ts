@@ -70,7 +70,7 @@ export interface InboxItem {
   id: string;
   goal: string;
   agent: string;
-  kind: 'question' | 'decision' | 'approval' | 'done' | 'stopped' | 'crash';
+  kind: 'question' | 'decision' | 'approval' | 'done' | 'stopped' | 'crash' | 'stalled';
   text: string;
   ts: string;
   /** Why it came to you, e.g. what the gatekeeper said. */
@@ -271,6 +271,8 @@ export interface Settings {
   cacheRemindMinTokens: number;
   defaultCacheMinutes: number;
   limitCheckMinutes: number;
+  contextHandoffPct: number;
+  stallMinutes: number;
   models: Record<string, ModelSettings>;
 }
 

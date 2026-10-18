@@ -70,6 +70,8 @@ function streamOf(events: MhEvent[], name: string): Item[] {
       case 'agent.paused_between_steps':
       case 'agent.interrupted':
       case 'agent.moved':
+      case 'agent.context_full':
+      case 'agent.context_handoff':
       case 'agent.limited':
       case 'agent.crashed':
       case 'agent.ended':
@@ -95,6 +97,8 @@ function noteText(e: MhEvent): string {
     case 'agent.interrupted': return 'interrupted';
     case 'agent.moved': return `moved to ${d.to.harness} · ${d.to.model}: ${d.reason}`;
     case 'agent.limited': return `rate limited until ${clock(d.until)}`;
+    case 'agent.context_full': return `context ${d.pct}% full${d.notesAsked ? ': asked to write notes, then continue in a fresh session' : ': its next message starts a fresh session'}`;
+    case 'agent.context_handoff': return `continues in a fresh session from a handoff (context was ${d.pct}% full)`;
     case 'agent.crashed': return `crashed: ${d.reason}`;
     case 'agent.ended': return `ended: ${d.reason}`;
     case 'agent.idle': return 'stopped without calling done';

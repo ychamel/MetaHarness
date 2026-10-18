@@ -272,6 +272,14 @@ The terminal can do all of this too:
 - **Rate limits.** Near a subscription's limit, agents are asked to write notes. At the limit,
   they wait for a reset that's close, or move to a backup from their role's `fallback`, picking
   up from a handoff.
+- **Full contexts.** When an agent's context window is 80% full (Settings), it's asked to write
+  notes, then continues in a fresh session from a handoff: the goal, its brief, what it did, its
+  team and where its work is. An agent between turns switches when its next message comes, so
+  it costs no extra turn. Antigravity doesn't report its context, so its own compaction applies.
+- **Stuck agents.** Agents that have only waited for 10 minutes (Settings), while the teammate
+  they're waiting on is waiting too or has finished, or nobody on the team is doing anything,
+  are reported to the lead, who sorts it out. You hear only when the lead has finished, or the
+  team stays stuck after the lead was told; your reply goes to the lead.
 - **Plan limits** on Home and on each harness's page show every window of each subscription
   (the five-hour and the weekly one, each pool on Antigravity), how full it is and when it
   resets. The daemon asks the harnesses every 10 minutes (Settings) without running a turn, so

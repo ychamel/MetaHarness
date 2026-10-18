@@ -57,6 +57,9 @@ export function eventText(e: MhEvent): string {
     case 'agent.resumed': return `resumed by ${d.by === 'human' ? 'you' : d.by}`;
     case 'agent.paused_between_steps': return `turn paused between steps${d.cut ? ' (a command ran too long and was cut)' : ''}`;
     case 'agent.moved': return `moved to ${d.to.harness} · ${d.to.model}: ${oneLine(d.reason)}`;
+    case 'agent.context_full': return `context ${d.pct}% full${d.notesAsked ? ': asked to write notes before a fresh session' : ': a fresh session starts with its next message'}`;
+    case 'agent.context_handoff': return `continues in a fresh session from a handoff (context was ${d.pct}% full)`;
+    case 'goal.stalled': return `⚠ Stuck waiting: ${(d.agents as { name: string; minutes: number; why?: string }[]).map(a => `${a.name} (${a.minutes} min${a.why ? `, ${a.why}` : ''})`).join('; ')}. Told ${d.told === 'human' ? 'you' : 'the lead'}`;
     case 'agent.limited': return `rate limited on ${d.account} until ${clock(d.until)}`;
     case 'agent.interrupted': return `interrupted${d.how === 'restart' ? ' (session restarted)' : ''}`;
     case 'git.commit': return `committed on ${d.branch}: ${oneLine(d.summary)}`;
@@ -85,7 +88,7 @@ export function eventKind(e: MhEvent): 'say' | 'tool' | 'message' | 'git' | 'sha
   if (e.type.startsWith('git.')) return e.type === 'git.conflict' ? 'warn' : 'git';
   if (e.type.startsWith('shared.')) return e.type === 'shared.clash' ? 'warn' : 'shared';
   if (e.type.startsWith('inbox.')) return 'you';
-  if (e.type === 'agent.crashed' || e.type === 'agent.limited') return 'warn';
+  if (e.type === 'agent.crashed' || e.type === 'agent.limited' || e.type === 'goal.stalled') return 'warn';
   return 'life';
 }
 
@@ -99,6 +102,7 @@ export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
   switch (e.type) {
     case 'goal.started': case 'goal.ended': case 'goal.paused': case 'goal.resumed': case 'goal.recovered': case 'goal.cleaned':
     case 'agent.spawned': case 'agent.done': case 'agent.crashed': case 'agent.ended': case 'agent.idle': case 'agent.moved': case 'agent.limited':
+    case 'agent.context_handoff': case 'goal.stalled':
     case 'message.sent': case 'git.commit': case 'git.merge': case 'git.conflict': case 'git.conflict_resolved': case 'shared.clash': case 'inbox.resolved':
       return 'key';
     case 'inbox.item':
@@ -107,7 +111,7 @@ export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
     case 'shared.write':
       return e.data.version === 1 ? 'key' : 'minor';
     case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'approval.gatekeeper': case 'agent.cache_expiring': case 'shared.delete':
-    case 'agent.paused': case 'agent.resumed': case 'agent.paused_between_steps': case 'agent.interrupted': case 'account.limit':
+    case 'agent.paused': case 'agent.resumed': case 'agent.paused_between_steps': case 'agent.interrupted': case 'account.limit': case 'agent.context_full':
       return 'minor';
     default:
       return 'hidden';

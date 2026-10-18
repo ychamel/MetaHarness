@@ -253,17 +253,24 @@ function Card({ e, name, onOpenFile }: { e: MhEvent; name: (n?: string) => React
     case 'agent.ended':
     case 'agent.idle':
     case 'agent.moved':
+    case 'agent.context_handoff':
     case 'agent.limited':
     case 'git.conflict':
     case 'shared.clash':
     case 'git.conflict_resolved': {
-      const warn = e.type !== 'agent.ended' && e.type !== 'git.conflict_resolved';
+      const warn = !['agent.ended', 'git.conflict_resolved', 'agent.context_handoff'].includes(e.type);
       return (
         <div className={`line${warn ? ' warn' : ''}`}>
           {t} {name(e.agent)} {eventText(e)}
         </div>
       );
     }
+    case 'goal.stalled':
+      return (
+        <div className="line center warn">
+          {t} {eventText(e)}
+        </div>
+      );
     default:
       return (
         <div className="line center">

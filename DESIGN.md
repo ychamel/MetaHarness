@@ -284,7 +284,8 @@ there are new messages or file changes, so an agent nobody is messaging sees not
 | Session crashes | Resume it. If that fails, start a fresh agent with the same role, the original brief, and "you're continuing X's work, see shared/ and the worktree" |
 | Handoff written in an odd place or shape | Nothing breaks; the reader is an agent and the message says where to look |
 | Lots of spawns or a messaging ping-pong | Shown in the UI. You can set an optional alert. It is never blocked automatically |
-| Two agents waiting on each other | Both `wait` calls time out; the nudge spots the pattern and tells each one who it's waiting on |
+| Agents stuck waiting | After `stallMinutes` (10) of nothing but `wait`, when what they'd wait for can't come (the teammate they last dealt with is waiting too or has finished, or nobody on the team is doing anything), the lead is told who is stuck, since how long, and their last exchange: a stall usually means the plan left a gap, and that's the lead's to fix. Agents waiting on you, on an approval, or on helpers of their own that still work aren't stuck. If the lead has finished, or the whole team, lead included, stays stuck another `stallMinutes` after the lead was told, you get an Inbox item whose reply goes to the lead |
+| An agent's context window fills up | At `contextHandoffPct` (80%) it's asked to write notes mid-turn, then continues in a fresh session from a handoff at the next step boundary (§16). Between turns, its next message starts the fresh session instead, so no turn is spent on it. A session that started within 20 points of the threshold isn't handed off again; a harness that compacts first cancels it |
 | A provider rate limit is hit | The agent shows as *waiting (rate limited)* with the retry time and continues by itself |
 | Two agents write the same shared file | Every version is kept in `shared/.history/`; both get told about the clash |
 | A quick helper takes longer than expected | After the time limit, the caller gets the helper's name and a note that it's still working. The answer arrives later as a message |
@@ -792,8 +793,14 @@ be able to write one. It's built from what the daemon already has: the original 
 messages it sent and received, its status lines, its last words, its recent tool calls, its
 notes in shared/, and its branch with commits and uncommitted changes. The new session starts in
 the same worktree, under the same name, with the handoff as its brief. If the agent did write
-notes when warned, the handoff points to them. A context window that's nearly full uses the same
-mechanism.
+notes when warned, the handoff points to them.
+
+A context window that's nearly full uses the same mechanism, on the same harness and model. The
+handoff then also carries the goal (the human's request), the team as it stands with the results
+of the agent's own helpers (their done notes went to the old session), and whatever messages were
+waiting. Claude Code and Codex report context during a turn; Claude Code gives the window size
+only when a turn ends, so until then the adapter assumes 200k (1M for `[1m]` models). Antigravity
+reports no context and relies on its own compaction.
 
 ### Setup
 

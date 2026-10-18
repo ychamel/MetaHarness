@@ -131,11 +131,13 @@ class ClaudeSession implements Session {
   /** Dollars per input token, learned from the last turn's cost, for pricing the running one. */
   private price?: number;
   private cacheMinutes?: number;
+  /** Claude Code says how big the window is only when a turn ends; a lead's first turn can last the whole goal, so guess until then. */
   private contextWindow?: number;
 
   constructor(bin: string, env: Record<string, string>, spec: SessionSpec, ev: SessionEvents, resume?: string) {
     this.ev = ev;
     this.nativeId = resume ?? randomUUID();
+    this.contextWindow = /\[1m\]/i.test(spec.model) ? 1_000_000 : 200_000;
     this.proc = spawn(bin, claudeArgs(spec, this.nativeId, !!resume), {
       cwd: spec.cwd,
       env: { ...process.env, ...env, ...spec.env, MCP_TOOL_TIMEOUT: '900000' },

@@ -3,8 +3,8 @@ import { join } from 'node:path';
 
 /**
  * settings.json in the personal and the repository's .metaharness folder (the repository's wins,
- * key by key): how approvals are decided, prompt-cache reminders, and per-model prices and cache
- * lifetimes.
+ * key by key): how approvals are decided, prompt-cache reminders, context handoffs, stall reports,
+ * and per-model prices and cache lifetimes.
  */
 
 /** Dollars per million tokens. */
@@ -47,6 +47,10 @@ export interface Settings {
   defaultCacheMinutes: number;
   /** How often to ask each harness where its plan's limits stand, in minutes; 0: only when asked. */
   limitCheckMinutes: number;
+  /** At this much of its context window, an agent continues in a fresh session from a handoff; 0: never. */
+  contextHandoffPct: number;
+  /** Agents waiting this long with nothing happening are reported to the lead; 0: never. */
+  stallMinutes: number;
   /** By "harness/model", or just "model" for every harness that offers it. */
   models: Record<string, ModelSettings>;
 }
@@ -60,6 +64,8 @@ export const DEFAULT_SETTINGS: Settings = {
   cacheRemindMinTokens: 30_000,
   defaultCacheMinutes: 5,
   limitCheckMinutes: 10,
+  contextHandoffPct: 80,
+  stallMinutes: 10,
   models: {},
 };
 
@@ -105,7 +111,7 @@ function apply(s: Settings, raw: Record<string, unknown>): void {
   if (typeof raw.gatekeeper === 'string' && raw.gatekeeper.trim()) s.gatekeeper = raw.gatekeeper.trim();
   if (typeof raw.assistant === 'string' && raw.assistant.trim()) s.assistant = raw.assistant.trim();
   if (typeof raw.cacheReminders === 'boolean') s.cacheReminders = raw.cacheReminders;
-  for (const k of ['cacheRemindSec', 'cacheRemindMinTokens', 'defaultCacheMinutes', 'limitCheckMinutes'] as const) if (num(raw[k]) !== undefined) s[k] = num(raw[k])!;
+  for (const k of ['cacheRemindSec', 'cacheRemindMinTokens', 'defaultCacheMinutes', 'limitCheckMinutes', 'contextHandoffPct', 'stallMinutes'] as const) if (num(raw[k]) !== undefined) s[k] = num(raw[k])!;
   if (raw.models && typeof raw.models === 'object') {
     for (const [key, v] of Object.entries(raw.models)) s.models[key] = { ...s.models[key], ...readModel(v) };
   }

@@ -25,7 +25,7 @@ export function Settings({ config, ...p }: Props) {
 function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: ConfigView }) {
   const eff = config.settings.effective;
   const [scope, setScope] = useState<Scope>(config.scopes.some(s => s.scope === 'repo') ? 'repo' : 'personal');
-  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes, limitCheckMinutes: eff.limitCheckMinutes }), [eff]);
+  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes, limitCheckMinutes: eff.limitCheckMinutes, contextHandoffPct: eff.contextHandoffPct, stallMinutes: eff.stallMinutes }), [eff]);
   const { draft, set, dirty, revert } = useDraft<Draft>(saved);
   const [busy, setBusy] = useState(false);
   const from = (k: keyof Draft) => [...config.settings.files].reverse().find(f => f.values[k] !== undefined)?.scope;
@@ -47,7 +47,7 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
         <div>
           <h1>Settings</h1>
           <div className="muted intro">
-            How approvals are decided, when you hear about expiring prompt caches, and how often plan limits are checked. Saved in <span className="mono">settings.json</span>; this repository’s settings win over your personal ones.
+            How approvals are decided, when you hear about expiring prompt caches, how often plan limits are checked, and how agents are kept going. Saved in <span className="mono">settings.json</span>; this repository’s settings win over your personal ones.
           </div>
         </div>
       </div>
@@ -124,6 +124,23 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
                 </Field>
               </div>
               <div className="hint">Each harness is asked where its plan’s windows stand (Claude Code’s /usage, Codex’s rate limits, Antigravity’s /quota) without running a turn, so it costs nothing. Agents also report them as they work.</div>
+            </Section>
+
+            <Section title="Keeping agents going" hint={where('contextHandoffPct')}>
+              <div className="grid-3">
+                <Field label="Fresh session at" hint="% of the context window; 0 never">
+                  <input type="number" min={0} max={100} value={draft.contextHandoffPct} onChange={e => set('contextHandoffPct', Number(e.target.value))} />
+                </Field>
+                <Field label="Report stuck agents after" hint="minutes of waiting; 0 never">
+                  <input type="number" min={0} value={draft.stallMinutes} onChange={e => set('stallMinutes', Number(e.target.value))} />
+                </Field>
+              </div>
+              <div className="hint">
+                An agent whose context is this full writes notes, then continues in a fresh session from a handoff: the goal, its brief, what it did, its team and where its work is. Between turns, its next message starts the fresh session, so no turn is spent on it. Antigravity doesn’t report its context, so it relies on its own compaction.
+              </div>
+              <div className="hint">
+                Agents waiting on each other, or on a teammate who has finished, or a team where nobody is doing anything, are reported to the lead, since it’s usually a gap in the plan. If the lead has finished, or the whole team stays stuck after the lead was told, you hear.
+              </div>
             </Section>
           </div>
           <EditorFooter dirty={dirty} isNew={false} saving={busy} onSave={() => void save()} onRevert={revert} />

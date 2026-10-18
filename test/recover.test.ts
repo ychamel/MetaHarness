@@ -77,7 +77,7 @@ test('after a restart, agents cut off mid-turn resume their sessions; finished o
     await withTimeout(g.leadDone, 5000, 'lead done after the restart');
     assert.match(turns.implementer[0], /MetaHarness restarted while you were working/);
     assert.match(turns.implementer[0], /Message from human: Also handle part B\./, 'the queued message arrives with the restart note');
-    assert.match(turns.architect[0], /documenter-1 \(documenter\): done\. It finished: README written\./, 'the lead hears how its team stands');
+    assert.match(turns.architect[0], /documenter-1 \(documenter, yours\): done\. It finished: README written\./, 'the lead hears how its team stands');
 
     // The human's question is still open; the approval for the old session is not.
     assert.deepEqual(d2.humanInbox.filter(i => i.kind !== 'done').map(i => [i.kind, i.text]), [['question', 'Which database should part B use?']]);

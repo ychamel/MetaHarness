@@ -263,6 +263,7 @@ label.check { display: inline-flex; gap: 6px; align-items: center; font-size: 13
 .inbox-item.question { border-left: 3px solid var(--you); }
 .inbox-item.done { border-left: 3px solid var(--done); }
 .inbox-item.crash, .inbox-item.stopped { border-left: 3px solid var(--crashed); }
+.inbox-item.stalled { border-left: 3px solid var(--limited); }
 .inbox-item .head { display: flex; gap: 6px; align-items: center; font-size: 12.5px; color: var(--text-2); }
 .inbox-item .body { font-size: 13.5px; }
 .inbox-item .actions { display: flex; gap: 6px; flex-wrap: wrap; }

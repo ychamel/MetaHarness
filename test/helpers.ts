@@ -45,7 +45,7 @@ export const settle = () => new Promise(r => setTimeout(r, 30));
  * A daemon with its own roles and adapters, no harness override: roles run where their files
  * say, so backups and accounts behave as they would for real. `roles` maps a role name to its file.
  */
-export function makeTeam(o: { roles: Record<string, string>; adapters: Record<string, HarnessAdapter>; limits?: Partial<LimitPolicy>; pause?: Partial<PausePolicy>; settings?: Partial<Settings>; gatekeeperLimits?: GatekeeperLimits }) {
+export function makeTeam(o: { roles: Record<string, string>; adapters: Record<string, HarnessAdapter>; limits?: Partial<LimitPolicy>; pause?: Partial<PausePolicy>; settings?: Partial<Settings>; gatekeeperLimits?: GatekeeperLimits; contextNotesMs?: number }) {
   const configDir = mkdtempSync(join(tmpdir(), 'mh-config-'));
   mkdirSync(join(configDir, 'roles'));
   for (const [name, text] of Object.entries(o.roles)) writeFileSync(join(configDir, 'roles', `${name}.md`), text);
@@ -60,5 +60,6 @@ export function makeTeam(o: { roles: Record<string, string>; adapters: Record<st
     pause: o.pause,
     settings: o.settings ?? { approvals: 'ask' },
     gatekeeperLimits: o.gatekeeperLimits,
+    contextNotesMs: o.contextNotesMs,
   });
 }

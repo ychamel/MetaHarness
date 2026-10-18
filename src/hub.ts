@@ -92,6 +92,7 @@ export class Hub {
     const r = resolveName(bare, [...TOOL_NAMES]);
     if (!r.match) return `There's no tool called "${toolName}". The tools are: ${TOOL_NAMES.join(', ')}.`;
     const a = normalizeArgs(raw);
+    if (!['wait', 'status', 'team'].includes(r.match)) this.d.touch(rec);
     let out: string;
     try {
       out = await this.run(rec, r.match as (typeof TOOL_NAMES)[number], a);

@@ -115,6 +115,14 @@ export interface AgentRec {
   pendingApprovals: number;
   /** Shared-folder changes by others since the agent last heard, by path. They don't wake it. */
   fileNotes: Map<string, FileNote>;
+  /** When it last did something besides waiting: a tool call, a spawn, a message sent or received (for stall reports). */
+  progressAt: number;
+  /** The teammate it last spawned, was spawned by, or messaged with: who it's most likely waiting on. */
+  lastPartner?: { name: string; at: number; text: string; sent: boolean };
+  /** The progressAt its stall was last reported at, so each stuck spell is reported once. */
+  stallReported?: number;
+  /** Its context window is nearly full: it continues in a fresh session soon (see checkContext). */
+  refresh?: { since: number; pct: number; timer?: NodeJS.Timeout };
 }
 
 export interface GoalRec {
@@ -150,6 +158,8 @@ export interface GoalRec {
   gatekeeper?: Gatekeeper;
   /** The gatekeeper's spend, by session (each reports its own total). */
   gatekeeperCost: Map<number, number>;
+  /** A stall reported to the lead, and whether the human has heard about it too. */
+  stall?: { at: number; humanTold: boolean };
   /** Resolves when the lead calls done. */
   leadDone: Promise<string>;
   resolveLeadDone: (note: string) => void;
@@ -160,7 +170,7 @@ export interface HumanInboxItem {
   goal: string;
   agent: string;
   /** decision: an agent asks the human to approve something (send with decision: true). */
-  kind: 'question' | 'decision' | 'approval' | 'done' | 'stopped' | 'crash';
+  kind: 'question' | 'decision' | 'approval' | 'done' | 'stopped' | 'crash' | 'stalled';
   text: string;
   ts: string;
   /** Why it came to the human, e.g. what the gatekeeper said. */
@@ -189,6 +199,8 @@ export interface DaemonOptions {
   /** Settings over the ones in settings.json (tests use approvals: 'ask'). */
   settings?: Partial<import('./settings.ts').Settings>;
   gatekeeperLimits?: GatekeeperLimits;
+  /** How long an agent whose context is nearly full gets to write its notes before its fresh session starts anyway. */
+  contextNotesMs?: number;
 }
 
 /**
@@ -259,6 +271,12 @@ export const ASSISTANT_STREAM = 'assistant';
 
 const FINISHED: AgentState[] = ['ended', 'crashed'];
 
+/** How many points of the context window a fresh session must free to be worth starting. */
+const MIN_CONTEXT_GAIN = 20;
+
+/** Our own tools that don't move work along: an agent calling only these is waiting. */
+const WAITING_TOOLS = /(^|[_.])(wait|status|team)$/;
+
 type GoalStatus = 'running' | 'done' | 'ended' | 'stopped';
 
 /** Added to messages that paused an agent's turn. */
@@ -304,6 +322,7 @@ export class Daemon {
   readonly guardDir: string;
   private autoClean: boolean;
   readonly gatekeeperLimits?: GatekeeperLimits;
+  readonly contextNotesMs: number;
   /** The app's assistant: answers the human's questions, reads only. */
   readonly assistant: Assistant;
 
@@ -324,6 +343,7 @@ export class Daemon {
     this.guardDir = installGuard(o.home);
     this.autoClean = o.autoClean ?? true;
     this.gatekeeperLimits = o.gatekeeperLimits;
+    this.contextNotesMs = o.contextNotesMs ?? 120_000;
     let assistantRoute = { harness: '', model: '' };
     let assistantSpent = 0;
     this.assistant = new Assistant({
@@ -479,10 +499,12 @@ export class Daemon {
       goal: goalId, name, role, harness, model, parent: o.parent, brief: o.brief,
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
       adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
-      toolsRunning: 0, lastToolEnd: 0,
+      toolsRunning: 0, lastToolEnd: 0, progressAt: Date.now(),
+      ...(parentRec ? { lastPartner: { name: parentRec.name, at: Date.now(), text: o.brief, sent: false } } : {}),
     };
     rec.systemPrompt = this.buildPrompt(g, rec, o.workflow, startedFrom);
     g.agents.set(name, rec);
+    if (parentRec && !rec.quick) parentRec.lastPartner = { name, at: Date.now(), text: o.brief, sent: true };
     this.emit({
       goal: goalId, agent: name, parent: o.parent, type: 'agent.spawned',
       data: {
@@ -674,6 +696,8 @@ export class Daemon {
     const base = { goal: rec.goal, agent: rec.name };
     const live = () => rec.gen === gen;
     let sessionTokens: Tokens | undefined;
+    /** How full its context was at this session's first report. */
+    let startPct: number | undefined;
     return {
       turnStarted: () => {
         if (live()) rec.toolsRunning = 0;
@@ -700,6 +724,7 @@ export class Daemon {
         if (!live()) return;
         rec.toolsRunning++;
         rec.lastCallAt = Date.now();
+        if (!WAITING_TOOLS.test(tool)) this.touch(rec);
         this.noteGitActor(rec, summary);
         this.noteSharedTouch(rec, summary);
         this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } });
@@ -719,7 +744,11 @@ export class Daemon {
         rec.tokens = addTokens(rec.tokensBefore, session);
         if (u.cacheMinutes) rec.cacheMinutes = u.cacheMinutes;
         if (u.contextTokens) rec.contextTokens = u.contextTokens;
-        if (u.contextPct !== undefined) rec.contextPct = u.contextPct;
+        if (u.contextPct !== undefined) {
+          rec.contextPct = u.contextPct;
+          startPct ??= u.contextPct;
+        }
+        this.checkContext(rec, startPct);
         // The harness's cost when it reports one, else the settings' prices for its tokens.
         const prices = modelSettings(this.config.settings, rec.harness, rec.model).prices;
         const split = u.costSplit ?? (prices ? priceSplit(session, prices) : undefined);
@@ -1082,6 +1111,7 @@ export class Daemon {
       this.refreshGit();
       this.refreshShared();
       this.checkCaches();
+      this.checkStalls();
     }, this.pollMs).unref();
   }
 
@@ -1121,6 +1151,101 @@ export class Daemon {
         );
       }
     }
+  }
+
+  /** The agent did something besides waiting (see stall reports). */
+  touch(rec: AgentRec): void {
+    rec.progressAt = Date.now();
+  }
+
+  /**
+   * Agents stuck waiting (DESIGN.md §8): nothing but `wait` for stallMinutes, and what they'd be
+   * waiting for can't come, because the teammate they last dealt with is stuck too or has
+   * finished, or because nobody on the team is doing anything. Agents waiting on the human, on an
+   * approval, or on helpers of their own that still work aren't stuck. The lead hears, once per
+   * stuck spell: a stall usually means the plan left a gap, which is the lead's to fix. The human
+   * hears when the lead has finished, or when the whole team, lead included, stays stuck for
+   * another stallMinutes after the lead was told.
+   */
+  checkStalls(now = Date.now()): void {
+    const mins = this.config.settings.stallMinutes;
+    if (!mins) return;
+    const ms = mins * 60_000;
+    for (const g of this.goals.values()) {
+      if (g.status === 'ended') continue;
+      const going = [...g.agents.values()].filter(a => !a.quick && !FINISHED.includes(a.state) && (a.doneNote === undefined || a.session?.busy()));
+      // Idle with no teammates of its own still going: it stopped, and its spawner was told.
+      const live = going.filter(a => a.state !== 'idle' || going.some(c => c.parent === a.name));
+      if (!live.length) continue;
+      if (g.stall && live.some(a => a.progressAt > g.stall!.at)) g.stall = undefined;
+      const asking = new Set(this.humanInbox.filter(i => i.goal === g.id && ['approval', 'decision', 'question', 'stalled'].includes(i.kind)).map(i => i.agent));
+      const isStuck = (a: AgentRec) =>
+        (a.state === 'waiting' || a.state === 'idle') && !a.held && !a.pendingApprovals && !a.inbox.length && !asking.has(a.name) && now - a.progressAt >= ms;
+      const stuck = new Set(live.filter(isStuck));
+      const everyone = stuck.size === live.length;
+      const gone = (name: string) => {
+        const p = g.agents.get(name);
+        return !!p && !p.quick && !live.includes(p);
+      };
+      const goneAs = (name: string) => {
+        const st = g.agents.get(name)!.state;
+        return st === 'done' ? 'finished' : st === 'idle' ? 'stopped without calling done' : st;
+      };
+      const report: { a: AgentRec; why: string }[] = [];
+      for (const a of stuck) {
+        if (live.some(c => c.parent === a.name && !stuck.has(c))) continue;
+        const p = a.lastPartner;
+        const partner = p && g.agents.get(p.name);
+        const why =
+          partner && stuck.has(partner) ? `${partner.name} is waiting too`
+          : p && gone(p.name) ? `${p.name} has ${goneAs(p.name)}`
+          : everyone ? 'nobody on the team is working'
+          : '';
+        if (why) report.push({ a, why });
+      }
+      const lead = g.agents.get(g.lead);
+      const leadHere = !!lead && live.includes(lead);
+      const fresh = report.filter(r => r.a.stallReported !== r.a.progressAt);
+      if (fresh.length) {
+        for (const r of fresh) r.a.stallReported = r.a.progressAt;
+        const lines = fresh.map(({ a, why }) => this.stallLine(a, why, now));
+        const told = leadHere ? 'lead' : 'human';
+        this.emit({ goal: g.id, type: 'goal.stalled', data: { agents: fresh.map(r => ({ name: r.a.name, minutes: Math.round((now - r.a.progressAt) / 60_000), why: r.why })), everyone, told } });
+        const head = everyone
+          ? `Nobody on the team has done anything for ${mins}+ minutes: everyone is waiting.`
+          : `${fresh.length > 1 ? 'These teammates seem' : 'This teammate seems'} stuck, waiting for something that can't come:`;
+        if (leadHere) {
+          g.stall = { at: now, humanTold: false };
+          this.notice(
+            lead!,
+            `${head}\n${lines.join('\n')}\nAgents waiting on each other, or on someone who has finished, usually means the plan left a gap: who hands what to whom, or who decides. ` +
+              `Look at what each one expects and unblock it: answer it, pass on what it needs, change the plan, or tell it to wrap up and call done. If they're waiting on purpose, ignore this.`,
+          );
+        } else {
+          this.toHuman(g, fresh[0].a.name, 'stalled', `${head}\n${lines.join('\n')}\n\nThe lead has finished, so nobody else will sort this out. Your reply goes to ${fresh[0].a.name}.`);
+        }
+        continue;
+      }
+      // The lead was told, and the whole team, lead included, is still stuck: the human hears.
+      if (g.stall && !g.stall.humanTold && everyone && leadHere && stuck.has(lead!) && now - g.stall.at >= ms) {
+        g.stall.humanTold = true;
+        const lines = [...stuck].map(a => this.stallLine(a, report.find(r => r.a === a)?.why ?? 'waiting', now));
+        this.emit({ goal: g.id, type: 'goal.stalled', data: { agents: [...stuck].map(a => ({ name: a.name, minutes: Math.round((now - a.progressAt) / 60_000) })), everyone, told: 'human' } });
+        this.toHuman(
+          g, lead!.name, 'stalled',
+          `The team has been stuck for ${Math.round((now - Math.min(...[...stuck].map(a => a.progressAt))) / 60_000)} minutes: everyone is waiting, and ${lead!.name} (the lead) was told ${Math.round((now - g.stall.at) / 60_000)} minutes ago but nothing has moved.\n${lines.join('\n')}\n\nYour reply goes to ${lead!.name}.`,
+        );
+      }
+    }
+  }
+
+  /** One stuck agent, for a stall report. */
+  private stallLine(a: AgentRec, why: string, now: number): string {
+    const min = Math.max(1, Math.round((now - a.progressAt) / 60_000));
+    const p = a.lastPartner;
+    const last = p ? ` Last ${p.sent ? `to ${p.name}` : `from ${p.name}`}, ${ago(p.at)}: "${p.text.replace(/\s+/g, ' ').slice(0, 160)}".` : '';
+    const status = a.status ? ` Its status: "${a.status.slice(0, 120)}".` : '';
+    return `- ${a.name} (${a.role.name}): waiting ${min} min with nothing happening; ${why}.${last}${status}`;
   }
 
   /**
@@ -1287,6 +1412,12 @@ export class Daemon {
       }
       const entry: InboxEntry = { id: randomUUID(), kind: 'message', from, text, urgent, ts: new Date().toISOString() };
       this.emit({ goal: goalId, agent: from, type: 'message.sent', data: { id: entry.id, to: name, text, urgent } });
+      const sender = g.agents.get(from);
+      if (sender) {
+        const at = Date.now();
+        sender.lastPartner = { name, at, text, sent: true };
+        rec.lastPartner = { name: from, at, text, sent: false };
+      }
       this.enqueue(rec, entry);
     }
     const sentTo = r.names.join(', ');
@@ -1375,6 +1506,8 @@ export class Daemon {
     }
     // A new turn on an account at its limit would only be refused.
     if (this.accountLimited(rec.harness, rec.model)) return void this.hitLimit(rec);
+    // Its context is nearly full: the messages start a fresh session instead.
+    if (rec.refresh) return this.refreshSession(rec);
     const via = rec.interrupting ? 'interrupt' : rec.state === 'done' ? 'resume' : 'new_turn';
     rec.interrupting = false;
     const entries = rec.inbox.splice(0);
@@ -1767,27 +1900,9 @@ export class Daemon {
   /** Moves an agent to another harness or model: a new session, started from a handoff. */
   private move(rec: AgentRec, to: Route, reason: string): void {
     const from = { harness: rec.harness, model: rec.model };
-    const old = rec.session;
     const brief = rec.pendingBrief ?? this.handoff(rec, from, reason);
-    rec.gen++;
-    rec.session = undefined;
-    rec.resumeId = undefined;
-    rec.interrupting = false;
-    this.carryOver(rec);
-    clearTimeout(rec.limitTimer);
-    rec.limitedUntil = undefined;
-    // Its wait() calls belong to the old session; the new one makes its own.
-    for (const w of rec.waiters.splice(0)) {
-      clearTimeout(w.timer);
-      w.resolve([]);
-    }
-    void old?.stop().catch(() => {});
-    rec.harness = to.harness;
-    rec.model = to.model;
-    rec.adapter = this.adapters[to.harness];
     this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.moved', data: { from, to, reason } });
-    this.setState(rec, 'starting');
-    this.startSession(rec, brief);
+    this.replaceSession(rec, to, brief);
     const g = this.goals.get(rec.goal)!;
     const line = `${rec.name} moved from ${from.harness} · ${from.model} to ${to.harness} · ${to.model}, because ${reason}. It continues from a handoff.`;
     for (const who of new Set([rec.parent, g.lead])) {
@@ -1797,10 +1912,114 @@ export class Daemon {
   }
 
   /**
-   * The brief for an agent's new session after a move. Built from what the daemon saw, so it
-   * doesn't depend on the old session being able to write anything.
+   * Ends an agent's session and starts a new one on `to` with `brief`. Its name, credential,
+   * worktree and waiting messages stay; what the old session spent is kept apart.
    */
-  handoff(rec: AgentRec, from: Route, reason: string): string {
+  private replaceSession(rec: AgentRec, to: Route, brief: string): void {
+    const old = rec.session;
+    rec.gen++;
+    rec.session = undefined;
+    rec.resumeId = undefined;
+    rec.interrupting = false;
+    rec.toolsRunning = 0;
+    this.endPause(rec);
+    this.clearRefresh(rec);
+    this.carryOver(rec);
+    clearTimeout(rec.limitTimer);
+    rec.limitedUntil = undefined;
+    rec.contextPct = rec.contextTokens = undefined;
+    // Its wait() calls belong to the old session; the new one makes its own.
+    for (const w of rec.waiters.splice(0)) {
+      clearTimeout(w.timer);
+      w.resolve([]);
+    }
+    void old?.stop().catch(() => {});
+    rec.harness = to.harness;
+    rec.model = to.model;
+    rec.adapter = this.adapters[to.harness];
+    this.setState(rec, 'starting');
+    this.startSession(rec, brief);
+  }
+
+  /**
+   * An agent whose context window is nearly full continues in a fresh session from a handoff
+   * (design §16), before its harness compacts it or runs out of room. During a turn it's first
+   * asked to write notes, then the new session starts at the next step boundary (refreshCheck).
+   * Between turns nothing happens until a message comes for it: that message starts the fresh
+   * session, so no turn is spent on the switch.
+   */
+  private checkContext(rec: AgentRec, startPct?: number): void {
+    const at = this.config.settings.contextHandoffPct;
+    const pct = rec.contextPct;
+    if (rec.refresh) {
+      // The harness compacted it first.
+      if (pct !== undefined && pct < at) this.clearRefresh(rec);
+      return;
+    }
+    if (!at || pct === undefined || pct < at || rec.quick || FINISHED.includes(rec.state)) return;
+    // A session that started nearly as full (a long handoff, a small window) wouldn't gain from another.
+    if (startPct !== undefined && pct - startPct < MIN_CONTEXT_GAIN) return;
+    const busy = !!rec.session?.busy();
+    rec.refresh = { since: Date.now(), pct };
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.context_full', data: { pct, contextTokens: rec.contextTokens ?? null, notesAsked: busy } });
+    if (!busy) return;
+    this.notice(
+      rec,
+      `Your context window is ${pct}% full, so in a few minutes you'll continue in a fresh session, from a handoff. ` +
+        `Write where you are to shared/notes/${rec.name}.md now: what's done, what's next, decisions and why, and anything uncommitted. ` +
+        `Then carry on with your current step; the switch waits until it's finished.`,
+    );
+    rec.refresh.timer = setInterval(() => this.refreshCheck(rec), this.pausing.tickMs).unref();
+  }
+
+  /** Starts the fresh session once the notes are written (or their time is up) and no step is running. */
+  private refreshCheck(rec: AgentRec): void {
+    const r = rec.refresh;
+    if (!r) return;
+    const s = rec.session;
+    if (FINISHED.includes(rec.state)) return this.clearRefresh(rec);
+    if (!s?.busy()) {
+      // The turn ended: the next message starts the fresh session (pump).
+      clearInterval(r.timer);
+      r.timer = undefined;
+      return;
+    }
+    if (rec.held || rec.state === 'paused' || rec.state === 'limited' || rec.interrupting) return;
+    const notes = join(this.goals.get(rec.goal)!.sharedDir, 'notes', `${rec.name}.md`);
+    let wrote = false;
+    try {
+      // File times come from a coarser clock than Date.now(), so a second's slack.
+      wrote = statSync(notes).mtimeMs >= r.since - 1000;
+    } catch {
+      // No notes yet.
+    }
+    if (!wrote && Date.now() - r.since < this.contextNotesMs) return;
+    // Never mid-command, and never with an approval in the Inbox that would then be answered to nobody.
+    const between = rec.pendingApprovals === 0 && (rec.state === 'waiting' || rec.toolsRunning <= 0);
+    if (between) this.refreshSession(rec);
+  }
+
+  private clearRefresh(rec: AgentRec): void {
+    if (rec.refresh?.timer) clearInterval(rec.refresh.timer);
+    rec.refresh = undefined;
+  }
+
+  /** The fresh session: same harness and model, a handoff for a brief, waiting messages added to it. */
+  private refreshSession(rec: AgentRec): void {
+    const pct = rec.refresh?.pct ?? rec.contextPct;
+    const entries = rec.inbox.splice(0);
+    this.markDelivered(rec, entries, 'handoff');
+    const route = { harness: rec.harness, model: rec.model };
+    const brief = this.handoff(rec, route, `its context window was ${pct}% full`, { fresh: true, news: this.forAgent(rec, entries) });
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.context_handoff', data: { pct: pct ?? null, contextTokens: rec.contextTokens ?? null, midTurn: !!rec.session?.busy() } });
+    this.replaceSession(rec, route, brief);
+  }
+
+  /**
+   * The brief for an agent's new session after a move, or when its context was full. Built from
+   * what the daemon saw, so it doesn't depend on the old session being able to write anything.
+   */
+  handoff(rec: AgentRec, from: Route, reason: string, o: { fresh?: boolean; news?: string } = {}): string {
     const g = this.goals.get(rec.goal)!;
     const events = this.store.since(rec.goal).filter(e => e.agent === rec.name || (e.type === 'message.sent' && e.data.to === rec.name));
     const last = <T>(xs: T[], n: number) => xs.slice(Math.max(0, xs.length - n));
@@ -1813,13 +2032,17 @@ export class Daemon {
       events
         .filter(e => e.type === 'message.sent')
         .map(e => (e.agent === rec.name ? `- you → ${e.data.to}: ${cut(e.data.text)}` : `- ${e.agent} → you: ${cut(e.data.text)}`)),
-      12,
+      o.fresh ? 20 : 12,
     );
     const tools = last(events.filter(e => e.type === 'agent.tool_call').map(e => `- ${e.data.tool} ${cut(e.data.summary, 120)}`), 12);
     const spawner = rec.parent === 'human' ? 'the human' : rec.parent;
     const parts = [
-      `[MetaHarness] You're taking over as ${rec.name}, the ${rec.role.name}. Until now ${from.harness} · ${from.model} did this work, and it stopped because ${reason}. ` +
-        `Your name and working directory are the same, and teammates reach you as before. Read what's below and the state of the work, then carry on.`,
+      o.fresh
+        ? `[MetaHarness] You're continuing as ${rec.name}, the ${rec.role.name}, in a fresh session: your last one stopped because ${reason}. ` +
+          `Your name and working directory are the same, and teammates reach you as before. What's below is where it got to; read it and the state of the work, then carry on.`
+        : `[MetaHarness] You're taking over as ${rec.name}, the ${rec.role.name}. Until now ${from.harness} · ${from.model} did this work, and it stopped because ${reason}. ` +
+          `Your name and working directory are the same, and teammates reach you as before. Read what's below and the state of the work, then carry on.`,
+      ...(rec.brief.trim() !== g.request.trim() ? [`## The goal (the human's request)\n\n${g.request}`] : []),
       `## The original brief (from ${spawner})\n\n${rec.brief}`,
     ];
     const did: string[] = [];
@@ -1828,6 +2051,8 @@ export class Daemon {
     if (tools.length) did.push(`Its last tool calls:\n${tools.join('\n')}`);
     if (rec.lastText) did.push(`The last thing it said: ${cut(rec.lastText, 800)}`);
     if (did.length) parts.push(`## What happened so far\n\n${did.join('\n\n')}`);
+    const team = this.teamLines(g, rec);
+    if (team.length) parts.push(`## Your team now\n\n${team.join('\n')}`);
     const where: string[] = [];
     const notes = join(g.sharedDir, 'notes', `${rec.name}.md`);
     if (existsSync(notes)) where.push(`- Its notes: ${notes}. Read them first.`);
@@ -1849,6 +2074,7 @@ export class Daemon {
     }
     where.push(`- Shared folder: ${g.sharedDir}`);
     parts.push(`## Where the work is\n\n${where.join('\n')}`);
+    if (o.news) parts.push(`## New since then\n\n${o.news}`);
     return this.firstMessage(rec, parts.join('\n\n'));
   }
 
@@ -1875,6 +2101,8 @@ export class Daemon {
   }
 
   private markDelivered(rec: AgentRec, entries: InboxEntry[], via: string): void {
+    // Something to act on: whatever it was waiting for may have come.
+    if (entries.some(e => e.kind !== 'notice')) this.touch(rec);
     for (const e of entries) {
       if (e.kind !== 'message') continue;
       this.emit({ goal: rec.goal, agent: rec.name, type: 'message.delivered', data: { id: e.id, from: e.from, via } });
@@ -1935,6 +2163,7 @@ export class Daemon {
     rec.gen++;
     clearTimeout(rec.limitTimer);
     this.endPause(rec);
+    this.clearRefresh(rec);
     this.setState(rec, 'ended');
     this.emit({ goal: goalId, agent: name, type: 'agent.ended', data: { reason: `stopped by ${by}` } });
     if (rec.doneNote === undefined) this.finish(rec, `${name} was stopped by ${by}.`, 'ended');
@@ -2076,6 +2305,7 @@ export class Daemon {
       lastCallAt: a.lastCallAt, cacheMinutes: a.cacheMinutes, contextPct: a.contextPct, lastText: a.lastText,
       adapter: this.adapters[a.harness], resumeId: a.nativeSession, gen: 0, token, systemPrompt: '', doneNote: a.doneNote,
       inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(), toolsRunning: 0, lastToolEnd: 0,
+      progressAt: Date.now(),
     };
     rec.systemPrompt = this.buildPrompt(g, rec, g.workflow, a.startedFrom ?? 'its start point');
     return rec;
@@ -2103,16 +2333,25 @@ export class Daemon {
 
   /** What an agent cut off by a restart is told when its session resumes. */
   private restartNote(g: GoalRec, rec: AgentRec): string {
-    const cut = (t: string, n: number) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
-    const team = [...g.agents.values()]
-      .filter(a => a !== rec && !a.quick)
-      .map(a => `- ${a.name} (${a.role.name}): ${a.state}${a.parent === rec.name && a.doneNote !== undefined ? `. It finished: ${cut(a.doneNote, 400)}` : ''}`);
+    const team = this.teamLines(g, rec);
     return [
       '[MetaHarness] MetaHarness restarted while you were working, so your last turn was cut off. A command or tool call ' +
         "you were in may not have finished, and a `wait` or `spawn` you were in returned nothing. Check where your work stands " +
         '(files, git status), then carry on.',
       ...(team.length ? ['', 'Your team now:', ...team] : []),
     ].join('\n');
+  }
+
+  /** Teammates and their states, with the results of those `rec` spawned: for a session that starts without its old context. */
+  private teamLines(g: GoalRec, rec: AgentRec): string[] {
+    const cut = (t: string, n: number) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
+    return [...g.agents.values()]
+      .filter(a => a !== rec && !a.quick)
+      .map(a => {
+        const status = a.status && a.doneNote === undefined ? `, "${cut(a.status, 120)}"` : '';
+        const result = a.parent === rec.name && a.doneNote !== undefined ? `. It finished: ${cut(a.doneNote, 400)}` : '';
+        return `- ${a.name} (${a.role.name}${a.parent === rec.name ? ', yours' : ''}): ${a.state}${status}${result}`;
+      });
   }
 
   /** Rate limits still in force, from the log, so new spawns and resumes avoid them. */
@@ -2670,6 +2909,7 @@ export class Daemon {
         for (const w of a.waiters) clearTimeout(w.timer);
         clearTimeout(a.limitTimer);
         this.endPause(a);
+        this.clearRefresh(a);
         // What the stopping sessions report isn't the agents' doing: the log keeps their state,
         // so the next daemon can resume them (recover).
         a.gen++;
