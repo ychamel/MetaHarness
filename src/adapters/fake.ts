@@ -57,6 +57,10 @@ export class FakeAdapter implements HarnessAdapter {
     };
   }
 
+  nativeCommand(sessionId: string): string {
+    return `fake --resume ${sessionId}`;
+  }
+
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
     this.started.push({ spec, resume: opts.resume });
     // A resumed session has already run its script; the brief is just its next turn.

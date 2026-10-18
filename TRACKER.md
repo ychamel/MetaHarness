@@ -187,6 +187,14 @@ Findings from the run:
 
 ## Milestone 2: UI
 
+- [x] What the UI needs from the daemon (2026-10-18): `agent.pause`/`resume` (between steps,
+      messages held; restartable harnesses end the process and keep the session),
+      `goal.pause`/`resume`/`end`, `agent.spawn` by the human, `agent.open_native` (per-adapter
+      `nativeCommand`, `open_cmd` in profiles); `GET /goals`, `GET /agent`, past goals rebuilt
+      from the log in `/state`, goal status (`running`/`done`/`ended`/`stopped`), total cost,
+      harness manifests; the daemon serves `ui/dist` at `/` and `mh ui` opens it. CLI: `mh
+      pause|resume|end|spawn|open|ui`. `goal.set_lead` (a human as lead) left for later
+
 - [ ] Team tree, agent detail, messaging and controls, Inbox (build order 1 in DESIGN.md §14)
 - [ ] Graph (card style), sequence, timeline (build order 2)
 
@@ -207,7 +215,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 52 tests, about ten seconds, no model calls
+npm install && npm test        # 57 tests, about ten seconds, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

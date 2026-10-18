@@ -28,6 +28,10 @@ export class ClaudeAdapter implements HarnessAdapter {
     };
   }
 
+  nativeCommand(sessionId: string): string {
+    return `${this.bin} --resume ${sessionId}`;
+  }
+
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
     if (!spec.mcpUrl) throw new Error('the daemon has no MCP address yet (is the server running?)');
     return new ClaudeSession(this.bin, this.env, spec, events, opts.resume);

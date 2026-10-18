@@ -440,12 +440,16 @@ do, the CLI can do too, and vice versa.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /state?goal=<id>` | A snapshot computed from the log: agents, inbox, shared files, costs. Saves a client from replaying a long goal from the start |
-| `WS /events?goal=<id>&since=<seq>` | Replays events after `since`, then streams new ones live. Every event has an increasing `seq`, so a client that reconnects picks up exactly where it left off |
+| `GET /state?goal=<id>` | A snapshot: goals with their agents (state, status, brief, cost, context, unread, worktree, done note), the Inbox, accounts, and each harness's capability manifest, so a client hides fields a harness can't fill. A goal not loaded in the running daemon (finished before a restart) is rebuilt from the log (`live: false`). Goal status: `running` · `done` (the lead finished) · `ended` · `stopped` (never finished, not running here) |
+| `GET /events?goal=<id>&since=<seq>` | Server-sent events: replays events after `since`, then streams new ones live. Every event has an increasing `seq`, so a client that reconnects picks up exactly where it left off (`Last-Event-ID` works too) |
+| `GET /goals` | Every goal in the log, newest first: status, cost, agent count, whether it's live here |
+| `GET /agent?goal=<id>&name=<agent>` | One agent in full: its system prompt, brief, folder, worktree and copied dependencies, native session, the command to open it by hand, its harness's manifest |
 | `POST /commands` | Every action a client can take |
 
 The API listens on `localhost:7777` (configurable), and clients authenticate with a token
-stored in `~/.metaharness/token`.
+stored in `~/.metaharness/token`, as a bearer header or `?token=` (for `EventSource`). The web
+app's own files are served at `/` without it; `mh ui` opens the app with the token in the
+address.
 
 ### Event envelope
 
@@ -481,17 +485,21 @@ Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended
 
 | Command | Arguments |
 |---|---|
-| `goal.start` | request, workflow?, lead_role? (or `human`) |
-| `goal.pause` · `goal.resume` · `goal.end` | goal |
+| `goal.start` | request, workflow?, lead? |
+| `goal.pause` · `goal.resume` · `goal.end` | goal (end stops everyone, then cleans up as usual) |
+| `goal.clean` | goal?, force? |
 | `agent.message` | to (agent \| role \| `lead` \| `all`), text, urgent? |
 | `agent.pause` · `agent.resume` · `agent.stop` | agent |
-| `agent.spawn` | role, brief, parent? (none = spawned by you) |
-| `inbox.resolve` | item, decision (approve \| deny), reply? |
-| `goal.set_lead` | agent or `human` |
-| `agent.open_native` | agent → returns the command to attach to its session in its worktree (e.g. `claude --resume <id>`) |
+| `agent.spawn` | role, brief, parent? (none = spawned by you; its result comes to your Inbox), name?, worktree?, from? |
+| `inbox.resolve` | item, decision (approve \| deny \| dismiss), reply? |
+| `agent.open_native` | agent → the command to open its session in its own harness from its folder (e.g. `claude --resume <id>`), and a warning if it's still running |
+| `harness.test` | harness, model? |
+| `goal.set_lead` | (not built: a human as lead changes how the team works; to be designed) |
 
-Pause and stop are best effort for each harness: new turns stop being delivered right away, and
-the agent is interrupted if its harness supports that.
+A pause takes effect at once for messages (they wait) and at the next step boundary for a
+running turn, like every pause (§7): natively, or by ending the process and keeping the session
+to resume. Resuming tells an agent stopped mid-turn to carry on. The CLI has each of these
+(`mh pause`, `mh resume`, `mh end`, `mh spawn`, `mh open`).
 
 ### What adapters must capture
 

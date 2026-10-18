@@ -115,6 +115,8 @@ export interface HarnessAdapter {
   account?(model: string): string;
   /** What a tool call means, for harnesses whose hooks ask MetaHarness before each tool runs. */
   toolRequest?(tool: string, args: Record<string, unknown>): ToolRequest;
+  /** The command a human runs to open a session in the harness itself, e.g. `claude --resume <id>`. */
+  nativeCommand?(sessionId: string): string;
 }
 
 /**

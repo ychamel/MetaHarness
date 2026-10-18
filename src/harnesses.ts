@@ -27,6 +27,8 @@ export interface HarnessProfile {
   transport?: Transport;
   /** Arguments that start the transport, e.g. ["acp"] for `opencode acp`. */
   args?: string[];
+  /** How a human opens one of its sessions, with {id} for the session (ACP harnesses). */
+  openCommand?: string;
   /** Extra environment for the harness, e.g. ANTHROPIC_BASE_URL for Claude Code on another provider. */
   env?: Record<string, string>;
   /** Where to get it, shown when it isn't installed. */
@@ -172,6 +174,7 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
     bin: 'opencode',
     transport: 'acp',
     args: ['acp'],
+    openCommand: 'opencode --session {id}',
     install: 'npm install -g opencode-ai',
     login: 'opencode auth login',
     // Its inline config, which outranks the user's: ask MetaHarness before edits and commands
@@ -203,7 +206,8 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
 
 /**
  * A user profile: .metaharness/harnesses/<id>.md. Front matter keys: title, bin, transport,
- * args (what starts the transport, e.g. "--experimental-acp"), env (KEY=value, comma separated), install, login, status_cmd (exit 0 means signed in),
+ * args (what starts the transport, e.g. "--experimental-acp"), open_cmd (how a human opens a session,
+ * with {id}), env (KEY=value, comma separated), install, login, status_cmd (exit 0 means signed in),
  * models_cmd (one model per line) or models (comma separated), probe_model. It replaces a built-in
  * profile with the same id, keeping whatever it doesn't set.
  */
@@ -222,6 +226,7 @@ export function profileFromFile(file: string, text: string, base?: HarnessProfil
     }
   }
   if (meta.args) p.args = words(meta.args);
+  if (meta.open_cmd) p.openCommand = meta.open_cmd;
   if (meta.install) p.install = meta.install;
   if (meta.login) p.login = meta.login;
   if (meta.status_cmd) {

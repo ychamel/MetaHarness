@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { extname, join, normalize, sep } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { Daemon } from './daemon.ts';
 import { handleMcp } from './mcp.ts';
@@ -45,6 +47,8 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
       return json(res, 400, { error: (e as Error).message });
     }
   }
+  // The web app (design §14). Its files hold no data; everything it shows comes from the API below.
+  if (req.method === 'GET' && !API_PATHS.has(url.pathname)) return serveUi(url.pathname, res);
   const ok = req.headers.authorization === `Bearer ${token}` || url.searchParams.get('token') === token;
   if (!ok) return json(res, 401, { error: 'Missing or wrong token. The CLI reads it from the token file in MH_HOME.' });
   try {
@@ -52,6 +56,12 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
       return json(res, 200, d.snapshot(url.searchParams.get('goal') ?? undefined));
     }
     if (req.method === 'GET' && url.pathname === '/events') return events(d, url, req, res);
+    if (req.method === 'GET' && url.pathname === '/goals') return json(res, 200, { goals: d.listGoals() });
+    if (req.method === 'GET' && url.pathname === '/agent') {
+      const goal = url.searchParams.get('goal'), name = url.searchParams.get('name');
+      if (!goal || !name) return json(res, 400, { error: 'GET /agent needs ?goal=<id>&name=<agent>.' });
+      return json(res, 200, d.agentDetail(goal, name));
+    }
     if (req.method === 'POST' && url.pathname === '/commands') {
       const body = await readBody(req);
       return json(res, 200, await d.command(body ? JSON.parse(body) : {}));
@@ -78,6 +88,30 @@ function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse):
     off();
     clearInterval(ping);
   });
+}
+
+const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/commands']);
+
+/** The built web app (ui/dist). */
+export const UI_DIR = join(import.meta.dirname, '..', 'ui', 'dist');
+
+const TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
+  '.json': 'application/json', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.map': 'application/json',
+};
+
+function serveUi(path: string, res: ServerResponse): void {
+  const index = join(UI_DIR, 'index.html');
+  if (!existsSync(index)) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return void res.end('<!doctype html><title>MetaHarness</title><p>The web app isn\'t built yet (there\'s no <code>ui/dist</code> in the MetaHarness folder). The API is up: <code>/state</code>, <code>/events</code>, <code>/goals</code>, <code>/agent</code>, <code>/commands</code>.</p>');
+  }
+  const file = normalize(join(UI_DIR, decodeURIComponent(path)));
+  // Anything outside the app, or a route the app handles itself, gets index.html.
+  const inside = file.startsWith(UI_DIR + sep) && existsSync(file) && statSync(file).isFile();
+  const served = inside ? file : index;
+  res.writeHead(200, { 'content-type': TYPES[extname(served)] ?? 'application/octet-stream', 'cache-control': served === index ? 'no-cache' : 'max-age=31536000, immutable' });
+  res.end(readFileSync(served));
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {

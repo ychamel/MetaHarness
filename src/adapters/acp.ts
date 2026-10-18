@@ -27,6 +27,8 @@ export interface AcpOptions {
   /** Arguments that start the harness's ACP mode, e.g. ["acp"]. */
   args: string[];
   env?: Record<string, string>;
+  /** How a human opens a session in the harness itself, with {id} for the session, e.g. "opencode --session {id}". */
+  openCommand?: string;
 }
 
 export class AcpAdapter implements HarnessAdapter {
@@ -45,6 +47,10 @@ export class AcpAdapter implements HarnessAdapter {
       reportsContext: true,
       reportsRateLimits: false,
     };
+  }
+
+  nativeCommand(sessionId: string): string {
+    return this.opts.openCommand ? this.opts.openCommand.replace('{id}', sessionId) : '';
   }
 
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {

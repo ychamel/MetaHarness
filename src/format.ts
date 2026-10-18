@@ -15,6 +15,13 @@ export function eventLine(e: MhEvent): string {
       return `${t}  ${'goal'.padEnd(15)}started: ${oneLine(d.request)}`;
     case 'goal.ended':
       return `${t}  ${'goal'.padEnd(15)}ended: ${oneLine(d.reason)}`;
+    case 'goal.paused':
+    case 'goal.resumed':
+      return `${t}  ${'goal'.padEnd(15)}${e.type.slice(5)} by ${d.by}`;
+    case 'agent.paused':
+      return `${t}  ${who}paused by ${d.by} (stops after its current step)`;
+    case 'agent.resumed':
+      return `${t}  ${who}resumed by ${d.by}`;
     case 'goal.recovered':
       return `${t}  ${'goal'.padEnd(15)}picked up after a daemon restart: ${d.resumed.length ? `${d.resumed.join(', ')} continue` : 'nobody was mid-task'}${d.later.length ? `; ${d.later.join(', ')} resume when messaged` : ''}`;
     case 'agent.spawned':

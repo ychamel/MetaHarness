@@ -53,6 +53,10 @@ export class AgyAdapter implements HarnessAdapter {
     return agyToolRequest(tool, args);
   }
 
+  nativeCommand(sessionId: string): string {
+    return `${this.bin} --conversation ${sessionId}`;
+  }
+
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
     if (!spec.mcpUrl || !spec.hookUrl) throw new Error('the daemon has no address for MCP and hooks yet (is the server running?)');
     writeAgentConfig(spec, this.hookScript);

@@ -11,6 +11,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 const HELP = `mh: run a team of AI agents from different providers on one goal
 
+  mh ui                              Open the web app (the daemon serves it), signed in with the token
   mh doctor                          Which harnesses are here, signed in, with which models; can each role run?
   mh test <harness> [--model <m>]    Check what works with a harness here: a short run on a cheap model
   mh daemon [--fake] [--no-resume]   Start the daemon (--fake: scripted agents, no model calls). It picks
@@ -23,6 +24,13 @@ const HELP = `mh: run a team of AI agents from different providers on one goal
   mh send <to> <message> [--urgent] [--goal <id>]
                                      Message an agent, a role, lead or all
   mh stop <agent> [--goal <id>]      Stop an agent
+  mh pause|resume [<agent>] [--goal <id>]
+                                     Pause an agent (or, without one, the whole goal) once its current
+                                     step finishes; messages wait until it's resumed
+  mh end [<goal>]                    Stop every agent on a goal and clean up its worktrees
+  mh spawn <role> <brief> [--parent <agent>] [--name <n>] [--worktree] [--goal <id>]
+                                     Start an agent yourself; its result comes to you (or to --parent)
+  mh open <agent> [--goal <id>]      The command that opens an agent's session in its own harness
   mh clean [<goal>] [--force]        Worktrees and merged branches go when a goal's lead finishes; this
                                      retries for finished goals. What was kept (uncommitted or
                                      unmerged work) goes only with a goal and --force
@@ -50,7 +58,7 @@ function parse(argv: string[]) {
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--') && !['fake', 'urgent', 'no-resume', 'force'].includes(key)) {
+      if (next !== undefined && !next.startsWith('--') && !['fake', 'urgent', 'no-resume', 'force', 'worktree'].includes(key)) {
         opt[key] = next;
         i++;
       } else opt[key] = true;
@@ -177,7 +185,7 @@ async function main(): Promise<void> {
         if (p.transport === 'claude-stream') adapters[p.id] = new ClaudeAdapter({ id: p.id, bin, env: p.env });
         else if (p.transport === 'codex-app-server') adapters[p.id] = new CodexAdapter({ bin, prices });
         else if (p.transport === 'agy-stream') adapters[p.id] = new AgyAdapter({ id: p.id, bin });
-        else if (p.transport === 'acp') adapters[p.id] = new AcpAdapter({ id: p.id, bin, args: p.args ?? [], env: p.env });
+        else if (p.transport === 'acp') adapters[p.id] = new AcpAdapter({ id: p.id, bin, args: p.args ?? [], env: p.env, openCommand: p.openCommand });
       }
       const d = new Daemon({ home: HOME, repo: process.cwd(), adapters, harnessOverride: fake ? 'fake' : undefined });
       await startServer(d, PORT, token(true)).catch((e: Error) => die(`Couldn't listen on ${BASE}: ${e.message}`));
@@ -226,6 +234,16 @@ async function main(): Promise<void> {
       if (r.notice) console.log(`Note: ${r.notice}`);
       return;
     }
+    case 'ui': {
+      // The token rides in the address once; the app keeps it for the tab and drops it from the URL.
+      const url = `${BASE}/?token=${token()}`;
+      await api('/goals');
+      console.log(`MetaHarness: ${url}`);
+      const { spawn } = await import('node:child_process');
+      const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+      spawn(opener, [url], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+      return;
+    }
     case 'status':
       return printStatus(pos[0]);
     case 'tail':
@@ -254,6 +272,33 @@ async function main(): Promise<void> {
         for (const k of g.kept) console.log(`  kept ${k}`);
       }
       if (r.results.some((g: { kept: string[] }) => g.kept.length) && opt.force !== true) console.log('Add --force to remove what was kept too.');
+      return;
+    }
+    case 'pause':
+    case 'resume': {
+      const r = pos[0]
+        ? await command({ cmd: `agent.${cmd}`, agent: pos[0], goal: s('goal') })
+        : await command({ cmd: `goal.${cmd}`, goal: s('goal') });
+      console.log(r.result);
+      return;
+    }
+    case 'end': {
+      const r = await command({ cmd: 'goal.end', goal: pos[0] ?? s('goal') });
+      console.log(r.result);
+      return;
+    }
+    case 'spawn': {
+      const [role, ...words] = pos;
+      if (!role || !words.length) die('Usage: mh spawn <role> <brief> [--parent <agent>] [--name <n>] [--worktree]');
+      const r = await command({ cmd: 'agent.spawn', role, brief: words.join(' '), parent: s('parent'), name: s('name'), worktree: opt.worktree === true ? true : undefined, goal: s('goal') });
+      console.log(r.result);
+      return;
+    }
+    case 'open': {
+      if (!pos[0]) die('Usage: mh open <agent>');
+      const r = await command({ cmd: 'agent.open_native', agent: pos[0], goal: s('goal') });
+      if (r.command) console.log(r.command);
+      console.error(r.note);
       return;
     }
     case 'approve':

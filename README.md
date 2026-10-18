@@ -53,6 +53,8 @@ node src/cli.ts tail           # follow everything live
 node src/cli.ts status         # who's doing what
 node src/cli.ts send implementer-1 "Did you add tests?"
 node src/cli.ts approve <id>   # answer a permission request or a decision listed by status
+node src/cli.ts pause impl-1   # stop after its current step; mh resume impl-1 lets it go on
+node src/cli.ts ui             # the web app (Milestone 2, in progress)
 node src/cli.ts clean <goal> --force   # remove worktrees or branches kept for unsaved work
 ```
 

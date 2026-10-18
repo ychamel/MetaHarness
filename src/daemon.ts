@@ -82,6 +82,8 @@ export interface AgentRec {
   lastToolEnd: number;
   /** Messages are waiting to pause the running turn between steps (see pauseCheck). */
   pause?: { since: number; urgent: boolean; timer: NodeJS.Timeout };
+  /** The human paused it: nothing is delivered until they resume it. midTurn: it was stopped during a turn. */
+  held?: { midTurn: boolean };
   inbox: InboxEntry[];
   waiters: Waiter[];
   /** Callers blocked in a quick spawn, waiting for this agent's answer. */
@@ -212,6 +214,8 @@ interface OpenConflict {
 }
 
 const FINISHED: AgentState[] = ['ended', 'crashed'];
+
+type GoalStatus = 'running' | 'done' | 'ended' | 'stopped';
 
 /** Added to messages that paused an agent's turn. */
 const PAUSED_NOTE =
@@ -599,6 +603,7 @@ export class Daemon {
         if (!live() || FINISHED.includes(rec.state)) return;
         rec.toolsRunning = 0;
         this.endPause(rec);
+        if (rec.held) return void this.setState(rec, 'paused');
         // A turn refused at the rate limit isn't the agent stopping: it continues later.
         if (rec.state === 'limited') return;
         if (rec.doneNote !== undefined) this.setState(rec, 'done');
@@ -1055,7 +1060,7 @@ export class Daemon {
    * in the inbox and show up as an unread notice on the agent's next tool call.
    */
   pump(rec: AgentRec): void {
-    if (!rec.inbox.length) return;
+    if (!rec.inbox.length || rec.held) return;
     const w = rec.waiters.shift();
     if (w) {
       clearTimeout(w.timer);
@@ -1124,7 +1129,7 @@ export class Daemon {
     const p = rec.pause;
     const s = rec.session;
     if (!p) return;
-    if (!rec.inbox.length || !s?.busy() || rec.interrupting || FINISHED.includes(rec.state)) return this.endPause(rec);
+    if ((!rec.inbox.length && !rec.held) || !s?.busy() || rec.interrupting || FINISHED.includes(rec.state)) return this.endPause(rec);
     const now = Date.now();
     const waitFrom = p.urgent ? p.since : p.since + this.pausing.graceMs;
     if (now < waitFrom) return;
@@ -1134,8 +1139,66 @@ export class Daemon {
     const between = rec.toolsRunning - rec.pendingApprovals <= 0 && now - rec.lastToolEnd >= settle;
     if (!between && now - waitFrom < this.pausing.maxWaitMs) return;
     this.endPause(rec);
-    if (!this.interrupt(rec, s)) return;
-    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.paused_between_steps', data: { urgent: p.urgent, waitedMs: now - p.since, cut: !between } });
+    if (rec.held) this.holdNow(rec, s);
+    else if (!this.interrupt(rec, s)) return;
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.paused_between_steps', data: { urgent: p.urgent, waitedMs: now - p.since, cut: !between, ...(rec.held ? { held: true } : {}) } });
+  }
+
+  /** Stops a held agent's turn: natively, else by ending the process and keeping its session to resume. */
+  private holdNow(rec: AgentRec, s: Session): void {
+    const m = rec.adapter.manifest;
+    if (m.interrupt && s.interrupt) return void s.interrupt().catch(() => {});
+    if (m.resume && s.nativeId) {
+      rec.gen++;
+      rec.session = undefined;
+      rec.resumeId = s.nativeId;
+      rec.costBefore = rec.cost;
+      void s.stop().catch(() => {});
+      this.setState(rec, 'paused');
+    }
+    // Otherwise it pauses when the turn ends.
+  }
+
+  /**
+   * The human pauses an agent: messages wait, and a running turn stops at the next step boundary
+   * (never mid-command). Its session stays, to resume.
+   */
+  pauseAgent(goalId: string, name: string, by = 'human'): string {
+    const rec = this.agent(goalId, name);
+    if (!rec) return `There's no agent called ${name}.`;
+    if (FINISHED.includes(rec.state)) return `${name} has already ${rec.state}.`;
+    if (rec.held || rec.state === 'paused') return `${name} is already paused.`;
+    const busy = !!rec.session?.busy();
+    rec.held = { midTurn: busy };
+    // A wait() it's in belongs to the turn being stopped.
+    for (const w of rec.waiters.splice(0)) {
+      clearTimeout(w.timer);
+      w.resolve([]);
+    }
+    this.emit({ goal: goalId, agent: name, type: 'agent.paused', data: { by } });
+    if (!busy) {
+      this.setState(rec, 'paused');
+      return `Paused ${name}.`;
+    }
+    this.endPause(rec);
+    this.startPause(rec, true);
+    return `Pausing ${name} once its current step finishes.`;
+  }
+
+  /** Lets a paused agent go on: waiting messages are delivered, and one stopped mid-turn is told to carry on. */
+  unpauseAgent(goalId: string, name: string, by = 'human'): string {
+    const rec = this.agent(goalId, name);
+    if (!rec) return `There's no agent called ${name}.`;
+    if (!rec.held && rec.state !== 'paused') return `${name} isn't paused.`;
+    // After a restart the hold isn't known; telling it to carry on is harmless.
+    const midTurn = rec.held?.midTurn ?? true;
+    rec.held = undefined;
+    this.endPause(rec);
+    this.emit({ goal: goalId, agent: name, type: 'agent.resumed', data: { by } });
+    if (rec.state === 'paused') this.setState(rec, rec.doneNote !== undefined ? 'done' : 'idle');
+    if (midTurn && !rec.session?.busy()) this.notice(rec, 'The human paused you between steps and has now let you continue. Carry on where you left off.');
+    else this.pump(rec);
+    return `Resumed ${name}.`;
   }
 
   /**
@@ -1437,7 +1500,7 @@ export class Daemon {
    * Shared-folder notes ride along too: this costs nothing, unlike a new turn.
    */
   private takeForTurn(rec: AgentRec, via: string): string | undefined {
-    if ((!rec.inbox.length && !rec.fileNotes.size) || rec.interrupting || rec.state === 'paused') return undefined;
+    if ((!rec.inbox.length && !rec.fileNotes.size) || rec.interrupting || rec.state === 'paused' || rec.held) return undefined;
     const entries = rec.inbox.splice(0);
     this.markDelivered(rec, entries, via);
     if (!rec.inbox.length) this.endPause(rec);
@@ -1519,6 +1582,51 @@ export class Daemon {
     this.emit({ goal: goalId, agent: name, type: 'agent.ended', data: { reason: `stopped by ${by}` } });
     if (rec.doneNote === undefined) this.finish(rec, `${name} was stopped by ${by}.`, 'ended');
     return `Stopped ${name}.`;
+  }
+
+  /** Pauses (or resumes) every agent still working on a goal. */
+  pauseGoal(goalId: string, resume: boolean, by = 'human'): string {
+    const g = this.goals.get(goalId);
+    if (!g) return `There's no goal ${goalId} running here.`;
+    const names = [...g.agents.values()].filter(a => !FINISHED.includes(a.state)).map(a => a.name);
+    const lines = names.map(n => (resume ? this.unpauseAgent(goalId, n, by) : this.pauseAgent(goalId, n, by)));
+    this.emit({ goal: goalId, type: resume ? 'goal.resumed' : 'goal.paused', data: { by } });
+    return lines.length ? lines.join(' ') : 'Nobody is working on it.';
+  }
+
+  /** Ends a goal: every agent still on it stops, then its worktrees and merged branches go as usual. */
+  endGoal(goalId: string, by = 'human'): string {
+    const g = this.goals.get(goalId);
+    if (!g) return `There's no goal ${goalId} running here.`;
+    if (g.status === 'ended') return `Goal ${goalId} has already ended.`;
+    const live = [...g.agents.values()].filter(a => !FINISHED.includes(a.state));
+    // Worth naming: the ones that hadn't finished.
+    const stopped = live.filter(a => a.doneNote === undefined).map(a => a.name);
+    for (const a of live) {
+      // Its spawner is stopping too; nobody needs the note.
+      a.doneNote ??= `${a.name} was stopped when the goal ended.`;
+      this.stopAgent(goalId, a.name, by);
+    }
+    g.status = 'ended';
+    this.emit({ goal: goalId, type: 'goal.ended', data: { reason: `ended by ${by}`, stopped } });
+    const res = g.git ? this.runCleanup(g, false) : undefined;
+    const cleaned = res ? describeClean(res, `mh clean ${g.id} --force removes them.`) : '';
+    return [`Ended goal ${goalId}${stopped.length ? `; stopped ${stopped.join(', ')}` : ''}.`, cleaned].filter(Boolean).join(' ');
+  }
+
+  /** The command to open an agent's session in its own harness, run from its folder. */
+  openNative(goalId: string, name: string): { command?: string; note: string } {
+    const rec = this.agent(goalId, name);
+    if (!rec) return { note: `There's no agent called ${name}.` };
+    const id = rec.session?.nativeId ?? rec.resumeId;
+    const cmd = id && rec.adapter?.nativeCommand?.(id);
+    if (!cmd) return { note: id ? `MetaHarness doesn't know how to open a ${rec.harness} session by hand.` : `${name} has no session yet.` };
+    const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+    const busy = !rec.held && rec.state !== 'paused' && !FINISHED.includes(rec.state) && rec.state !== 'done' && rec.state !== 'idle';
+    return {
+      command: `cd ${quote(rec.cwd)} && ${cmd}`,
+      note: busy ? `${name} is still running: pause it first (agent.pause), or two programs will drive one session at once.` : `Opens ${name}'s session in ${rec.harness}.`,
+    };
   }
 
   /* ---------------- restart recovery ---------------- */
@@ -1753,39 +1861,144 @@ export class Daemon {
 
   /* ---------------- client API ---------------- */
 
+  /**
+   * What clients show (design §13): goals with their agents, the Inbox, accounts, and what each
+   * harness can report (so a client hides a field it can't fill rather than showing a zero). A
+   * goal that isn't loaded here, such as one that finished before a restart, is rebuilt from the log.
+   */
   snapshot(goalId?: string) {
-    const goals = [...this.goals.values()].filter(g => !goalId || g.id === goalId);
+    const loaded = [...this.goals.values()].filter(g => !goalId || g.id === goalId);
+    const goals = loaded.map(g => this.goalView(g));
+    let inbox = this.humanInbox.filter(i => !goalId || i.goal === goalId);
+    if (goalId && !loaded.length) {
+      const r = this.store.ofType('goal.started').some(e => e.goal === goalId) ? replayGoal(this.store.since(goalId)) : undefined;
+      if (r) {
+        goals.push(this.replayView(r));
+        inbox = r.inbox.map(i => ({ id: i.id, goal: r.id, agent: i.agent, kind: i.kind as HumanInboxItem['kind'], text: i.text, ts: i.ts }));
+      }
+    }
+    const harnesses = Object.fromEntries(Object.entries(this.adapters).map(([id, a]) => [id, a.manifest]));
     return {
-      goals: goals.map(g => ({
-        id: g.id,
-        request: g.request,
-        status: g.status,
-        lead: g.lead,
-        createdAt: g.createdAt,
-        sharedDir: g.sharedDir,
-        branch: g.git?.branch ?? null,
-        notice: this.goalNotice(g) ?? null,
-        agents: [...g.agents.values()].map(a => ({
-          name: a.name,
-          role: a.role.name,
-          harness: a.harness,
-          model: a.model,
-          parent: a.parent,
-          state: a.state,
-          status: a.status,
-          quick: a.quick,
-          branch: a.worktree?.branch ?? null,
-          cwd: a.cwd,
-          cost: a.cost ?? null,
-          contextPct: a.contextPct ?? null,
-          unread: a.inbox.length,
-          awaitingApproval: a.pendingApprovals,
-          nativeSession: a.session?.nativeId ?? a.resumeId ?? null,
-          limitedUntil: a.limitedUntil ?? null,
-        })),
-      })),
-      inbox: this.humanInbox.filter(i => !goalId || i.goal === goalId),
+      goals,
+      inbox,
       accounts: [...this.accounts.values()].map(a => ({ id: a.id, status: a.status, usedPct: a.usedPct ?? null, resetsAt: a.resetsAt ?? null, window: a.window ?? null })),
+      harnesses,
+    };
+  }
+
+  /**
+   * running: the lead is at work; done: it finished (teammates may still be asked things); ended:
+   * stopped for good; stopped: not running here, and its lead never finished (a log from before a restart).
+   */
+  private goalStatus(g: GoalRec): GoalStatus {
+    if (g.status === 'ended') return 'ended';
+    const lead = g.agents.get(g.lead);
+    return lead && (lead.doneNote !== undefined || FINISHED.includes(lead.state)) ? 'done' : 'running';
+  }
+
+  private goalView(g: GoalRec) {
+    const agents = [...g.agents.values()];
+    const costs = agents.map(a => a.cost).filter((c): c is number => c !== undefined);
+    return {
+      id: g.id,
+      request: g.request,
+      status: this.goalStatus(g),
+      live: true,
+      lead: g.lead,
+      createdAt: g.createdAt,
+      dir: g.dir,
+      sharedDir: g.sharedDir,
+      branch: g.git?.branch ?? null,
+      workflow: g.workflow ?? null,
+      notice: this.goalNotice(g) ?? null,
+      cost: costs.length ? costs.reduce((x, y) => x + y, 0) : null,
+      agents: agents.map(a => ({
+        name: a.name,
+        role: a.role.name,
+        harness: a.harness,
+        model: a.model,
+        parent: a.parent,
+        state: a.state,
+        /** The human asked for a pause that waits for the current step to finish. */
+        pausing: !!a.held && a.state !== 'paused',
+        status: a.status,
+        brief: a.brief,
+        quick: a.quick,
+        branch: a.worktree?.branch ?? null,
+        worktree: a.worktree?.path ?? null,
+        cwd: a.cwd,
+        cost: a.cost ?? null,
+        contextPct: a.contextPct ?? null,
+        unread: a.inbox.length,
+        awaitingApproval: a.pendingApprovals,
+        nativeSession: a.session?.nativeId ?? a.resumeId ?? null,
+        limitedUntil: a.limitedUntil ?? null,
+        doneNote: a.doneNote ?? null,
+      })),
+    };
+  }
+
+  /** A goal not loaded here, as the log left it. */
+  private replayView(r: GoalReplay) {
+    const agents = [...r.agents.values()];
+    const costs = agents.map(a => a.cost).filter((c): c is number => c !== undefined);
+    const lead = r.agents.get(r.lead);
+    return {
+      id: r.id,
+      request: r.request,
+      status: (r.ended ? 'ended' : lead && (lead.doneNote !== undefined || ['ended', 'crashed'].includes(lead.state)) ? 'done' : 'stopped') as GoalStatus,
+      live: false,
+      lead: r.lead,
+      createdAt: r.createdAt,
+      dir: r.dir,
+      sharedDir: r.sharedDir,
+      branch: r.branch ?? null,
+      workflow: r.workflow ?? null,
+      notice: null,
+      cost: costs.length ? costs.reduce((x, y) => x + y, 0) : null,
+      agents: agents.map(a => ({
+        // One that called done may not have ended its turn before the log stopped.
+        name: a.name, role: a.role, harness: a.harness, model: a.model, parent: a.parent, pausing: false,
+        state: a.doneNote !== undefined && INTERRUPTED.includes(a.state) ? 'done' : a.state,
+        status: a.status, brief: a.brief, quick: a.quick, branch: a.worktree?.branch ?? null, worktree: a.worktree?.path ?? null,
+        cwd: a.cwd, cost: a.cost ?? null, contextPct: a.contextPct ?? null, unread: a.undelivered.length, awaitingApproval: 0,
+        nativeSession: a.nativeSession ?? null, limitedUntil: null, doneNote: a.doneNote ?? null,
+      })),
+    };
+  }
+
+  /** Every goal in the log, newest first: the Goals list. */
+  listGoals() {
+    return this.store
+      .ofType('goal.started')
+      .map(e => {
+        const g = this.goals.get(e.goal);
+        if (g) {
+          const v = this.goalView(g);
+          return { id: v.id, request: v.request, status: v.status, live: true, createdAt: v.createdAt, dir: v.dir, lead: v.lead, cost: v.cost, agents: v.agents.length };
+        }
+        const r = replayGoal(this.store.since(e.goal));
+        if (!r) return undefined;
+        const v = this.replayView(r);
+        return { id: v.id, request: v.request, status: v.status, live: false, createdAt: v.createdAt, dir: v.dir, lead: v.lead, cost: v.cost, agents: v.agents.length };
+      })
+      .filter(<T>(x: T | undefined): x is T => x !== undefined)
+      .reverse();
+  }
+
+  /** One agent in full: its prompt, where it works, how to open its session, what its harness reports. */
+  agentDetail(goalId: string, name: string) {
+    const rec = this.agent(goalId, name);
+    if (!rec) {
+      const a = this.store.ofType('goal.started').some(e => e.goal === goalId) ? replayGoal(this.store.since(goalId))?.agents.get(name) : undefined;
+      if (!a) throw new Error(`There's no agent ${name} in goal ${goalId}.`);
+      return { goal: goalId, name, role: a.role, harness: a.harness, model: a.model, parent: a.parent, brief: a.brief, systemPrompt: null, cwd: a.cwd, worktree: a.worktree ?? null, startedFrom: a.startedFrom ?? null, nativeSession: a.nativeSession ?? null, open: null, live: false };
+    }
+    return {
+      goal: goalId, name, role: rec.role.name, harness: rec.harness, model: rec.model, parent: rec.parent, brief: rec.brief,
+      systemPrompt: rec.systemPrompt, roleFile: rec.role.file, cwd: rec.cwd,
+      worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch, base: rec.worktree.base, deps: rec.worktree.deps ?? [] } : null,
+      nativeSession: rec.session?.nativeId ?? rec.resumeId ?? null, open: this.openNative(goalId, name), manifest: rec.adapter?.manifest ?? null, live: true,
     };
   }
 
@@ -1809,11 +2022,39 @@ export class Daemon {
         const goal = goalOrLatest();
         return { goal, result: this.deliver(goal, 'human', to, text, b.urgent === true) };
       }
-      case 'agent.stop': {
+      case 'agent.stop':
+      case 'agent.pause':
+      case 'agent.resume': {
         const agent = s('agent');
-        if (!agent) throw new Error('agent.stop needs "agent".');
+        if (!agent) throw new Error(`${b.cmd} needs "agent".`);
         const goal = goalOrLatest();
-        return { goal, result: this.stopAgent(goal, agent) };
+        const result = b.cmd === 'agent.stop' ? this.stopAgent(goal, agent) : b.cmd === 'agent.pause' ? this.pauseAgent(goal, agent) : this.unpauseAgent(goal, agent);
+        return { goal, result };
+      }
+      case 'goal.pause':
+      case 'goal.resume': {
+        const goal = goalOrLatest();
+        return { goal, result: this.pauseGoal(goal, b.cmd === 'goal.resume') };
+      }
+      case 'goal.end': {
+        const goal = goalOrLatest();
+        return { goal, result: this.endGoal(goal) };
+      }
+      case 'agent.spawn': {
+        const role = s('role'), brief = s('brief');
+        if (!role || !brief) throw new Error('agent.spawn needs "role" and "brief".');
+        const goal = goalOrLatest();
+        const parent = s('parent') ?? 'human';
+        if (parent !== 'human' && !this.agent(goal, parent)) throw new Error(`There's no agent called ${parent} to spawn under.`);
+        const r = this.spawnAgent(goal, { role, brief, parent, name: s('name'), worktree: typeof b.worktree === 'boolean' ? b.worktree : undefined, from: s('from') });
+        if (!r.ok) throw new Error(r.error);
+        return { goal, agent: r.name, result: `Started ${r.name} (${r.rec.harness} · ${r.rec.model})${r.note ? `. ${r.note}` : '.'}` };
+      }
+      case 'agent.open_native': {
+        const agent = s('agent');
+        if (!agent) throw new Error('agent.open_native needs "agent".');
+        const goal = goalOrLatest();
+        return { goal, ...this.openNative(goal, agent) };
       }
       case 'inbox.resolve': {
         const item = s('item');
@@ -1832,7 +2073,7 @@ export class Daemon {
         return { ...(await probeHarness(this, harness, s('model') ?? '')) };
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.clean, agent.message, agent.stop, inbox.resolve, harness.test.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test.`);
     }
   }
 
