@@ -51,8 +51,10 @@ function buildServer(d: Daemon, goal: string, agent: string): McpServer {
       const a = (args ?? {}) as { tool_name?: string; input?: unknown };
       const rec = d.agent(goal, agent);
       const tool = a.tool_name ?? 'a tool';
-      const detail = summarizeInput(a.input);
-      const decision = rec ? await d.requestApproval(rec, tool, detail) : { allow: false, message: 'Unknown agent.' };
+      const input = a.input && typeof a.input === 'object' ? (a.input as Record<string, unknown>) : {};
+      // The same policy as every other harness (reads anywhere, the role's commands), then the human.
+      const t = rec?.adapter.toolRequest?.(tool, input) ?? { kind: 'other' as const, tool, detail: summarizeInput(a.input) };
+      const decision = rec ? await d.decideTool(rec, t) : { allow: false, message: 'Unknown agent.' };
       const body = decision.allow
         ? { behavior: 'allow', updatedInput: a.input ?? {} }
         : { behavior: 'deny', message: decision.message ?? 'The human denied this.' };

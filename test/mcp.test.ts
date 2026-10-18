@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Daemon } from '../src/daemon.ts';
 import { FakeAdapter } from '../src/adapters/fake.ts';
+import { claudeToolRequest } from '../src/adapters/claude.ts';
 import type { HarnessAdapter, SessionSpec } from '../src/adapters/types.ts';
 import { startServer } from '../src/server.ts';
 import { makeRepo } from './helpers.ts';
@@ -23,6 +24,8 @@ function capturingAdapter(urls: Map<string, string>, release: Promise<void>): Ha
   });
   return {
     manifest: inner.manifest,
+    // Claude Code's permission prompt is what calls the approval tool.
+    toolRequest: claudeToolRequest,
     start: (spec: SessionSpec, ev) => {
       urls.set(spec.agent, spec.mcpUrl);
       return inner.start(spec, ev);
@@ -90,6 +93,16 @@ test('agents reach their tools over MCP, each under its own identity', async () 
     const after = d.snapshot(goal).goals[0].agents.find(a => a.name === 'implementer-1')!;
     assert.equal(after.awaitingApproval, 0);
     assert.equal(after.status, 'Running the tests');
+
+    // Reads anywhere, and the role's commands, pass the policy without reaching the human.
+    assert.deepEqual(JSON.parse(text(await impl.callTool({ name: 'approval', arguments: { tool_name: 'Read', input: { file_path: '/tmp/shot.png' } } }))), {
+      behavior: 'allow',
+      updatedInput: { file_path: '/tmp/shot.png' },
+    });
+    assert.ok(!d.humanInbox.some(i => i.kind === 'approval'));
+    const agentTool = JSON.parse(text(await impl.callTool({ name: 'approval', arguments: { tool_name: 'Agent', input: { prompt: 'x' } } })));
+    assert.equal(agentTool.behavior, 'deny');
+    assert.match(agentTool.message, /spawn tool/);
 
     const bad = await fetch(`${d.mcpBase}/mcp/deadbeef`, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } });
     assert.equal(bad.status, 404);

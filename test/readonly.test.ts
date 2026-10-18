@@ -86,6 +86,11 @@ test('the daemon approves read-only commands itself, unless the role says to alw
   d.resolveInbox(d.humanInbox.find(i => i.kind === 'approval')!.id, 'deny');
   assert.equal((await pending).allow, false);
 
+  // Answered from inside the inbox.item listener, as mh test does: the answer still reaches the agent.
+  const off = d.store.subscribe(e => e.type === 'inbox.item' && e.data.kind === 'approval' && d.resolveInbox(String(e.data.id), 'approve'));
+  assert.deepEqual(await d.requestApproval(lead, 'Bash', 'npm install left-pad'), { allow: true, message: undefined });
+  off();
+
   const r = d.spawnAgent(goal, { role: 'careful', brief: 'b', parent: 'architect' });
   assert.ok(r.ok);
   void d.requestApproval(r.rec, 'Bash', 'git status');

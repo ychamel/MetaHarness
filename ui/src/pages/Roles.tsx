@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '../api.ts';
 import type { ConfigView, RoleDef, Scope } from '../types.ts';
 import { ChipList, Field, Toggle, useConfirm } from '../components/common.tsx';
 import { EditorFooter, keyOf, ListItem, ScopePicker, Section, SetupLayout, useDraft, useLeaveGuard, type SetupProps } from './setup.tsx';
@@ -125,19 +126,51 @@ export function Roles({ config, selected, onSelect, onSave, onCommand }: SetupPr
   );
 }
 
-function RoleForm({ config, draft, set, isNew, original, onCommand, footer }: { config?: ConfigView; draft: RoleDef; set: <K extends keyof RoleDef>(k: K, v: RoleDef[K]) => void; isNew: boolean; original?: RoleDef; onCommand: SetupProps['onCommand']; footer: React.ReactNode }) {
+interface ModelList {
+  loading: boolean;
+  models: string[];
+  error: string | null;
+}
+
+/** The "Other…" entry of the model picker: a model ID typed by hand. */
+const OTHER = '\u0000other';
+
+/**
+ * The models each installed harness offers, asked once while the editor is open (the daemon keeps
+ * a list for ten minutes; refresh asks the CLI again).
+ */
+function useModelLists(config?: ConfigView) {
+  const [lists, setLists] = useState<Record<string, ModelList>>({});
+  const asked = useRef(new Set<string>());
+  const load = useCallback(async (harness: string, refresh = false) => {
+    asked.current.add(harness);
+    setLists(l => ({ ...l, [harness]: { models: l[harness]?.models ?? [], error: null, loading: true } }));
+    try {
+      const r = await api.command<{ models: string[]; error: string | null }>({ cmd: 'harness.models', harness, refresh });
+      setLists(l => ({ ...l, [harness]: { models: r.models ?? [], error: r.error ?? null, loading: false } }));
+    } catch (e) {
+      setLists(l => ({ ...l, [harness]: { models: l[harness]?.models ?? [], error: (e as Error).message, loading: false } }));
+    }
+  }, []);
+  useEffect(() => {
+    for (const h of config?.harnesses ?? []) if (h.runnable && !asked.current.has(h.id)) void load(h.id);
+  }, [config?.harnesses, load]);
+  /** Listed by the harness, known to its profile, or already used by a role. */
+  const modelsOf = (harness: string) => [
+    ...new Set([...(lists[harness]?.models ?? []), ...(config?.harnesses.find(x => x.id === harness)?.models ?? []), ...(config?.roles.filter(r => r.harness === harness).map(r => r.model).filter(Boolean) ?? [])]),
+  ];
+  return { lists, load, modelsOf };
+}
+
+function RoleForm({ config, draft, set, isNew, original, footer }: { config?: ConfigView; draft: RoleDef; set: <K extends keyof RoleDef>(k: K, v: RoleDef[K]) => void; isNew: boolean; original?: RoleDef; onCommand: SetupProps['onCommand']; footer: React.ReactNode }) {
   const harnesses = config?.harnesses ?? [];
   const h = harnesses.find(x => x.id === draft.harness);
-  const [loaded, setLoaded] = useState<Record<string, { models: string[]; error: string | null }>>({});
-  const [loading, setLoading] = useState(false);
-  const models = [...new Set([...(loaded[draft.harness]?.models ?? []), ...(h?.models ?? []), ...(config?.roles.filter(r => r.harness === draft.harness).map(r => r.model).filter(Boolean) ?? [])])];
-  const backups = harnesses.flatMap(x => [...new Set([...(loaded[x.id]?.models ?? []), ...x.models, ...(config?.roles.filter(r => r.harness === x.id).map(r => r.model).filter(Boolean) ?? [])])].map(m => `${x.id}/${m}`));
-  const loadModels = async () => {
-    setLoading(true);
-    const r = (await onCommand({ cmd: 'harness.models', harness: draft.harness, refresh: true })) as { models: string[]; error: string | null } | undefined;
-    setLoading(false);
-    if (r) setLoaded(l => ({ ...l, [draft.harness]: r }));
-  };
+  const { lists, load, modelsOf } = useModelLists(config);
+  const list = lists[draft.harness];
+  const models = modelsOf(draft.harness);
+  const [typing, setTyping] = useState(false);
+  const listed = !draft.model || models.includes(draft.model);
+  const backups = harnesses.flatMap(x => modelsOf(x.id).map(m => `${x.id}/${m}`));
 
   return (
     <div className="editor">
@@ -164,7 +197,15 @@ function RoleForm({ config, draft, set, isNew, original, onCommand, footer }: { 
         <Section title="Runs on">
           <div className="grid-2">
             <Field label="Harness" hint={h && !h.runnable ? 'Not installed here: agents in this role use a backup.' : undefined}>
-              <select value={draft.harness} onChange={e => set('harness', e.target.value)}>
+              <select
+                value={draft.harness}
+                onChange={e => {
+                  // A model belongs to its harness: the new one starts from its default.
+                  set('harness', e.target.value);
+                  set('model', '');
+                  setTyping(false);
+                }}
+              >
                 {!h && <option value={draft.harness}>{draft.harness}</option>}
                 {harnesses.map(x => (
                   <option key={x.id} value={x.id}>
@@ -177,20 +218,42 @@ function RoleForm({ config, draft, set, isNew, original, onCommand, footer }: { 
             <Field
               label="Model"
               hint={
-                <>
-                  {loaded[draft.harness]?.error ? <span className="warn-text">{loaded[draft.harness]!.error} </span> : null}
-                  <button className="link" onClick={() => void loadModels()} disabled={loading}>
-                    {loading ? 'Asking the harness…' : `List ${h?.title ?? draft.harness}'s models`}
-                  </button>
-                </>
+                list?.loading ? (
+                  `Asking ${h?.title ?? draft.harness} for its models…`
+                ) : (
+                  <>
+                    {list?.error ? <span className="warn-text">{list.error} </span> : list ? `${list.models.length} listed by ${h?.title ?? draft.harness}. ` : null}
+                    {h?.runnable && (
+                      <button className="link" onClick={e => (e.preventDefault(), void load(draft.harness, true))}>
+                        {list ? 'Ask again' : `List ${h.title}'s models`}
+                      </button>
+                    )}
+                  </>
+                )
               }
             >
-              <input type="text" list="role-models" value={draft.model} onChange={e => set('model', e.target.value)} placeholder="the harness's default" />
-              <datalist id="role-models">
+              <select
+                value={typing ? OTHER : draft.model}
+                onChange={e => {
+                  setTyping(e.target.value === OTHER);
+                  if (e.target.value !== OTHER) set('model', e.target.value);
+                }}
+              >
+                <option value="">The harness's default</option>
                 {models.map(m => (
-                  <option key={m} value={m} />
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
                 ))}
-              </datalist>
+                {!listed && (
+                  <option value={draft.model}>
+                    {draft.model}
+                    {list && !list.loading && !list.error ? ' (not listed)' : ''}
+                  </option>
+                )}
+                <option value={OTHER}>Other…</option>
+              </select>
+              {typing && <input type="text" autoFocus value={draft.model} onChange={e => set('model', e.target.value.trim())} placeholder="model ID, as the harness names it" />}
             </Field>
           </div>
           <Field label="Backups, best first" hint="Used when the model isn't available here or its account is at its limit. harness/model, or just a model on the same harness.">

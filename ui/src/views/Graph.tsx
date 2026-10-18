@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useReactFlow, ReactFlowProvider, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useReactFlow, ReactFlowProvider, type Edge, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { money, STATE_LABEL } from '../format.ts';
 import type { Agent, Goal, MhEvent } from '../types.ts';
@@ -7,6 +7,9 @@ import { Dot } from '../components/common.tsx';
 
 const W = 230;
 const H = 120;
+/** Shared files sit in a grid under the team, in cells this size. */
+const FW = 230;
+const FH = 44;
 const WINDOWS: [string, number][] = [
   ['last minute', 60_000],
   ['last 5 min', 300_000],
@@ -76,7 +79,7 @@ function HumanCard() {
 
 function FileCard({ data }: NodeProps<Node<FileData>>) {
   return (
-    <div className={`file-node${data.faded ? ' faded' : ''}`}>
+    <div className={`file-node${data.faded ? ' faded' : ''}`} title={data.path}>
       <Handle type="target" position={Position.Top} />
       📄 {data.path}
     </div>
@@ -85,12 +88,37 @@ function FileCard({ data }: NodeProps<Node<FileData>>) {
 
 const nodeTypes = { agent: AgentCard, human: HumanCard, file: FileCard };
 
+type Point = { x: number; y: number };
+
+/** Where the human dragged cards to, per goal, kept in this browser. */
+function useMoved(goal: string) {
+  const key = `metaharness-graph:${goal}`;
+  const read = (): Record<string, Point> => {
+    try {
+      return JSON.parse(localStorage.getItem(key) ?? '{}') as Record<string, Point>;
+    } catch {
+      return {};
+    }
+  };
+  const [moved, setMoved] = useState(read);
+  useEffect(() => setMoved(read()), [key]);
+  const save = (m: Record<string, Point>) => {
+    try {
+      if (Object.keys(m).length) localStorage.setItem(key, JSON.stringify(m));
+      else localStorage.removeItem(key);
+    } catch {
+      // Not kept, but the layout still works for this visit.
+    }
+  };
+  return { moved, setMoved, save };
+}
+
 /** How information flows: who spawned whom, who messaged whom (and how often), who wrote which shared file. */
 function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: MhEvent[]; selected?: string; onSelect: (n: string) => void }) {
   const [windowMs, setWindowMs] = useState(Infinity);
   const [focus, setFocus] = useState(true);
   const [openHelpers, setOpenHelpers] = useState<Set<string>>(new Set());
-  const [, tick] = useState(0);
+  const [tickN, tick] = useState(0);
   const flow = useReactFlow();
   // Recent messages animate; look again every few seconds so they stop.
   useEffect(() => {
@@ -98,7 +126,9 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
     return () => clearInterval(t);
   }, []);
 
-  const { nodes, edges } = useMemo(() => {
+  const { moved, setMoved, save } = useMoved(goal.id);
+
+  const layout = useMemo(() => {
     const visible = goal.agents.filter(a => !a.quick || openHelpers.has(a.parent));
     const shown = new Set(visible.map(a => a.name));
     const kids = new Map<string, Agent[]>();
@@ -121,9 +151,9 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
     place('human', 0);
     for (const a of visible) if (!pos.has(a.name)) place(a.name, 1);
     const maxDepth = Math.max(0, ...[...pos.values()].map(p => p.y / H));
+    const leaves = Math.max(1, next);
 
     const since = Date.now() - windowMs;
-    const now = Date.now();
     const recent = events.filter(e => new Date(e.ts).getTime() >= since);
     // Messages from or to a folded helper count as its caller's.
     const owner = (n: string): string => (n === 'human' ? 'human' : shown.has(n) ? n : (goal.agents.find(a => a.name === n)?.parent ?? n));
@@ -152,6 +182,19 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
       w.n++;
       writes.set(k, w);
     }
+
+    // Files in a grid under the team, about as wide as it, centred.
+    const cols = Math.max(1, Math.min(files.length, Math.max(Math.ceil(Math.sqrt(files.length)), Math.floor((leaves * W) / FW))));
+    const left = ((leaves - 1) * W - (cols - 1) * FW) / 2;
+    files.forEach((path, i) => pos.set(`file:${path}`, { x: left + (i % cols) * FW, y: (maxDepth + 1) * H + 30 + Math.floor(i / cols) * FH }));
+    return { visible, shown, pos, msgs, writes, files };
+  }, [goal, events, windowMs, openHelpers]);
+
+  const { nodes, edges } = useMemo(() => {
+    const { visible, shown, msgs, writes, files } = layout;
+    const now = Date.now();
+    const pos = new Map(layout.pos);
+    for (const [id, p] of Object.entries(moved)) if (pos.has(id)) pos.set(id, p);
 
     // Focus: the selected agent, its parent and children, whoever it talked to, what it wrote.
     const related = new Set<string>();
@@ -192,10 +235,10 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
         }),
       ),
       ...files.map(
-        (path, i): Node<FileData> => ({
+        (path): Node<FileData> => ({
           id: `file:${path}`,
           type: 'file',
-          position: { x: i * (W * 0.8), y: (maxDepth + 1) * H + 30 },
+          position: pos.get(`file:${path}`)!,
           data: { path, faded: faded(`file:${path}`) },
         }),
       ),
@@ -243,7 +286,24 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
       ),
     ].filter(e => nodes.some(n => n.id === e.source) && nodes.some(n => n.id === e.target));
     return { nodes, edges };
-  }, [goal, events, windowMs, focus, selected, openHelpers]);
+  }, [layout, moved, goal.agents, focus, selected, tickN]);
+
+  // Dragging moves a card for good (in this browser); the rest keep their places in the layout.
+  const onNodesChange = (changes: NodeChange[]) => {
+    const moves = changes.filter(c => c.type === 'position' && c.position);
+    if (!moves.length) return;
+    setMoved(m => {
+      const n = { ...m };
+      for (const c of moves) if (c.type === 'position' && c.position) n[c.id] = c.position;
+      if (moves.some(c => c.type === 'position' && !c.dragging)) save(n);
+      return n;
+    });
+  };
+  const resetLayout = () => {
+    setMoved({});
+    save({});
+    setTimeout(() => void flow.fitView({ padding: 0.2, duration: 200, maxZoom: 1 }), 50);
+  };
 
   // Frame the team again when it grows.
   useEffect(() => {
@@ -264,6 +324,11 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
         <label className="check">
           <input type="checkbox" checked={focus} onChange={e => setFocus(e.target.checked)} /> Focus on the selected agent
         </label>
+        {Object.keys(moved).length > 0 && (
+          <button className="btn ghost small" onClick={resetLayout} title="Put every card back where the layout places it">
+            Reset layout
+          </button>
+        )}
         <div className="legend">
           <span>
             <i style={{ background: 'var(--line-strong)' }} /> spawned
@@ -282,6 +347,7 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
           edges={edges}
           nodeTypes={nodeTypes}
           onNodeClick={(_, n) => n.type === 'agent' && onSelect(n.id)}
+          onNodesChange={onNodesChange}
           fitView
           fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
           minZoom={0.2}

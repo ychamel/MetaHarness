@@ -217,6 +217,16 @@ Findings from the run:
       that asks you for a decision. Checked by driving headless Chrome on a scripted team:
       approve and send back from Home and the goal page, edit, create and save roles,
       workflows, a server and the guidelines, message the team, files, phone width
+- [x] **First full run with the UI** (2026-10-18, a Godot game in `~/Desktop/Gamedev/Evolution_meta`:
+      Claude opus architect, eight Codex implementers, a Claude sonnet reviewer, 2 h, $11.49 on
+      the Claude side). Fixed from it: the goal page was 4,000px wide (a long goal title and
+      feed lines widened its grid columns); graph cards can be dragged and keep their place
+      per goal in the browser (Reset layout puts them back), shared files sit in a grid under
+      the team; Home lists this repository's past goals, others behind a checkbox; Claude
+      Code's permission prompt now goes through the same policy as the other harnesses (17 of
+      the run's 58 approvals were reads of screenshots in /tmp); the model picker lists each
+      harness's models; Codex's v1 approval requests get answers in their own shape; an
+      approval answered at once is no longer lost
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,
       replay, search

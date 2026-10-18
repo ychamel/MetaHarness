@@ -36,12 +36,16 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
   const overview = useOverview();
   const [query, setQuery] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [elsewhere, setElsewhere] = useState(false);
+  const repo = config?.scopes.find(s => s.scope === 'repo')?.dir.replace(/[/\\]\.metaharness$/, '');
   const running = goals.filter(g => g.status === 'running');
-  const past = goals.filter(g => g.status !== 'running' && (!query || `${g.request} ${g.result ?? ''}`.toLowerCase().includes(query.toLowerCase())));
+  // The log is shared by every repository the daemon has run in: past goals are this one's, unless asked.
+  const here = (g: GoalSummary) => !repo || g.dir === repo;
+  const others = goals.filter(g => g.status !== 'running' && !here(g)).length;
+  const past = goals.filter(g => g.status !== 'running' && (elsewhere || here(g)) && (!query || `${g.request} ${g.result ?? ''} ${g.dir}`.toLowerCase().includes(query.toLowerCase())));
   const shown = showAll || query ? past : past.slice(0, 8);
   const needs = (overview?.inbox ?? []).filter(i => ACTIONABLE.includes(i.kind));
   const label = (id: string) => firstLine(goals.find(g => g.id === id)?.request).slice(0, 40) || id;
-  const repo = config?.scopes.find(s => s.scope === 'repo')?.dir.replace(/[/\\]\.metaharness$/, '');
   const accounts = (overview?.accounts ?? []).filter(a => a.status !== 'ok' || (a.usedPct ?? 0) > 0);
   const roles = config?.roles.length ?? 0;
 
@@ -105,8 +109,13 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
 
       <section>
         <div className="section-h-row">
-          <h2 className="section-h">Past goals</h2>
-          {past.length > 3 && <input type="search" className="search" placeholder="Search goals and outcomes" value={query} onChange={e => setQuery(e.target.value)} />}
+          <h2 className="section-h">Past goals{repo && !elsewhere ? ' here' : ''}</h2>
+          {others > 0 && (
+            <label className="check small muted">
+              <input type="checkbox" checked={elsewhere} onChange={e => setElsewhere(e.target.checked)} /> Include {others} from other directories
+            </label>
+          )}
+          {(past.length > 3 || query) && <input type="search" className="search" placeholder="Search goals and outcomes" value={query} onChange={e => setQuery(e.target.value)} />}
         </div>
         <div className="goal-rows">
           {shown.map(g => (
@@ -119,6 +128,7 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
                   {g.agents} agents · {money(g.cost)} · {ago(g.createdAt)}
                 </span>
               </div>
+              {!here(g) && <div className="muted small mono ellipsis">{g.dir}</div>}
               {g.result && (
                 <div onClick={e => e.stopPropagation()}>
                   <More lines={2} className="quiet">
@@ -128,7 +138,7 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
               )}
             </div>
           ))}
-          {!past.length && <div className="empty">{!loaded ? 'Loading…' : query ? 'No goal matches.' : 'Finished goals and what came of them show up here.'}</div>}
+          {!past.length && <div className="empty">{!loaded ? 'Loading…' : query ? 'No goal matches.' : `Finished goals${repo ? ' in this repository' : ''} and what came of them show up here.`}</div>}
           {!showAll && !query && past.length > shown.length && (
             <button className="btn ghost" onClick={() => setShowAll(true)}>
               Show all {past.length}

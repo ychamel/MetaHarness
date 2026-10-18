@@ -362,22 +362,25 @@ class CodexSession implements Session {
   }
 
   async onServerRequest(id: number | string, method: string, p: any): Promise<void> {
+    // The v1 requests (execCommandApproval, applyPatchApproval) take a ReviewDecision instead.
+    const v1 = method === 'execCommandApproval' || method === 'applyPatchApproval';
+    const answer = (d: { allow: boolean; message?: string }) =>
+      this.server.respond(id, { decision: v1 ? (d.allow ? 'approved' : { denied: { rejection: d.message ?? 'Denied.' } }) : d.allow ? 'accept' : 'decline' });
     switch (method) {
       case 'item/commandExecution/requestApproval':
       case 'execCommandApproval': {
         const command = Array.isArray(p.command) ? p.command.join(' ') : String(p.command ?? p.reason ?? 'run a command');
-        const d = await this.ev.decide({ kind: 'shell', tool: 'Bash', detail: command });
-        this.server.respond(id, { decision: d.allow ? 'accept' : 'decline' });
+        answer(await this.ev.decide({ kind: 'shell', tool: 'Bash', detail: command }));
         return;
       }
       case 'item/fileChange/requestApproval':
       case 'applyPatchApproval': {
         // Writing outside its roots goes to the human; edits to known files go through the edit policy.
         const paths = p.grantRoot ? [] : (this.fileChanges.get(String(p.itemId ?? '')) ?? []);
-        let d: { allow: boolean } = { allow: true };
+        let d: { allow: boolean; message?: string } = { allow: true };
         for (const path of paths) if (d.allow) d = await this.ev.decide({ kind: 'edit', tool: 'Edit', detail: path, path });
         if (!paths.length) d = await this.ev.approval('Edit', String(p.reason ?? p.grantRoot ?? 'change files'));
-        this.server.respond(id, { decision: d.allow ? 'accept' : 'decline' });
+        answer(d);
         return;
       }
       case 'mcpServer/elicitation/request':

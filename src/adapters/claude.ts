@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { APPROVAL_TOOL, MCP_SERVER_NAME } from '../mcp.ts';
 import { claudeMcpDef } from '../mcpservers.ts';
-import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions } from './types.ts';
+import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest } from './types.ts';
 
 /**
  * Claude Code in streaming mode: one long-lived `claude -p` process per agent, NDJSON in and out.
@@ -30,6 +30,10 @@ export class ClaudeAdapter implements HarnessAdapter {
 
   nativeCommand(sessionId: string): string {
     return `${this.bin} --resume ${sessionId}`;
+  }
+
+  toolRequest(tool: string, args: Record<string, unknown>): ToolRequest {
+    return claudeToolRequest(tool, args);
   }
 
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
@@ -68,6 +72,27 @@ export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false)
   ];
   if (spec.model) args.push('--model', spec.model);
   return args;
+}
+
+/** What a Claude Code tool call means, for the approval policy (its permission prompt asks through ours). */
+export function claudeToolRequest(tool: string, args: Record<string, unknown>): ToolRequest {
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+  const path = str(args.file_path) ?? str(args.notebook_path) ?? str(args.path);
+  switch (tool) {
+    case 'Read': case 'Glob': case 'Grep': case 'LS': case 'NotebookRead': case 'WebSearch': case 'TodoWrite':
+      return { kind: 'read', tool, detail: path ?? str(args.pattern) ?? str(args.query) ?? JSON.stringify(args).slice(0, 300), path };
+    case 'Edit': case 'MultiEdit': case 'Write': case 'NotebookEdit':
+      return { kind: 'edit', tool, detail: path ?? JSON.stringify(args).slice(0, 8000), path };
+    case 'Bash':
+      return { kind: 'shell', tool, detail: str(args.command) ?? JSON.stringify(args).slice(0, 8000) };
+    case 'Agent': case 'Task':
+      return { kind: 'delegate', tool, detail: JSON.stringify(args).slice(0, 300) };
+    case 'AskUserQuestion':
+      return { kind: 'ask_user', tool, detail: JSON.stringify(args).slice(0, 300) };
+  }
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
+  if (mcp) return { kind: 'mcp', tool: `${mcp[1]}.${mcp[2]}`, detail: JSON.stringify(args).slice(0, 8000), server: mcp[1] };
+  return { kind: 'other', tool, detail: (str(args.url) ?? str(args.command) ?? path ?? JSON.stringify(args)).slice(0, 8000), path };
 }
 
 type Block = { type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: unknown; is_error?: boolean };

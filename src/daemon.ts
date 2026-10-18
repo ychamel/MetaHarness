@@ -655,8 +655,7 @@ export class Daemon {
       approval: (tool, detail) => (live() ? this.requestApproval(rec, tool, detail) : Promise.resolve({ allow: false, message: 'This session was replaced.' })),
       decide: async t => {
         if (!live()) return { allow: false, message: 'This session was replaced.' };
-        const verdict = this.policyVerdict(rec, t);
-        const d = verdict !== 'ask' ? { allow: verdict.allow, message: verdict.reason } : await this.requestApproval(rec, t.tool, t.detail);
+        const d = await this.decideTool(rec, t);
         // These harnesses (ACP, Codex) only learn "declined", so the reason follows as a notice.
         if (!d.allow && d.message && live()) this.notice(rec, `MetaHarness refused ${t.tool}: ${t.detail.replace(/\s+/g, ' ').slice(0, 160)}. ${d.message}`);
         return d;
@@ -668,6 +667,12 @@ export class Daemon {
   /** Which agent an MCP token belongs to. */
   agentForToken(token: string): { goal: string; agent: string } | undefined {
     return this.tokens.get(token);
+  }
+
+  /** A tool call the harness asks about: the policy decides, or else the human. */
+  async decideTool(rec: AgentRec, t: ToolRequest): Promise<ApprovalDecision> {
+    const verdict = this.policyVerdict(rec, t);
+    return verdict !== 'ask' ? { allow: verdict.allow, message: verdict.reason } : this.requestApproval(rec, t.tool, t.detail);
   }
 
   /** Puts a permission request in the human's Inbox and resolves when they decide. */
@@ -683,13 +688,14 @@ export class Daemon {
       return Promise.resolve({ allow: true });
     }
     const g = this.goals.get(rec.goal)!;
-    const item = this.toHuman(g, rec.name, 'approval', `${tool}: ${detail}`);
     rec.pendingApprovals++;
     return new Promise(resolve => {
-      this.approvals.set(item.id, d => {
-        rec.pendingApprovals--;
-        resolve(d);
-      });
+      this.toHuman(g, rec.name, 'approval', `${tool}: ${detail}`, item =>
+        this.approvals.set(item.id, d => {
+          rec.pendingApprovals--;
+          resolve(d);
+        }),
+      );
     });
   }
 
@@ -1049,9 +1055,11 @@ export class Daemon {
     return { error: `There's nobody called "${to}". Teammates: ${agentNames.join(', ') || 'none yet'}. You can also send to lead, all or human.` };
   }
 
-  private toHuman(g: GoalRec, agent: string, kind: HumanInboxItem['kind'], text: string): HumanInboxItem {
+  private toHuman(g: GoalRec, agent: string, kind: HumanInboxItem['kind'], text: string, onCreate?: (item: HumanInboxItem) => void): HumanInboxItem {
     const item: HumanInboxItem = { id: randomUUID().slice(0, 8), goal: g.id, agent, kind, text, ts: new Date().toISOString() };
     this.humanInbox.push(item);
+    // Before anyone hears of it, so an answer given at once (from an event listener) finds its way back.
+    onCreate?.(item);
     this.emit({ goal: g.id, agent, type: 'inbox.item', data: { id: item.id, kind, text } });
     return item;
   }
@@ -1271,9 +1279,7 @@ export class Daemon {
       return messages ? { messages } : {};
     }
     const t = rec.adapter.toolRequest?.(req.tool, req.args ?? {}) ?? { kind: 'other', tool: req.tool, detail: JSON.stringify(req.args ?? {}).slice(0, 8000) };
-    const verdict = this.policyVerdict(rec, t);
-    if (verdict !== 'ask') return verdict;
-    const d = await this.requestApproval(rec, t.tool, t.detail);
+    const d = await this.decideTool(rec, t);
     return { allow: d.allow, reason: d.allow ? undefined : (d.message ?? 'The human denied this.') };
   }
 
