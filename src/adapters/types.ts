@@ -51,6 +51,8 @@ export interface SessionSpec {
   mcpServers: McpServerRef[];
   /** In-process access to the same tools (used by the fake adapter and tests). */
   callTool: ToolCaller;
+  /** Environment for the commands the agent runs: the git guard (src/guard.ts). */
+  env?: Record<string, string>;
 }
 
 /** Callbacks an adapter uses to report what its harness is doing. */

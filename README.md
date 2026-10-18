@@ -14,8 +14,6 @@ turns, and permission requests land in your Inbox. Scripted agents (`--fake`) ar
 development.
 
 Milestone 1 in progress:
-- Each agent works in its own git worktree on `mh/<goal>/<agent>`, and the lead merges into the
-  goal branch `mh/<goal>/main`, which is what you take at the end.
 - **Claude Code, Codex and Antigravity CLI** all run, and each passes every `mh test` check:
   mid-turn messages (native, or through a hook for Antigravity), urgent interrupts, resume,
   usage and rate limits.
@@ -24,8 +22,14 @@ Milestone 1 in progress:
 - **Workflows** guide the lead through a kind of task (`feature`, `feature-explore`,
   `implementation`), hand on to each other, and stop for your approval where they say so.
   **Specialist roles** can bring their own MCP servers (`mcp: blender`) and workflow.
-- The team works **in your checkout**, like native subagents; worktrees are only for code
-  written in parallel, when a workflow asks for them.
+- The team works **in your checkout**, like native subagents; worktrees (on `mh/<goal>/<agent>`)
+  are only for code written in parallel, when a workflow asks for them. They get hard-linked
+  copies of your ignored `node_modules`/`vendor`, merge conflicts show up in `mh tail`, and
+  MetaHarness removes them and their merged branches when the goal ends.
+- **Agents only add history:** git hooks (for agents only) refuse deleting branches, rewinding
+  shared ones, and pushing. Agents commit; you push.
+- The **shared folder** keeps every version of every file in `shared/.history/`, and agents are
+  told when a teammate changes a file (and when someone edits a document that isn't theirs).
 
 See [TRACKER.md](TRACKER.md).
 
@@ -46,6 +50,7 @@ node src/cli.ts tail           # follow everything live
 node src/cli.ts status         # who's doing what
 node src/cli.ts send implementer-1 "Did you add tests?"
 node src/cli.ts approve <id>   # answer a permission request or a decision listed by status
+node src/cli.ts clean <goal> --force   # remove worktrees or branches kept for unsaved work
 ```
 
 Run the daemon from the repository the agents should work on: it reads roles from that

@@ -220,7 +220,7 @@ class AgySession implements Session {
     if (resume) this.nativeId = resume;
     this.proc = spawn(bin, agyArgs(spec, resume), {
       cwd: spec.cwd,
-      env: { ...process.env, MH_HOOK_URL: spec.hookUrl },
+      env: { ...process.env, ...spec.env, MH_HOOK_URL: spec.hookUrl },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let started!: () => void;

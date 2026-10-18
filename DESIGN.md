@@ -148,7 +148,9 @@ You're part of a team of AI agents from different providers working toward one g
 - You have your own git worktree and branch. Commit there when a piece works; if someone
   depends on your code, commit early and tell them. Teammates' branches are in the same
   repository, so `git diff` or `git merge` them straight away.
-- Your worktree is a fresh checkout: ignored files (dependencies, build output) aren't in it.
+- Your worktree is a fresh checkout: ignored files (build output, .env) aren't in it.
+  Dependency folders like node_modules are copied from the human's checkout.
+- Commit, but don't push or delete branches: MetaHarness cleans up when the goal ends.
 - For quick help (searching the codebase, reading many files, checking one thing), use
   `spawn(role, brief, quick: true)` with a fast role like `scout`. You get the answer back
   directly.
@@ -225,7 +227,14 @@ since you last looked, so agents notice them naturally.
   `shared/.history/`, and both writers are told about the clash.
 - **Change notices.** When a shared file changes, every other agent on the goal gets a line in
   its unread notice, e.g. "design.md updated by architect, 2 min ago". Whether to re-read it is
-  up to the agent.
+  up to the agent. Notices never wake an agent or start a turn: they ride along with the next
+  thing that reaches it anyway (a tool result, a message, a hook).
+- How it's built: the daemon scans each shared folder every few seconds, compares sizes, times
+  and hashes, and copies each new version to `.history/<path>/<version>-<writer><ext>`. The
+  writer is the agent whose recent tool call (within two minutes) named the file; a change
+  nobody's tool call named is reported without a writer. A file's owner is its first known
+  writer, so a write by anyone else is a clash: the writer is told whose it is and where the
+  previous version is kept, and the owner is told who changed it.
 
 ---
 
@@ -284,10 +293,39 @@ there are new messages or file changes, so an agent nobody is messaging sees not
   under `~/.metaharness/goals/<goal>/worktrees/`. It starts from the latest commit, or from the
   named teammate's branch, which is how a reviewer gets the code it reviews. Uncommitted work
   isn't included, so the methodology asks agents to commit before handing off.
+- A fresh worktree has no ignored files, so the checkout's ignored dependency folders
+  (`node_modules`, `vendor`) are copied into it with hard links (`cp -al`): quick, no extra
+  space, and an agent that reinstalls or deletes them only touches its own copy. A symlink was
+  tried first and dropped: `npm ci` through it emptied the human's `node_modules`. Virtual
+  environments aren't copied, since a copy still runs the checkout's Python. On another
+  filesystem nothing is copied and the agent installs.
+- **Agents only add history (the git guard, `src/guard.ts`).** Every agent's commands get
+  `core.hooksPath` pointing at MetaHarness's hooks, through `GIT_CONFIG_PARAMETERS` in its
+  environment (Codex: the thread's `shell_environment_policy.set`), so the human's own git is
+  untouched. A `reference-transaction` hook refuses deleting a branch or tag, and moving any
+  branch but the agent's own worktree branch to a commit that doesn't contain its tip (`reset
+  --hard`, `--amend`, `branch -f`, rebasing a shared branch). A `pre-push` hook refuses every
+  push: agents commit, the human pushes. The repository's own hooks still run (each hook hands
+  on to `core.hooksPath` or `.git/hooks`). Before anything runs, `git push`, deleting branches,
+  tags or refs, and `git worktree remove/prune` are refused with an explanation, and Claude
+  Code gets them as `--disallowedTools` so a role's allow list can't open them. Needs git 2.28;
+  the daemon warns otherwise.
 - Agents integrate with git themselves, like a human team would. The lead merges worktree
   branches into the checked-out branch, and resolving conflicts is ordinary agent work. When the
   lead finishes, the human's note says how many commits the branch gained, what's uncommitted,
-  and which worktree branches aren't merged.
+  which worktree branches aren't merged, and whether a merge is still stopped on conflicts.
+- **Conflicts are events.** The same poll looks for `MERGE_HEAD` (and `CHERRY_PICK_HEAD`,
+  `REVERT_HEAD`, a rebase) in the checkout and every worktree, and logs `git.conflict` with the
+  files and the branch being merged, then `git.conflict_resolved` (committed or aborted). An
+  agent that calls `done` with a merge still open in its folder is told to finish or abort it,
+  and its spawner's note says so.
+- **Cleaning up is the daemon's job.** When the lead finishes (or, if teammates still work,
+  when the last of them does), the daemon removes the goal's worktrees and deletes the branches
+  merged into the goal's branch. A worktree with uncommitted changes, a branch with unmerged
+  commits, and anything git can't answer about stay; the lead's note lists them, and only the
+  human removes them: `mh clean <goal> --force`. `mh clean` alone retries for finished goals.
+  The shared folder and the event log stay. Agents whose worktree went are ended; a message to
+  one goes to its spawner.
 - Codex sandboxes writes to the working directory, so in a worktree its writable roots also get
   the shared `.git` and the worktree's own git directory; without both, commits fail (checked
   with Codex 0.162). Claude Code's commands aren't sandboxed by default.
@@ -407,14 +445,14 @@ type Event = {
 
 | Group | Events | Feeds |
 |---|---|---|
-| Goal | `goal.started` · `goal.paused` · `goal.resumed` · `goal.recovered` {resumed, later} · `goal.ended` | Header, goal list |
+| Goal | `goal.started` · `goal.paused` · `goal.resumed` · `goal.recovered` {resumed, later} · `goal.ended` · `goal.cleaned` {removed, deleted, kept} | Header, goal list |
 | Agent lifecycle | `agent.spawned` {role, harness, model, parent, brief, quick, worktree, branch, native_session} · `agent.state` · `agent.status` {text} · `agent.done` {note} · `agent.ended` · `agent.crashed` · `agent.resumed` · `agent.respawned` | Team tree, cards |
 | Activity | `agent.text` (streamed) · `agent.tool_call` {tool, summary} · `agent.tool_result` {summary, ok} · `agent.file_edit` {path, diff} | Agent detail stream |
 | Messages | `message.sent` {from, to, text, urgent} · `message.delivered` {via: hook \| tool \| turn \| interrupt} · `message.read` | Graph, sequence view |
-| Shared folder | `shared.write` {path, version} · `shared.read` {path} (best effort) · `shared.clash` | Graph file nodes, folder browser |
-| You | `inbox.item` {kind: approval \| decision \| question \| stuck \| crash} · `inbox.resolved` · `approval.auto` | Inbox, notifications |
+| Shared folder | `shared.write` {path, version, by, history} · `shared.delete` {path, by} · `shared.clash` {path, owner, by, previous} · `shared.read` {path} (not yet) | Graph file nodes, folder browser |
+| You | `inbox.item` {kind: approval \| decision \| question \| stuck \| crash} · `inbox.resolved` · `approval.auto` · `approval.refused` {tool, detail, why} | Inbox, notifications |
 | Usage | `usage` {tokens_in, tokens_out, cost, context_pct?} | Costs, context bars |
-| Git | `git.commit` {branch, sha, summary} · `git.merge` {from, into, sha, fastForward?} (conflicts aren't detected yet) | Git view |
+| Git | `git.commit` {branch, sha, summary} · `git.merge` {from, into, sha, fastForward?} · `git.conflict` {op, branch, from, files, dir} · `git.conflict_resolved` {op, branch, how, dir} | Git view |
 | Health | `nudge.sent` · `alert` {kind: idle \| ping_pong \| context_full \| cost} | Health flags |
 
 Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended` · `crashed`.

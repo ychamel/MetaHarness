@@ -21,7 +21,7 @@ function team(files: Record<string, string>, scripts: Record<string, FakeScript>
     writeFileSync(join(cfg, path), text);
   }
   const fake = new FakeAdapter(scripts);
-  const d = new Daemon({ home: mkdtempSync(join(tmpdir(), 'mh-home-')), repo: makeRepo(), dbPath: ':memory:', configDirs: [cfg], adapters: { fake }, gitPollMs: 0 });
+  const d = new Daemon({ home: mkdtempSync(join(tmpdir(), 'mh-home-')), repo: makeRepo(), dbPath: ':memory:', configDirs: [cfg], adapters: { fake }, pollMs: 0 });
   return { d, fake };
 }
 

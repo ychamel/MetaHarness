@@ -41,7 +41,7 @@ test('agents reach their tools over MCP, each under its own identity', async () 
     configDirs: [configDir],
     adapters: { fake: capturingAdapter(urls, released) },
     harnessOverride: 'fake',
-    gitPollMs: 0,
+    pollMs: 0,
   });
   const server = await startServer(d, 0, 'secret');
   const clients: Client[] = [];

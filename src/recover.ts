@@ -23,7 +23,7 @@ export interface AgentReplay {
   brief: string;
   quick: boolean;
   cwd: string;
-  worktree?: { path: string; branch: string; base: string };
+  worktree?: { path: string; branch: string; base: string; deps?: string[] };
   startedFrom?: string;
   state: AgentState;
   status: string;
@@ -67,6 +67,10 @@ export interface GoalReplay {
   /** The last tip reported for each branch, and the branch each reported commit was seen on. */
   refs: Map<string, string>;
   seenOn: Map<string, string>;
+  /** Conflicts reported and not yet resolved, by folder. */
+  conflicts: Map<string, { op: 'merge' | 'cherry-pick' | 'revert' | 'rebase'; sha?: string; branch: string; agent?: string }>;
+  /** Each shared file's latest version and owner (its first known writer). */
+  shared: Map<string, { version: number; owner?: string }>;
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -80,6 +84,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
     id: start.goal, request: str(d.request), dir: str(d.dir), sharedDir: str(d.sharedDir), createdAt: start.ts,
     workflow: str(d.workflow) || undefined, branch: str(d.branch) || undefined, base: str(d.base) || undefined,
     ended: false, lead: '', agents: new Map(), counters: new Map(), inbox: [], refs: new Map(), seenOn: new Map(),
+    conflicts: new Map(), shared: new Map(),
   };
   if (g.branch && g.base) g.refs.set(g.branch, g.base);
   const pending = new Map<string, PendingMessage & { to: string }>();
@@ -95,7 +100,8 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
       case 'agent.spawned': {
         const role = str(x.role);
         g.counters.set(role, (g.counters.get(role) ?? 0) + 1);
-        const wt = str(x.worktree) ? { path: str(x.worktree), branch: str(x.branch), base: str(x.base) } : undefined;
+        const deps = Array.isArray(x.deps) ? x.deps.map(String) : undefined;
+        const wt = str(x.worktree) ? { path: str(x.worktree), branch: str(x.branch), base: str(x.base), ...(deps ? { deps } : {}) } : undefined;
         g.agents.set(e.agent!, {
           name: e.agent!, role, harness: str(x.harness), model: str(x.model), parent: e.parent ?? 'human',
           brief: str(x.brief), quick: x.quick === true, cwd: str(x.cwd) || g.dir, worktree: wt,
@@ -162,6 +168,18 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
       case 'git.merge':
         g.refs.set(str(x.into), str(x.sha));
         break;
+      case 'git.conflict':
+        g.conflicts.set(str(x.dir), { op: str(x.op) as 'merge', sha: str(x.sha) || undefined, branch: str(x.branch), agent: e.agent });
+        break;
+      case 'git.conflict_resolved':
+        g.conflicts.delete(str(x.dir));
+        break;
+      case 'shared.write': {
+        const prev = g.shared.get(str(x.path));
+        g.shared.set(str(x.path), { version: Number(x.version) || 1, owner: prev?.owner ?? (str(x.by) || undefined) });
+        break;
+      }
+      // A deleted file keeps its version and owner, in case it's written again.
     }
   }
   for (const m of pending.values()) g.agents.get(m.to)?.undelivered.push(m);

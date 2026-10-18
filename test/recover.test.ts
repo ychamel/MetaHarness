@@ -22,7 +22,7 @@ test('after a restart, agents cut off mid-turn resume their sessions; finished o
   const home = mkdtempSync(join(tmpdir(), 'mh-test-'));
   const repo = makeRepo();
   // Two daemons in turn on the same home and repository, as when you restart `mh daemon`.
-  const daemon = (adapter: FakeAdapter) => new Daemon({ home, repo, configDirs: [configDir], adapters: { fake: adapter }, harnessOverride: 'fake', gitPollMs: 0 });
+  const daemon = (adapter: FakeAdapter) => new Daemon({ home, repo, configDirs: [configDir], adapters: { fake: adapter }, harnessOverride: 'fake', pollMs: 0 });
 
   const before: Record<string, FakeScript> = {
     architect: async ctx => {
@@ -100,7 +100,7 @@ test('after a restart, agents cut off mid-turn resume their sessions; finished o
 test('a goal whose lead has finished is not picked up again', async () => {
   const home = mkdtempSync(join(tmpdir(), 'mh-test-'));
   const repo = makeRepo();
-  const daemon = () => new Daemon({ home, repo, configDirs: [configDir], adapters: { fake: new FakeAdapter({}) }, harnessOverride: 'fake', gitPollMs: 0 });
+  const daemon = () => new Daemon({ home, repo, configDirs: [configDir], adapters: { fake: new FakeAdapter({}) }, harnessOverride: 'fake', pollMs: 0 });
   const d1 = daemon();
   const goal = d1.startGoal({ request: 'Say hello' });
   await withTimeout(d1.goals.get(goal)!.leadDone, 3000, 'lead done');

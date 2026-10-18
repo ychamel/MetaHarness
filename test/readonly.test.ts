@@ -76,7 +76,12 @@ test('the daemon approves read-only commands itself, unless the role says to alw
   assert.equal(d.humanInbox.length, 0);
   assert.ok(d.store.since(goal).some(e => e.type === 'approval.auto'));
 
-  const pending = d.requestApproval(lead, 'Bash', 'git push --force');
+  const pushed = await d.requestApproval(lead, 'Bash', 'npm test && git push --force');
+  assert.equal(pushed.allow, false, 'pushing is refused outright');
+  assert.match(pushed.message!, /Agents commit but don't push/);
+  assert.equal(d.humanInbox.length, 0);
+
+  const pending = d.requestApproval(lead, 'Bash', 'npm install left-pad');
   assert.equal(d.humanInbox.filter(i => i.kind === 'approval').length, 1, 'a write still asks');
   d.resolveInbox(d.humanInbox.find(i => i.kind === 'approval')!.id, 'deny');
   assert.equal((await pending).allow, false);

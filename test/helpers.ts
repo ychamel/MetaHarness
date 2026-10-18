@@ -27,7 +27,7 @@ export function makeDaemon(scripts: Record<string, FakeScript> = demoScripts, o:
     adapters: { fake: new FakeAdapter(scripts) },
     harnessOverride: 'fake',
     quickTimeoutMs: o.quickTimeoutMs,
-    gitPollMs: 0,
+    pollMs: 0,
   });
 }
 
@@ -51,7 +51,7 @@ export function makeTeam(o: { roles: Record<string, string>; adapters: Record<st
     dbPath: ':memory:',
     configDirs: [configDir],
     adapters: o.adapters,
-    gitPollMs: 0,
+    pollMs: 0,
     limits: o.limits,
   });
 }

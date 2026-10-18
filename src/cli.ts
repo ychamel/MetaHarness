@@ -23,6 +23,9 @@ const HELP = `mh: run a team of AI agents from different providers on one goal
   mh send <to> <message> [--urgent] [--goal <id>]
                                      Message an agent, a role, lead or all
   mh stop <agent> [--goal <id>]      Stop an agent
+  mh clean [<goal>] [--force]        Worktrees and merged branches go when a goal's lead finishes; this
+                                     retries for finished goals. What was kept (uncommitted or
+                                     unmerged work) goes only with a goal and --force
   mh approve <item> [<note>]         Approve a permission request or a decision from your Inbox
   mh deny <item> [<reason>]          Deny it; the agent gets the reason (for a decision: what to change)
   mh dismiss <item>                  Clear an Inbox item
@@ -47,7 +50,7 @@ function parse(argv: string[]) {
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--') && !['fake', 'urgent', 'no-resume'].includes(key)) {
+      if (next !== undefined && !next.startsWith('--') && !['fake', 'urgent', 'no-resume', 'force'].includes(key)) {
         opt[key] = next;
         i++;
       } else opt[key] = true;
@@ -178,6 +181,9 @@ async function main(): Promise<void> {
       await startServer(d, PORT, token(true)).catch((e: Error) => die(`Couldn't listen on ${BASE}: ${e.message}`));
       console.log(`MetaHarness daemon on ${BASE}${fake ? ', running scripted agents' : ''}. Data in ${HOME}.`);
       console.log(`Roles: ${[...d.config.roles.keys()].join(', ') || 'none (add .metaharness/roles/<name>.md)'}`);
+      const { guardProblem } = await import('./guard.ts');
+      const guard = guardProblem();
+      if (guard) console.log(`Warning: ${guard}. Git 2.28 or newer keeps agents from deleting branches.`);
       if (!fake) console.log(`Harnesses: ${Object.keys(adapters).filter(h => h !== 'fake').join(', ') || 'none found'}. mh doctor shows what each role can use.`);
       for (const r of opt['no-resume'] === true ? [] : d.recover()) {
         const what = `goal ${r.goal} (${r.request.replace(/\s+/g, ' ').slice(0, 60)})`;
@@ -233,6 +239,19 @@ async function main(): Promise<void> {
       if (!pos[0]) die('Usage: mh stop <agent>');
       const r = await command({ cmd: 'agent.stop', agent: pos[0], goal: s('goal') });
       console.log(r.result);
+      return;
+    }
+    case 'clean': {
+      const r = await command({ cmd: 'goal.clean', goal: pos[0], force: opt.force === true });
+      for (const line of r.refused) console.log(line);
+      if (!r.results.length && !r.refused.length) console.log(pos[0] ? `Nothing to clean for goal ${pos[0]}.` : 'Nothing to clean.');
+      const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+      for (const g of r.results) {
+        const did = [g.removed.length && `removed ${n(g.removed.length, 'worktree', 'worktrees')}`, g.deleted.length && `deleted ${n(g.deleted.length, 'branch', 'branches')}`].filter(Boolean);
+        console.log(`Goal ${g.goal} (${g.request.replace(/\s+/g, ' ').slice(0, 50)}): ${did.join(', ') || 'nothing removed'}.`);
+        for (const k of g.kept) console.log(`  kept ${k}`);
+      }
+      if (r.results.some((g: { kept: string[] }) => g.kept.length) && opt.force !== true) console.log('Add --force to remove what was kept too.');
       return;
     }
     case 'approve':

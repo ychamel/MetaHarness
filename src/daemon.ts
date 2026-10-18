@@ -11,6 +11,9 @@ import type { ApprovalDecision, HarnessAdapter, HookRequest, RateLimitInfo, Sess
 import { MCP_SERVER_NAME } from './mcp.ts';
 import { readOnlyCommand } from './readonly.ts';
 import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } from './recover.ts';
+import { SharedFolder } from './shared.ts';
+import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
+import { guardEnv, installGuard, refusedGitCommand } from './guard.ts';
 
 export interface InboxEntry {
   id: string;
@@ -20,6 +23,16 @@ export interface InboxEntry {
   text: string;
   urgent: boolean;
   ts: string;
+}
+
+/** A change in the shared folder an agent hasn't heard about yet. */
+interface FileNote {
+  path: string;
+  by?: string;
+  at: number;
+  deleted: boolean;
+  /** Set when the change was a clash: someone other than the owner wrote the file. */
+  clash?: { owner: string; by: string; previous?: string };
 }
 
 interface Waiter {
@@ -71,6 +84,8 @@ export interface AgentRec {
   doneNote?: string;
   /** Permission requests waiting in the human's Inbox. */
   pendingApprovals: number;
+  /** Shared-folder changes by others since the agent last heard, by path. They don't wake it. */
+  fileNotes: Map<string, FileNote>;
 }
 
 export interface GoalRec {
@@ -89,11 +104,19 @@ export interface GoalRec {
   seenOn: Map<string, string>;
   /** The last agent in the human's checkout to run a git command that commits, so its commits are named after it. */
   gitActor?: { agent: string; at: number };
+  /** Merges (and the like) stopped on conflicts, by the folder they're in. */
+  conflicts: Map<string, OpenConflict>;
+  /** The shared folder's files and their history. */
+  shared: SharedFolder;
+  /** Recent tool calls that named a shared file, to tell who wrote it. */
+  sharedTouches: { agent: string; at: number; summary: string }[];
   /** The workflow the lead was given, if any. */
   workflow?: string;
   status: 'running' | 'ended';
   agents: Map<string, AgentRec>;
   counters: Map<string, number>;
+  /** The lead finished while teammates still worked: clean up once they're done too. */
+  cleanWhenIdle?: boolean;
   /** Resolves when the lead calls done. */
   leadDone: Promise<string>;
   resolveLeadDone: (note: string) => void;
@@ -122,9 +145,11 @@ export interface DaemonOptions {
   harnessOverride?: string;
   /** How long a quick spawn blocks its caller before handing back control. */
   quickTimeoutMs?: number;
-  /** How often to look for new commits on the goal branches. 0 turns polling off (tests call refreshGit). */
-  gitPollMs?: number;
+  /** How often to look at the goal branches and the shared folder. 0 turns polling off (tests call refreshGit and refreshShared). */
+  pollMs?: number;
   limits?: Partial<LimitPolicy>;
+  /** Remove worktrees and merged branches when a goal's lead finishes (default true). */
+  autoClean?: boolean;
 }
 
 /** What to do as an account nears or hits its rate limit (design §16). */
@@ -159,7 +184,17 @@ type SpawnResult =
   | { ok: true; name: string; rec: AgentRec; guessedRole?: string; note?: string }
   | { ok: false; error: string };
 
+interface OpenConflict {
+  op: git.Conflict['op'];
+  sha?: string;
+  branch: string;
+  agent?: string;
+}
+
 const FINISHED: AgentState[] = ['ended', 'crashed'];
+
+/** How long after a tool call that names a shared file a change to it is put down to that agent. */
+const SHARED_TOUCH_MS = 120_000;
 
 /** A shell command that runs git to make commits: commit, merge and the like. */
 const GIT_COMMITS = /\bgit\b[^|;&\n]*?\s(?:commit|merge|cherry-pick|revert|pull|rebase|am)\b/;
@@ -181,10 +216,13 @@ export class Daemon {
   private tokens = new Map<string, { goal: string; agent: string }>();
   private approvals = new Map<string, (d: ApprovalDecision) => void>();
   private harnessOverride?: string;
-  private gitPollMs: number;
-  private gitTimer?: NodeJS.Timeout;
+  private pollMs: number;
+  private pollTimer?: NodeJS.Timeout;
   readonly accounts = new Map<string, AccountRec>();
   readonly limits: LimitPolicy;
+  /** Git hooks that keep agents from deleting branches, rewinding shared ones, or pushing. */
+  readonly guardDir: string;
+  private autoClean: boolean;
 
   constructor(o: DaemonOptions) {
     this.home = o.home;
@@ -195,9 +233,11 @@ export class Daemon {
     this.adapters = o.adapters ?? {};
     this.harnessOverride = o.harnessOverride;
     this.quickTimeoutMs = o.quickTimeoutMs ?? 120_000;
-    this.gitPollMs = o.gitPollMs ?? 3000;
+    this.pollMs = o.pollMs ?? 3000;
     this.limits = { warnPct: 90, waitMaxMs: 15 * 60_000, retryMs: 15 * 60_000, marginMs: 5000, ...o.limits };
     this.hub = new Hub(this);
+    this.guardDir = installGuard(o.home);
+    this.autoClean = o.autoClean ?? true;
   }
 
   emit(e: NewEvent): MhEvent {
@@ -232,7 +272,7 @@ export class Daemon {
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const g: GoalRec = {
       id, request: o.request, dir: o.dir ?? this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
-      refs: new Map(), seenOn: new Map(), workflow,
+      refs: new Map(), seenOn: new Map(), workflow, conflicts: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
       status: 'running', agents: new Map(), counters: new Map(), leadDone, resolveLeadDone,
     };
     const gs = git.setupGoal(g.dir, id);
@@ -257,7 +297,7 @@ export class Daemon {
       throw new Error(r.error);
     }
     g.lead = r.name;
-    if (g.git && this.gitPollMs > 0) this.gitTimer ??= setInterval(() => this.refreshGit(), this.gitPollMs).unref();
+    this.startPolling();
     return id;
   }
 
@@ -304,6 +344,7 @@ export class Daemon {
     let cwd = g.dir;
     let worktree: git.Worktree | undefined;
     let startedFrom = '';
+    let deps: string[] = [];
     let note = picked.note;
     const wantWorktree = !o.quick && !o.isLead && (o.worktree ?? (role.worktree || !!o.from));
     if (o.quick && parentRec) cwd = parentRec.cwd;
@@ -321,6 +362,7 @@ export class Daemon {
       cwd = worktree.path;
       startedFrom = start.label;
       g.refs.set(worktree.branch, worktree.base);
+      deps = worktree.deps = git.copyDependencies(g.git, worktree.path);
     }
 
     const token = randomBytes(16).toString('hex');
@@ -328,7 +370,7 @@ export class Daemon {
     const rec: AgentRec = {
       goal: goalId, name, role, harness, model, parent: o.parent, brief: o.brief,
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
-      adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0,
+      adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
     };
     rec.systemPrompt = this.buildPrompt(g, rec, o.workflow, startedFrom);
     g.agents.set(name, rec);
@@ -337,7 +379,7 @@ export class Daemon {
       data: {
         role: role.name, harness, model, brief: o.brief, quick: !!o.quick, cwd,
         worktree: worktree?.path ?? null, branch: worktree?.branch ?? null, base: worktree?.base ?? null,
-        ...(startedFrom ? { startedFrom } : {}), ...(note ? { note } : {}),
+        ...(startedFrom ? { startedFrom } : {}), ...(deps.length ? { deps } : {}), ...(note ? { note } : {}),
       },
     });
 
@@ -368,6 +410,7 @@ export class Daemon {
           hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${rec.token}` : '', agentDir: this.agentDir(rec),
           mcpServers: rec.role.mcp.map(name => ({ name, def: this.config.mcp.get(name) })),
           gitDirs: rec.worktree && g.git ? [g.git.commonDir, rec.worktree.gitDir] : [],
+          env: g.git ? guardEnv(this.guardDir, rec.worktree?.branch, g.git.repo) : undefined,
           callTool: (tool, args) => this.hub.call(rec.goal, rec.name, tool, args),
         },
         this.sessionEvents(rec, gen),
@@ -476,6 +519,7 @@ export class Daemon {
         `- Git: this is your own worktree on branch ${wt.branch}, started from ${startedFrom} at ${sha} (${git.subject(g.git, sha)}). Teammates don't see your changes until you commit.`,
         `- Commit your work there. ${lead === 'you' ? 'You merge' : `${lead} merges`} your branch into ${g.git.branch} in the human's checkout, ${g.dir}.`,
         `- Other teammates' branches are mh/${g.id}/<their name>, in the same repository, so you can diff or merge them straight away (no fetch).`,
+        ...depsLines(wt.deps ?? []),
       ];
     }
     const lines = [
@@ -536,6 +580,7 @@ export class Daemon {
       toolCall: (tool, summary) => {
         if (!live()) return;
         this.noteGitActor(rec, summary);
+        this.noteSharedTouch(rec, summary);
         this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } });
       },
       toolResult: (summary, ok) => live() && void this.emit({ ...base, type: 'agent.tool_result', data: { summary, ok } }),
@@ -567,6 +612,11 @@ export class Daemon {
 
   /** Puts a permission request in the human's Inbox and resolves when they decide. */
   requestApproval(rec: AgentRec, tool: string, detail: string): Promise<ApprovalDecision> {
+    const refused = tool === 'Bash' ? refusedGitCommand(detail) : undefined;
+    if (refused) {
+      this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.refused', data: { tool, detail: detail.slice(0, 2000), why: refused } });
+      return Promise.resolve({ allow: false, message: refused });
+    }
     // Commands that only read don't need the human (design §10), whichever harness asks.
     if (tool === 'Bash' && rec.role.autoApprove !== 'none' && readOnlyCommand(detail).readOnly) {
       this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.auto', data: { tool, detail: detail.slice(0, 2000), why: 'read-only' } });
@@ -624,16 +674,21 @@ export class Daemon {
     if (rec.state === state) return;
     rec.state = state;
     this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.state', data: { state } });
+    if (['done', 'idle', 'ended', 'crashed'].includes(state)) this.cleanUpIfIdle(this.goals.get(rec.goal)!);
   }
 
   /* ---------------- tools (called through the hub) ---------------- */
 
-  done(rec: AgentRec, note: string): void {
+  /** Records an agent's done. Returns a warning for the agent, or ''. */
+  done(rec: AgentRec, note: string): string {
+    const conflict = this.openConflict(rec);
+    if (conflict) note += `\n\n(MetaHarness: when ${rec.name} called done, ${conflict}.)`;
     rec.doneNote = note;
     this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.done', data: { note } });
     // The state turns to "done" when the turn ends; until then the agent is still wrapping up.
     if (!rec.session?.busy()) this.setState(rec, 'done');
     this.finish(rec, note, 'done');
+    return conflict ? `Note: ${conflict}. Finish it (resolve the files, then commit) or abort it, then call done again with an updated note.` : '';
   }
 
   /** Hands an agent's result to whoever is waiting for it: a quick-spawn caller, its spawner, or the human. */
@@ -644,7 +699,7 @@ export class Daemon {
     const g = this.goals.get(rec.goal)!;
     if (rec.parent === 'human') {
       const kind = how === 'done' || how === 'idle' ? 'done' : how === 'crashed' ? 'crash' : 'stopped';
-      if (rec.isLead) note += this.branchSummary(g);
+      if (rec.isLead) note += this.branchSummary(g) + (how === 'done' ? this.cleanUpAfterGoal(g) : '');
       this.toHuman(g, rec.name, kind, note);
       if (rec.isLead && how === 'done') g.resolveLeadDone(note);
       return;
@@ -669,6 +724,8 @@ export class Daemon {
       .map(b => ({ b, n: git.countCommits(gg, gg.branch, b) }))
       .filter(x => x.n > 0);
     if (unmerged.length) lines.push(`Worktree branches not merged into it: ${unmerged.map(x => `${x.b} (${x.n} commit${x.n > 1 ? 's' : ''})`).join(', ')}.`);
+    const c = git.operationInProgress(g.dir, gg.gitDir);
+    if (c) lines.push(`A ${c.op} is still in progress in ${g.dir}${c.files.length ? `, with conflicts in ${c.files.slice(0, 10).join(', ')}` : ''}.`);
     return '\n\n' + lines.join(' ');
   }
 
@@ -725,6 +782,133 @@ export class Daemon {
       }
       if (fastForwarded) merged(fastForwarded, fastForwarded, true);
     }
+    this.refreshConflicts(g, gg);
+  }
+
+  /** Looks at git and the shared folders every few seconds, once there's a goal. */
+  private startPolling(): void {
+    if (this.pollMs <= 0 || this.pollTimer) return;
+    this.pollTimer = setInterval(() => {
+      this.refreshGit();
+      this.refreshShared();
+    }, this.pollMs).unref();
+  }
+
+  /**
+   * Turns merges (cherry-picks, reverts, rebases) that stop on conflicts into git.conflict
+   * events, in the checkout and every worktree, and reports how each one ended.
+   */
+  private refreshConflicts(g: GoalRec, gg: git.GoalGit): void {
+    const places = [{ cwd: g.dir, gitDir: gg.gitDir, branch: gg.branch, agent: undefined as string | undefined }];
+    for (const a of g.agents.values()) {
+      if (a.worktree && existsSync(a.worktree.path)) places.push({ cwd: a.worktree.path, gitDir: a.worktree.gitDir, branch: a.worktree.branch, agent: a.name });
+    }
+    for (const p of places) {
+      const now = git.operationInProgress(p.cwd, p.gitDir);
+      const open = g.conflicts.get(p.cwd);
+      if (now?.files.length && !open) {
+        const agent = p.agent ?? this.checkoutActor(g);
+        g.conflicts.set(p.cwd, { op: now.op, sha: now.sha, branch: p.branch, agent });
+        const from = now.sha ? (g.seenOn.get(now.sha) ?? git.branchOf(gg, g.id, now.sha, p.branch) ?? now.sha.slice(0, 7)) : null;
+        this.emit({ goal: g.id, agent, type: 'git.conflict', data: { op: now.op, branch: p.branch, from, sha: now.sha ?? null, files: now.files, dir: p.cwd } });
+      } else if (open && !now) {
+        g.conflicts.delete(p.cwd);
+        const how = open.op === 'merge' && open.sha ? (git.containsCommit(p.cwd, open.sha) ? 'committed' : 'aborted') : 'finished';
+        this.emit({ goal: g.id, agent: open.agent, type: 'git.conflict_resolved', data: { op: open.op, branch: open.branch, how, dir: p.cwd } });
+      }
+    }
+  }
+
+  /** For an agent calling done: a merge it left stopped on conflicts, if any. */
+  private openConflict(rec: AgentRec): string {
+    const g = this.goals.get(rec.goal)!;
+    if (!g.git || rec.quick) return '';
+    // In the shared checkout, only the agent that ran the merge is asked about it.
+    if (!rec.worktree && this.checkoutActor(g) !== rec.name) return '';
+    const c = git.operationInProgress(rec.cwd, rec.worktree?.gitDir ?? g.git.gitDir);
+    if (!c) return '';
+    const files = c.files.length ? ` with conflicts in ${c.files.slice(0, 10).join(', ')}${c.files.length > 10 ? '…' : ''}` : ', not committed yet';
+    return `a ${c.op} is still in progress in ${rec.cwd}${files}`;
+  }
+
+  /**
+   * Finds what changed in each goal's shared folder, keeps the new versions in .history/, logs
+   * who wrote them, and leaves a note for everyone else on the team.
+   */
+  refreshShared(goalId?: string): void {
+    for (const g of this.goals.values()) {
+      if (goalId && g.id !== goalId) continue;
+      try {
+        for (const c of g.shared.scan()) this.sharedChanged(g, c);
+      } catch {
+        // Try again next time.
+      }
+    }
+  }
+
+  private sharedChanged(g: GoalRec, c: import('./shared.ts').SharedChange): void {
+    const by = this.sharedWriter(g, c.path);
+    const at = Date.now();
+    let clash: FileNote['clash'];
+    if (c.deleted) {
+      this.emit({ goal: g.id, agent: by, type: 'shared.delete', data: { path: c.path, by: by ?? null } });
+    } else {
+      const history = g.shared.record(c.path, by);
+      const f = g.shared.files.get(c.path)!;
+      this.emit({ goal: g.id, agent: by, type: 'shared.write', data: { path: c.path, version: f.version, by: by ?? null, history: history ?? null } });
+      const owner = c.before?.owner;
+      if (by && owner && owner !== by) {
+        clash = { owner, by, previous: c.before?.history && join(g.sharedDir, c.before.history) };
+        this.emit({ goal: g.id, agent: by, type: 'shared.clash', data: { path: c.path, owner, by, previous: c.before?.history ?? null } });
+      }
+    }
+    for (const a of g.agents.values()) {
+      if (a.quick || FINISHED.includes(a.state)) continue;
+      if (a.name === by && !clash) continue;
+      a.fileNotes.set(c.path, { path: c.path, by, at, deleted: c.deleted, clash: clash && (a.name === clash.owner || a.name === clash.by) ? clash : undefined });
+    }
+  }
+
+  /** Who wrote a shared file just now: the agent whose latest recent tool call named it. */
+  private sharedWriter(g: GoalRec, path: string): string | undefined {
+    const since = Date.now() - SHARED_TOUCH_MS;
+    g.sharedTouches = g.sharedTouches.filter(t => t.at >= since);
+    const full = join(g.sharedDir, path);
+    return g.sharedTouches.findLast(t => t.summary.includes(full) || t.summary.includes(`shared/${path}`))?.agent;
+  }
+
+  private noteSharedTouch(rec: AgentRec, summary: string): void {
+    const g = this.goals.get(rec.goal);
+    if (!g || !(summary.includes(g.sharedDir) || /\bshared\//.test(summary))) return;
+    g.sharedTouches.push({ agent: rec.name, at: Date.now(), summary });
+    if (g.sharedTouches.length > 100) g.sharedTouches.splice(0, g.sharedTouches.length - 100);
+  }
+
+  /**
+   * What changed in the shared folder since the agent last heard, as a paragraph to add to
+   * whatever reaches it next. Empties its notes.
+   */
+  takeFileNotes(rec: AgentRec): string {
+    if (!rec.fileNotes.size) return '';
+    const notes = [...rec.fileNotes.values()];
+    rec.fileNotes.clear();
+    const g = this.goals.get(rec.goal)!;
+    const out: string[] = [];
+    for (const n of notes.filter(n => n.clash)) {
+      const c = n.clash!;
+      const kept = c.previous ? ` The version before is kept at ${c.previous}.` : '';
+      out.push(
+        rec.name === c.by
+          ? `[MetaHarness] ${n.path} in the shared folder is ${c.owner}'s (it wrote it first), and your write replaced their version.${kept} To change a teammate's document, message its owner.`
+          : `[MetaHarness] ${c.by} changed ${n.path} in the shared folder, which you wrote first.${kept}`,
+      );
+    }
+    const plain = notes.filter(n => !n.clash);
+    if (plain.length) {
+      const items = plain.map(n => `${n.path} (${n.deleted ? 'deleted' : 'updated'}${n.by ? ` by ${n.by}` : ''}, ${ago(n.at)})`);
+      out.push(`[MetaHarness] Changed in the shared folder (${g.sharedDir}) since you last heard: ${items.join('; ')}. Re-read what matters to you.`);
+    }
+    return out.join('\n');
   }
 
   /** Remembers who in the human's checkout last ran a git command that makes commits. */
@@ -841,7 +1025,7 @@ export class Daemon {
       const entries = rec.inbox.splice(0);
       this.markDelivered(rec, entries, 'resume');
       rec.costBefore = rec.cost;
-      return void this.startSession(rec, formatForAgent(entries));
+      return void this.startSession(rec, this.forAgent(rec, entries));
     }
     if (s.busy()) {
       // An interrupted turn is ending; its messages go in the next turn.
@@ -850,7 +1034,7 @@ export class Daemon {
       if (!rec.adapter.manifest.injectMidTurn) return;
       const entries = rec.inbox.splice(0);
       this.markDelivered(rec, entries, 'inject');
-      void s.send(formatForAgent(entries), 'inject');
+      void s.send(this.forAgent(rec, entries), 'inject');
       return;
     }
     // A new turn on an account at its limit would only be refused.
@@ -859,7 +1043,7 @@ export class Daemon {
     rec.interrupting = false;
     const entries = rec.inbox.splice(0);
     this.markDelivered(rec, entries, via);
-    void s.send(formatForAgent(entries), 'new_turn');
+    void s.send(this.forAgent(rec, entries), 'new_turn');
   }
 
   /**
@@ -894,7 +1078,7 @@ export class Daemon {
     rec.session = undefined;
     rec.costBefore = rec.cost;
     void s.stop().catch(() => {});
-    this.startSession(rec, formatForAgent(entries), s.nativeId);
+    this.startSession(rec, this.forAgent(rec, entries), s.nativeId);
     return true;
   }
 
@@ -916,10 +1100,11 @@ export class Daemon {
     const rec = who && this.agent(who.goal, who.agent);
     if (!rec) return req.event === 'before_tool' ? { allow: false, reason: 'MetaHarness does not know this agent.' } : {};
     if (req.event === 'before_model') {
-      if (!rec.inbox.length || rec.interrupting || rec.state === 'paused') return {};
+      // Shared-folder notes ride along too: the hook costs nothing, unlike a new turn.
+      if ((!rec.inbox.length && !rec.fileNotes.size) || rec.interrupting || rec.state === 'paused') return {};
       const entries = rec.inbox.splice(0);
       this.markDelivered(rec, entries, 'hook');
-      return { messages: formatForAgent(entries) };
+      return { messages: this.forAgent(rec, entries) };
     }
     const t = rec.adapter.toolRequest?.(req.tool, req.args ?? {}) ?? { kind: 'other', tool: req.tool, detail: JSON.stringify(req.args ?? {}).slice(0, 8000) };
     const verdict = this.toolPolicy(rec, t);
@@ -946,8 +1131,11 @@ export class Daemon {
         if (rec.role.permissionMode === 'default' || (rec.quick && !inside(g.sharedDir))) return 'ask';
         return inside(rec.cwd) || inside(g.sharedDir) ? { allow: true } : 'ask';
       }
-      case 'shell':
+      case 'shell': {
+        const refused = refusedGitCommand(t.detail);
+        if (refused) return { allow: false, reason: refused };
         return roleAllows(rec.role, t.detail) ? { allow: true } : 'ask';
+      }
       default:
         return 'ask';
     }
@@ -1143,6 +1331,11 @@ export class Daemon {
     return this.firstMessage(rec, parts.join('\n\n'));
   }
 
+  /** Messages for an agent, with any shared-folder changes it hasn't heard about. */
+  private forAgent(rec: AgentRec, entries: InboxEntry[]): string {
+    return [formatForAgent(entries), this.takeFileNotes(rec)].filter(Boolean).join('\n');
+  }
+
   /** A message from MetaHarness itself. */
   private notice(rec: AgentRec, text: string): void {
     this.enqueue(rec, { id: randomUUID(), kind: 'notice', from: 'MetaHarness', text, urgent: false, ts: new Date().toISOString() });
@@ -1236,7 +1429,7 @@ export class Daemon {
       out.push({ goal: r.id, request: r.request, ...this.restoreGoal(r) });
     }
     this.restoreAccounts();
-    if (this.gitPollMs > 0 && [...this.goals.values()].some(g => g.git)) this.gitTimer ??= setInterval(() => this.refreshGit(), this.gitPollMs).unref();
+    if (this.goals.size) this.startPolling();
     return out;
   }
 
@@ -1246,9 +1439,11 @@ export class Daemon {
     const g: GoalRec = {
       id: r.id, request: r.request, dir: r.dir, lead: r.lead, createdAt: r.createdAt, sharedDir: r.sharedDir,
       refs: r.refs, seenOn: r.seenOn, workflow: r.workflow, status: 'running', agents: new Map(), counters: r.counters,
-      leadDone, resolveLeadDone,
+      conflicts: r.conflicts, shared: new SharedFolder(r.sharedDir), sharedTouches: [], leadDone, resolveLeadDone,
     };
     mkdirSync(g.sharedDir, { recursive: true });
+    // What's there now counts as seen; changes made while the daemon was down aren't reported.
+    g.shared.seed(r.shared);
     // The branch and base the goal started on, not whatever is checked out now.
     const gs = r.base ? git.setupGoal(g.dir, g.id) : { reason: 'there was no git repository when it started' };
     if ('reason' in gs) g.gitNote = gs.reason;
@@ -1297,7 +1492,7 @@ export class Daemon {
       quick: a.quick, isLead: a.name === g.lead, cwd: a.cwd, worktree, state: a.state, status: a.status,
       cost: a.cost, costBefore: a.costBefore, contextPct: a.contextPct, lastText: a.lastText,
       adapter: this.adapters[a.harness], resumeId: a.nativeSession, gen: 0, token, systemPrompt: '', doneNote: a.doneNote,
-      inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0,
+      inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
     };
     rec.systemPrompt = this.buildPrompt(g, rec, g.workflow, a.startedFrom ?? 'its start point');
     return rec;
@@ -1320,7 +1515,7 @@ export class Daemon {
     if (rec.state === 'limited') this.setState(rec, 'starting');
     const entries = rec.inbox.splice(0);
     this.markDelivered(rec, entries, 'resume');
-    this.startSession(rec, [first, formatForAgent(entries)].filter(Boolean).join('\n'));
+    this.startSession(rec, [first, this.forAgent(rec, entries)].filter(Boolean).join('\n'));
   }
 
   /** What an agent cut off by a restart is told when its session resumes. */
@@ -1351,6 +1546,95 @@ export class Daemon {
         usedPct: typeof e.data.usedPct === 'number' ? e.data.usedPct : undefined, window: typeof e.data.window === 'string' ? e.data.window : undefined,
       });
     }
+  }
+
+  /* ---------------- cleaning up (design §9) ---------------- */
+
+  /** Agents still at work: not finished, and not done (one that called done may still be ending its turn). */
+  private busyAgents(g: GoalRec): string[] {
+    return [...g.agents.values()].filter(a => a.doneNote === undefined && !['idle', 'ended', 'crashed'].includes(a.state)).map(a => a.name);
+  }
+
+  /**
+   * When the lead finishes: removes the goal's worktrees and the branches merged into its branch.
+   * Agents never delete branches or worktrees themselves (src/guard.ts). If teammates still work,
+   * it waits for them. Returns a line for the lead's note to the human.
+   */
+  private cleanUpAfterGoal(g: GoalRec): string {
+    if (!g.git || (!git.goalBranches(g.git, g.id).size && !existsSync(join(this.home, 'goals', g.id, 'worktrees')))) return '';
+    if (!this.autoClean) return ` When you're done with the worktrees: mh clean ${g.id}.`;
+    const busy = this.busyAgents(g);
+    if (busy.length) {
+      g.cleanWhenIdle = true;
+      return ` MetaHarness removes the worktrees and merged branches once ${busy.join(', ')} ${busy.length > 1 ? 'finish' : 'finishes'}.`;
+    }
+    const line = describeClean(this.runCleanup(g, false), `mh clean ${g.id} --force removes them.`);
+    return line ? ` ${line}` : '';
+  }
+
+  /** Cleans a goal loaded here. Its agents whose worktree went can't be resumed there, so they end. */
+  private runCleanup(g: GoalRec, force: boolean): CleanResult {
+    // Report the last commits and merges while their branches still exist.
+    this.refreshGit(g.id);
+    const res = cleanGoal(this.home, { id: g.id, request: g.request, dir: g.dir, branch: g.git?.branch }, force);
+    if (res.removed.length || res.deleted.length || res.kept.length) {
+      this.emit({ goal: g.id, type: 'goal.cleaned', data: { removed: res.removed, deleted: res.deleted, kept: res.kept, force } });
+    }
+    for (const a of g.agents.values()) {
+      if (!a.worktree || !res.removed.includes(a.worktree.path) || FINISHED.includes(a.state)) continue;
+      // Quietly: whoever spawned it has its result already, or saw it stop.
+      a.gen++;
+      void a.session?.stop().catch(() => {});
+      this.setState(a, 'ended');
+      this.emit({ goal: g.id, agent: a.name, type: 'agent.ended', data: { reason: 'its worktree was removed when the goal ended' } });
+    }
+    return res;
+  }
+
+  /** The last teammate finished after the lead: clean up now, and tell the human what was kept. */
+  private cleanUpIfIdle(g: GoalRec): void {
+    if (!g.cleanWhenIdle || this.busyAgents(g).length) return;
+    g.cleanWhenIdle = false;
+    const res = this.runCleanup(g, false);
+    if (res.kept.length) this.toHuman(g, g.lead, 'done', describeClean(res, `mh clean ${g.id} --force removes them.`));
+  }
+
+  /**
+   * `mh clean`: removes worktrees and merged branches of goals that are over, one or all. Never
+   * a goal whose agents still work. A goal whose lead never finished needs its id and force, and
+   * so does removing uncommitted or unmerged work.
+   */
+  cleanGoals(goalId?: string, force = false): { results: CleanResult[]; refused: string[] } {
+    if (force && !goalId) throw new Error('--force removes work that was never merged, so it needs a goal: mh clean <goal> --force.');
+    const results: CleanResult[] = [];
+    const refused: string[] = [];
+    let starts = this.store.ofType('goal.started');
+    if (goalId) {
+      const exact = starts.filter(e => e.goal === goalId);
+      starts = exact.length ? exact : starts.filter(e => e.goal.startsWith(goalId));
+      if (!starts.length) throw new Error(`There's no goal ${goalId}.`);
+      if (starts.length > 1) throw new Error(`"${goalId}" could be goal ${starts.map(e => e.goal).join(' or ')}. Give more of the id.`);
+    }
+    for (const start of starts) {
+      const r = replayGoal(this.store.since(start.goal));
+      if (!r) continue;
+      const live = this.goals.get(r.id);
+      const busy = live ? this.busyAgents(live) : [];
+      if (busy.length) {
+        if (goalId) refused.push(`Goal ${r.id} is still running (${busy.join(', ')} ${busy.length > 1 ? 'are' : 'is'} working). Stop them first: mh stop <agent>.`);
+        continue;
+      }
+      const over = live ? !!live.agents.get(live.lead)?.doneNote || goalOver(r) : goalOver(r);
+      if (!over && !(goalId && force)) {
+        if (goalId) refused.push(`Goal ${r.id}'s lead hasn't finished${live ? '' : ", and the goal isn't running here"}. mh clean ${r.id} --force cleans it anyway.`);
+        continue;
+      }
+      const res = live ? this.runCleanup(live, force) : cleanGoal(this.home, r, force);
+      if (!res.removed.length && !res.deleted.length && !res.kept.length) continue;
+      if (!live) this.emit({ goal: r.id, type: 'goal.cleaned', data: { removed: res.removed, deleted: res.deleted, kept: res.kept, force } });
+      results.push(res);
+    }
+    return { results, refused };
   }
 
   /* ---------------- client API ---------------- */
@@ -1424,6 +1708,8 @@ export class Daemon {
         if (!['approve', 'deny', 'dismiss'].includes(decision)) throw new Error('decision must be approve, deny or dismiss.');
         return { result: this.resolveInbox(item, decision as 'approve' | 'deny' | 'dismiss', s('reply')) };
       }
+      case 'goal.clean':
+        return this.cleanGoals(s('goal'), b.force === true);
       case 'harness.test': {
         const harness = s('harness');
         if (!harness) throw new Error('harness.test needs "harness".');
@@ -1432,12 +1718,12 @@ export class Daemon {
         return { ...(await probeHarness(this, harness, s('model') ?? '')) };
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, agent.message, agent.stop, inbox.resolve, harness.test.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.clean, agent.message, agent.stop, inbox.resolve, harness.test.`);
     }
   }
 
   async close(): Promise<void> {
-    clearInterval(this.gitTimer);
+    clearInterval(this.pollTimer);
     for (const g of this.goals.values()) {
       for (const a of g.agents.values()) {
         for (const w of a.waiters) clearTimeout(w.timer);
@@ -1473,6 +1759,21 @@ export function roleAllows(role: Role, command: string): boolean {
     const re = new RegExp('^' + m[1].split('*').map(p => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
     return re.test(cmd);
   });
+}
+
+/** For an agent's prompt: the dependency folders copied into its worktree from the checkout. */
+function depsLines(copied: string[]): string[] {
+  if (!copied.length) return [];
+  return [
+    `- ${copied.join(', ')} ${copied.length > 1 ? 'are copies' : 'is a copy'} of the checkout's, made with hard links, so you can run things straight away. ` +
+      `Reinstalling is fine, but don't edit files inside ${copied.length > 1 ? 'them' : 'it'} in place: the human's copy shares them.`,
+  ];
+}
+
+/** How long ago, for messages: "just now", "3 min ago". */
+function ago(ms: number): string {
+  const min = Math.round((Date.now() - ms) / 60_000);
+  return min < 1 ? 'just now' : `${min} min ago`;
 }
 
 /** A time of day for messages, e.g. 18:20. */

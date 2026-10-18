@@ -42,6 +42,22 @@ export function eventLine(e: MhEvent): string {
       return `${t}  ${who}committed on ${d.branch}: ${oneLine(d.summary)}`;
     case 'git.merge':
       return `${t}  ${who}merged ${d.from} into ${d.into}${d.fastForward ? ' (fast-forward)' : ''}`;
+    case 'git.conflict': {
+      const files = (d.files as string[]).slice(0, 5).join(', ') + (d.files.length > 5 ? ` and ${d.files.length - 5} more` : '');
+      return `${t}  ${who}⚠ ${d.op} conflict on ${d.branch}${d.from ? ` (with ${d.from})` : ''}: ${files}`;
+    }
+    case 'git.conflict_resolved':
+      return `${t}  ${who}${d.op} on ${d.branch} ${d.how === 'committed' ? 'resolved and committed' : d.how === 'aborted' ? 'aborted' : 'finished'}`;
+    case 'shared.write':
+      return `${t}  ${(e.agent ?? '?').padEnd(15)}wrote shared/${d.path} (v${d.version})`;
+    case 'shared.delete':
+      return `${t}  ${(e.agent ?? '?').padEnd(15)}deleted shared/${d.path}`;
+    case 'shared.clash':
+      return `${t}  ${who}⚠ changed shared/${d.path}, which is ${d.owner}'s; the version before is in shared/${d.previous ?? '.history'}`;
+    case 'goal.cleaned':
+      return `${t}  ${'goal'.padEnd(15)}cleaned${d.force ? ' (forced)' : ''}: ${d.removed.length} worktree(s) removed, ${d.deleted.length} branch(es) deleted${d.kept.length ? `, ${d.kept.length} kept` : ''}`;
+    case 'approval.refused':
+      return `${t}  ${who}refused: ${oneLine(d.detail, 80)} (${oneLine(d.why, 80)})`;
     case 'approval.auto':
       return `${t}  ${who}ran without asking (read-only): ${oneLine(d.detail, 110)}`;
     case 'agent.moved':

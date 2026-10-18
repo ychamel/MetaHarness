@@ -225,6 +225,8 @@ class CodexSession implements Session {
         // Committing from a worktree writes outside it, into the shared .git. Codex keeps the
         // worktree's own git directory read-only unless it's named here too.
         'sandbox_workspace_write.writable_roots': [this.spec.sharedDir, ...this.spec.gitDirs],
+        // One app-server runs every agent, so each thread's commands get the git guard here.
+        ...(this.spec.env ? { 'shell_environment_policy.set': this.spec.env } : {}),
       },
     });
     this.nativeId = r.thread.id;

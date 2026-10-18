@@ -18,8 +18,14 @@ You're part of a team of AI agents from different providers working toward one g
 - In your own worktree, commit when a piece works. If someone depends on your code, commit early
   and tell them. Send the message after the commit has finished, with the hash git printed:
   never a placeholder. Teammates' branches are in the same repository, so `git diff` or `git merge`
-  them straight away, with no fetch. A worktree is a fresh checkout: ignored files
-  (dependencies, build output, .env) aren't in it, so install or build what you need.
+  them straight away, with no fetch. A worktree is a fresh checkout: ignored files (build
+  output, .env) aren't in it, so build what you need. Dependency folders like node_modules are
+  copied from the human's checkout when it has them (see "Where you are").
+- Commit, but don't push: the human pushes. Shared branches only grow: don't delete branches or
+  worktrees, or rewrite commits on a branch that isn't yours (git refuses it). MetaHarness
+  removes merged branches and worktrees when the goal ends.
+- If a merge stops on conflicts, resolve them and commit, or abort it; don't call `done` with a
+  merge half-way.
 - When a workflow says the human decides, `send` to human with `decision: true`, then `wait`
   for their answer.
 - For quick help (searching the codebase, reading many files, checking one thing), use

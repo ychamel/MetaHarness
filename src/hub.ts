@@ -100,6 +100,8 @@ export class Hub {
     }
     if (r.guessed) out = `(Used ${r.match} for "${toolName}".)\n${out}`;
     if (r.match !== 'wait') out += this.unreadNotice(rec);
+    const files = this.d.takeFileNotes(rec);
+    if (files) out += `\n\n${files}`;
     return out;
   }
 
@@ -171,12 +173,10 @@ export class Hub {
 
       case 'done': {
         const note = str(pick(a, 'note', 'summary', 'text', 'result', 'message', 'answer')) ?? (rec.lastText || '(no note)');
-        if (rec.doneNote !== undefined) {
-          d.done(rec, note);
-          return 'Updated your note. Whoever spawned you has the new one.';
-        }
-        d.done(rec, note);
-        return rec.parent === 'human' ? 'Done. The human has your note.' : `Done. ${rec.parent} has your note.`;
+        const again = rec.doneNote !== undefined;
+        const warning = d.done(rec, note);
+        const ok = again ? 'Updated your note. Whoever spawned you has the new one.' : rec.parent === 'human' ? 'Done. The human has your note.' : `Done. ${rec.parent} has your note.`;
+        return warning ? `${ok}\n\n${warning}` : ok;
       }
     }
   }

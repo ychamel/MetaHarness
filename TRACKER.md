@@ -80,10 +80,28 @@ Findings from the run:
 - [x] From the exit-test run: the Codex implementer twice messaged a placeholder hash
       ("912HEAD", "9FINAL") before its commit landed, then corrected it. The methodology now
       says to message after the commit finishes, with the hash git printed. Not yet seen live
-- [ ] Clean up worktrees when a goal is over (`mh clean`?); they're kept for now
-- [ ] Dependencies in fresh worktrees: agents are told to install them; consider linking
-      `node_modules` and the like
-- [ ] Merge conflicts as events (watch `MERGE_HEAD` in worktrees)
+- [x] Cleanup is the daemon's job (`src/clean.ts`, `goal.cleaned`): when the lead finishes, or
+      the last teammate after it, worktrees and branches merged into the goal's branch go.
+      Uncommitted or unmerged work, or anything git can't answer about, stays and is listed in
+      the lead's note; only `mh clean <goal> --force` removes it (`--force` needs a goal, a
+      prefix must match one goal). Never a goal whose agents still work, or whose lead hasn't
+      finished, without `--force`
+- [x] **Git guard** (`src/guard.ts`): agents only add history. A `reference-transaction` hook,
+      set for agents' processes only through `GIT_CONFIG_PARAMETERS`, refuses deleting
+      branches or tags and moving any branch but the agent's own backwards; a `pre-push` hook
+      refuses pushing; the repository's own hooks still run. `git push`, branch/tag/ref
+      deletion and `git worktree remove/prune` are refused before they run, and are in Claude
+      Code's `--disallowedTools`. Tested with real git: delete, `reset --hard`, `--amend`,
+      `branch -f` and push refused; commit, merge, new branch and rewriting its own branch allowed
+- [x] Dependencies in fresh worktrees: the checkout's ignored `node_modules` and `vendor` are
+      copied with hard links (`cp -al`, 0.15 s for 3,900 files). A symlink was tried first:
+      `npm ci` through it emptied the checkout's `node_modules`. Venvs aren't copied (a copy
+      still runs the checkout's Python). Not tried on macOS (BSD `cp` has no `-l`: nothing is
+      copied there)
+- [x] Merge conflicts as events: `git.conflict` / `git.conflict_resolved` (committed or aborted)
+      from `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD` or a rebase, in the checkout and every
+      worktree. `done` mid-conflict is answered with a warning, and the spawner's note says so;
+      the lead's final note mentions a merge still open in the checkout
 - [x] Harness profiles and `mh doctor` (DESIGN.md §16): built-in profiles for Claude Code, Codex,
       Antigravity; detection of Cursor, Gemini CLI, OpenCode, Copilot, Qwen Code, Goose; user
       profiles in `.metaharness/harnesses/*.md`. The daemon builds its adapters from profiles
@@ -105,7 +123,20 @@ Findings from the run:
 - [ ] Handoff when a context window is nearly full (same mechanism as a move)
 - [ ] Antigravity isolation from the user's own global plugins and MCP servers (like
       `--strict-mcp-config`); none are set up on this machine yet
-- [ ] Change notices when shared files change, plus `shared/.history/`
+- [x] Change notices when shared files change, plus `shared/.history/` (`src/shared.ts`): a
+      scan every 3 s keeps each version as `.history/<path>/<n>-<writer><ext>`, logs
+      `shared.write` / `shared.delete` / `shared.clash`, and leaves notes for teammates that ride
+      along with their next tool result, message or hook, without waking anyone. The writer is
+      the agent whose tool call named the file in the last two minutes; the owner is the first
+      writer, and a write by anyone else is a clash both are told about. Versions, owners and
+      open conflicts survive a restart
+- [ ] Not yet run live: the git guard on each harness (does Codex's `shell_environment_policy.set`
+      reach its commands? does Antigravity's shell inherit the environment?), dependency
+      copies, conflict events, shared-folder notices and clashes, cleanup at a real goal's end
+      (all covered by scripted tests)
+- [ ] Codex runs commands in its sandbox without asking, so `git clean`, `git restore .` and
+      the like (which lose uncommitted work but no commits) reach no policy of ours; consider
+      Codex's own exec-policy rules
 - [x] Resume agents after a daemon restart (`src/recover.ts`, `Daemon.recover`): goals whose
       lead hasn't finished are rebuilt from the log; agents cut off mid-turn resume their native
       sessions with a restart note, their team's state and missed messages; done or idle agents
@@ -142,7 +173,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 36 tests, about ten seconds, no model calls
+npm install && npm test        # 44 tests, about ten seconds, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

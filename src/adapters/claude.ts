@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { APPROVAL_TOOL, MCP_SERVER_NAME } from '../mcp.ts';
 import { claudeMcpDef } from '../mcpservers.ts';
+import { CLAUDE_DISALLOWED } from '../guard.ts';
 import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions } from './types.ts';
 
 /**
@@ -56,7 +57,8 @@ export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false)
     '--setting-sources', 'project,local',
     '--add-dir', spec.sharedDir,
     // All delegation goes through MetaHarness (design §11).
-    '--disallowedTools', 'Agent',
+    // Neither can a role's allow list let agents push or delete branches (src/guard.ts).
+    '--disallowedTools', 'Agent', ...CLAUDE_DISALLOWED,
     '--permission-mode', spec.role.permissionMode ?? 'acceptEdits',
     '--permission-prompt-tool', `mcp__${MCP_SERVER_NAME}__${APPROVAL_TOOL}`,
     '--allowedTools', ...allowed,
@@ -83,7 +85,7 @@ class ClaudeSession implements Session {
     this.nativeId = resume ?? randomUUID();
     this.proc = spawn(bin, claudeArgs(spec, this.nativeId, !!resume), {
       cwd: spec.cwd,
-      env: { ...process.env, ...env, MCP_TOOL_TIMEOUT: '900000' },
+      env: { ...process.env, ...env, ...spec.env, MCP_TOOL_TIMEOUT: '900000' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.proc.stdout.setEncoding('utf8');
