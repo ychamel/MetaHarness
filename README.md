@@ -5,7 +5,8 @@ Codex, Antigravity CLI), on one goal. Agents spawn and message each other throug
 tools, hand work over through a shared folder, and everything they do is logged so you can follow
 and steer it.
 
-The design is in [DESIGN.md](DESIGN.md).
+New here? [GUIDE.md](GUIDE.md) takes you from install to a first goal. The design is in
+[DESIGN.md](DESIGN.md).
 
 ## Status
 
