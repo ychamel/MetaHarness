@@ -18,6 +18,7 @@ const blank = (config?: ConfigView): RoleDef => ({
   workflow: '',
   mcp: [],
   autoApprove: 'read-only',
+  approvals: '',
   permissionMode: '',
   allow: [],
 });
@@ -283,6 +284,14 @@ function RoleForm({ config, draft, set, isNew, original, footer }: { config?: Co
 
         <Section title="Permissions">
           <Toggle checked={draft.autoApprove === 'read-only'} onChange={v => set('autoApprove', v ? 'read-only' : 'none')} label="Run read-only shell commands without asking" hint="ls, cat, git log, grep and the like. Anything that writes still waits for you." />
+          <Field label="Who approves the rest" hint={`The settings say: ${config?.settings.effective.approvals ?? 'gatekeeper'}.`}>
+            <select value={draft.approvals} onChange={e => set('approvals', e.target.value)}>
+              <option value="">As in Settings</option>
+              <option value="ask">Ask me</option>
+              <option value="gatekeeper">The gatekeeper, then me</option>
+              <option value="harness">The harness’s own, then the gatekeeper</option>
+            </select>
+          </Field>
           <Field label="Also allowed without asking" hint="Claude Code style patterns, e.g. Bash(npm test*). Press Enter after each.">
             <ChipList values={draft.allow} onChange={v => set('allow', v)} placeholder="Bash(npm test*)" suggestions={['Bash(npm test*)', 'Bash(node --test*)', 'Bash(git add*)', 'Bash(git commit*)', 'Bash(git merge*)', 'Bash(git diff*)']} />
           </Field>

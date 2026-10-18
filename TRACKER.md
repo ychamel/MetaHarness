@@ -227,6 +227,13 @@ Findings from the run:
       the run's 58 approvals were reads of screenshots in /tmp); the model picker lists each
       harness's models; Codex's v1 approval requests get answers in their own shape; an
       approval answered at once is no longer lost
+- [x] **Second round from that run** (2026-10-18): Codex past its plan's limit shows as a warning
+      with credits, not "ok"; approvals by a gatekeeper model or the harness's own (settings,
+      per role), checked live on haiku; costs by kind of token with a Costs tab; prompt-cache
+      clocks and reminders; Harnesses and Settings pages (`settings.json`, `settings.save`,
+      `harness.check`, `gatekeeper.create`). Checked in headless Chrome on a scripted team
+- [ ] A user-facing assistant in the app (questions about the run, help with setup): to
+      brainstorm
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,
       replay, search

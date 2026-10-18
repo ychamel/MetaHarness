@@ -72,8 +72,8 @@ test('tokens from a harness without costs are priced from the settings, and the 
   const d = makeTeam({
     roles: { architect: '---\nharness: tok\nmodel: m\ngood_at: x\n---\nx\n' },
     adapters: { tok: tokenOnly },
-    settings: { approvals: 'ask', models: { 'tok/m': { prices: { input: 2, output: 8, cacheRead: 0.5 } } } },
   });
+  await d.command({ cmd: 'settings.save', scope: 'repo', patch: { models: { 'tok/m': { prices: { input: 2, output: 8, cacheRead: 0.5 } } } } });
   const goal = d.startGoal({ request: 'r' });
   await withTimeout(
     (async () => {
@@ -91,5 +91,9 @@ test('tokens from a harness without costs are priced from the settings, and the 
   assert.deepEqual(r.tokens, { tokensIn: 1000, tokensOut: 500, cacheRead: 9000, cacheWrite: 0 });
   near(r.cost, 0.0105, 'replayed cost');
   assert.equal(r.costSource, 'prices');
+
+  // A price changed later counts for the work already done.
+  await d.command({ cmd: 'settings.save', scope: 'repo', patch: { models: { 'tok/m': { prices: { input: 4, output: 8 } } } } });
+  near(d.snapshot(goal).goals[0].agents[0].cost ?? undefined, (1000 * 4 + 500 * 8 + 9000 * 4) / 1e6, 'cost at the new prices');
   await d.close();
 });

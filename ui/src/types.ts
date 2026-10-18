@@ -133,6 +133,8 @@ export interface RoleDef {
   workflow: string;
   mcp: string[];
   autoApprove: 'read-only' | 'none';
+  /** Its own approval mode; empty: the settings'. */
+  approvals: string;
   permissionMode: string;
   allow: string[];
 }
@@ -169,7 +171,8 @@ export interface ConfigView {
   methodology: GuideDef;
   helperMethodology: GuideDef;
   mcp: { name: string; scope: Scope; def: McpDef }[];
-  harnesses: { id: string; title: string; runnable: boolean; models: string[] }[];
+  harnesses: HarnessView[];
+  settings: { effective: Settings; files: { scope: Scope; dir: string; values: Partial<Settings> }[] };
   /** Every role runs on this harness instead (the daemon was started with --fake). */
   override: string | null;
 }
@@ -209,4 +212,51 @@ export interface MhEvent {
   parent?: string;
   type: string;
   data: Record<string, any>;
+}
+
+export interface HarnessView {
+  id: string;
+  title: string;
+  runnable: boolean;
+  models: string[];
+  transport: string | null;
+  manifest: Manifest | null;
+  install: string | null;
+  login: string | null;
+}
+
+export interface Prices {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+export interface ModelSettings {
+  prices?: Prices;
+  cacheMinutes?: number;
+}
+
+export type ApprovalMode = 'ask' | 'gatekeeper' | 'harness';
+
+export interface Settings {
+  approvals: ApprovalMode;
+  gatekeeper: string;
+  cacheReminders: boolean;
+  cacheRemindSec: number;
+  cacheRemindMinTokens: number;
+  defaultCacheMinutes: number;
+  models: Record<string, ModelSettings>;
+}
+
+export interface HarnessReport {
+  id: string;
+  title: string;
+  path?: string;
+  version?: string;
+  login?: { signedIn?: boolean; plan?: string; detail?: string };
+  models: string[];
+  modelsError?: string;
+  install?: string;
+  loginCommand?: string;
 }

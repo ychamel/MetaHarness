@@ -55,6 +55,8 @@ export interface RoleView {
   workflow: string;
   mcp: string[];
   autoApprove: 'read-only' | 'none';
+  /** Its own approval mode; empty: the settings'. */
+  approvals: string;
   permissionMode: string;
   allow: string[];
 }
@@ -107,10 +109,12 @@ export function configView(scopes: ScopeDir[]): ConfigView {
   for (const { scope, dir } of scopes) {
     const c = loadConfig([dir]);
     for (const r of c.roles.values()) {
+      // Built-in roles (the gatekeeper) have no file to edit.
+      if (r.file === '(built in)') continue;
       const before = roles.get(r.name);
       roles.set(r.name, {
         name: r.name, scope, file: r.file, overrides: before?.scope, harness: r.harness, model: r.model, fallback: r.fallback, goodAt: r.goodAt,
-        instructions: r.instructions, helper: r.helper, worktree: r.worktree, workflow: r.workflow ?? '', mcp: r.mcp, autoApprove: r.autoApprove,
+        instructions: r.instructions, helper: r.helper, worktree: r.worktree, workflow: r.workflow ?? '', mcp: r.mcp, autoApprove: r.autoApprove, approvals: r.approvals ?? '',
         permissionMode: r.permissionMode ?? '', allow: r.allow,
       });
     }
@@ -149,7 +153,7 @@ function writeDoc(file: string, meta: [string, string][], body: string, keep = '
 }
 
 /** Keys the app writes for a role; anything else already in the file is kept as it was. */
-const ROLE_KEYS = ['harness', 'model', 'fallback', 'fallbacks', 'good_at', 'helper', 'worktree', 'workflow', 'mcp', 'auto_approve', 'permission_mode', 'allow'];
+const ROLE_KEYS = ['harness', 'model', 'fallback', 'fallbacks', 'good_at', 'helper', 'worktree', 'workflow', 'mcp', 'auto_approve', 'approvals', 'permission_mode', 'allow'];
 
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : []).map(x => String(x).trim()).filter(Boolean);
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
@@ -188,6 +192,7 @@ export function saveRole(scopes: ScopeDir[], b: Record<string, unknown>): string
       ['workflow', str(b.workflow)],
       ['mcp', strList(b.mcp).join(', ')],
       ['auto_approve', b.autoApprove === 'none' ? 'none' : ''],
+      ['approvals', ['ask', 'gatekeeper', 'harness'].includes(str(b.approvals)) ? str(b.approvals) : ''],
       ['permission_mode', str(b.permissionMode)],
       ['allow', allow.join(', ')],
       ...extra,

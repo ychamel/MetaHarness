@@ -111,6 +111,7 @@ If the spec is unclear or seems wrong, message whoever gave it to you rather tha
 | `helper: true` | A quick helper (like `scout`): answers one question and returns, inside its caller's turn |
 | `allow` | Commands it may run without asking, Claude Code style: `Bash(npm test*), Bash(git commit*)` |
 | `auto_approve: none` | Always ask you, even for read-only commands (the default approves those itself) |
+| `approvals` | `ask`, `gatekeeper` or `harness`: who decides the rest for this role (default: the Settings page's choice, section 7) |
 | `permission_mode` | The harness's own mode, e.g. `default` for Claude Code to ask before every edit |
 | `mcp` | MCP servers it needs besides MetaHarness's own, by name (section 8) |
 | `workflow` | A workflow it always follows |
@@ -194,7 +195,9 @@ You review the result in your checkout like any other change, and push it yourse
     - **Files:** the shared folder: designs, reviews and reports, rendered, with every version
       and who wrote it.
     - **Graph**, **Sequence**, **Timeline:** who talks to whom, messages in order, who was
-      busy when.
+      busy when. Drag the graph's cards to arrange them; the layout is kept for that goal.
+    - **Costs:** where the money went, by agent, role or model, split into input, cache
+      reads, cache writes and output.
     - **Log:** every event, as `mh tail` shows it.
   - **Agent** (right): what the selected agent is doing now (or its result), its controls, and
     its conversation (its words, messages, and its tool calls folded into groups), its brief,
@@ -229,8 +232,22 @@ The terminal can do all of this too:
 ## 7. What agents can and can't do
 
 - **Approvals.** Commands that only read (`git log`, `grep`, `cat`, and so on) run without asking.
-  So do edits inside the agent's own folder, and anything its role's `allow` list covers. Anything
-  else waits in your Inbox. Each harness keeps its own sandbox on top.
+  So do edits inside the agent's own folder, and anything its role's `allow` list covers. Who
+  decides the rest is a setting (**Settings** page, or a role's `approvals:`):
+  - **Gatekeeper** (the default): a cheap model allows what stays inside the project and is part
+    of the task, refuses what's plainly harmful, and sends you the rest with its reason. It's a
+    role like any other: built in on Claude haiku (with Codex and Antigravity backups), and
+    the Settings page writes it out as `roles/gatekeeper.md` if you want another model or
+    other rules. Teams can't spawn it, and its cost counts in the goal's.
+  - **Ask me:** everything else waits in your Inbox.
+  - **Harness's own:** Claude Code's auto mode decides first; the gatekeeper, then you, for
+    what it still asks about.
+
+  Each harness keeps its own sandbox on top.
+- **Prompt caches.** An agent between tasks keeps its prompt cache warm for a while (an hour
+  for Claude Code, a few minutes elsewhere); the team list counts it down. Shortly before it
+  expires, the agent's spawner is told, so it can send follow-up work while it's cheap. You're
+  told about the lead's.
 - **Git.** Agents commit, merge and branch freely, but they can only add history. Git itself (a
   hook MetaHarness sets for agents only, never for you) refuses these:
   - deleting branches or tags;
@@ -285,9 +302,12 @@ restarting the daemon. The pages write the same files described below.
   Check it with `mh doctor` and `mh test <id>`. Setting `MH_ACP_LOG=/tmp/acp.log` on the daemon
   records the traffic if something's off. Other keys: `env` (`KEY=value, …`, e.g. to point
   Claude Code at another provider), `status_cmd`, `models_cmd` or `models`, `probe_model`.
-- **Cost.** Claude Code and OpenCode report cost. For Codex, add
-  `.metaharness/prices.json` with each model's USD price per million tokens, for example
-  `{"gpt-6.1-sol": {"input": 1.25, "cachedInput": 0.125, "output": 10}}` (use the real prices).
+- **Harnesses and prices.** The **Harnesses** page shows each CLI: whether it runs here, its
+  version and login (checked when you ask), what it can do, and which roles use it. Claude Code
+  and OpenCode report cost; for the others, give each model's prices there (dollars per million
+  tokens, with cache reads and writes if they differ) and how long its prompt cache lasts. They
+  go in `settings.json`, which also holds the Settings page's choices; the repository's file
+  wins over your personal one, key by key.
 
 ## 9. Restarts
 
@@ -309,7 +329,8 @@ Finished goals stay in the app's goal list, rebuilt from the log.
 | "No roles are defined yet" | Section 4: roles go in `~/.metaharness/roles/` or the repository's `.metaharness/roles/` |
 | The web app says it isn't built | `npm run ui:build` in the MetaHarness folder |
 | The web app asks for a token | Open it with `mh ui`, or paste the contents of `~/.metaharness/token` |
-| Lots of approvals for harmless commands | Add them to the role's `allow:` list |
+| Lots of approvals for harmless commands | Use the gatekeeper (Settings), or add them to the role's `allow:` list |
+| Costs show "—" for Codex or Antigravity | Give the model's prices on the Harnesses page |
 | An agent seems stuck | Its stream in the app shows its last command. Message it, mark it urgent, or pause and resume it |
 | A harness misbehaves | `mh test <harness>` says which part works and which doesn't |
 

@@ -6,6 +6,8 @@ import { SpawnDialog, StartGoalDialog } from './components/Dialogs.tsx';
 import { ConfirmProvider, useToast } from './components/common.tsx';
 import { Home } from './pages/Home.tsx';
 import { GoalPage, type GoalTab } from './pages/GoalPage.tsx';
+import { Harnesses } from './pages/Harnesses.tsx';
+import { Settings } from './pages/Settings.tsx';
 import { Roles } from './pages/Roles.tsx';
 import { Workflows } from './pages/Workflows.tsx';
 import { Guidelines } from './pages/Guidelines.tsx';
@@ -197,6 +199,8 @@ function Shell() {
         <RailButton icon={ICONS.workflows} label="Workflows" on={place.page === 'workflows'} onClick={() => go({ page: 'workflows', item: undefined })} />
         <RailButton icon={ICONS.guide} label="Guidelines" on={place.page === 'guidelines'} onClick={() => go({ page: 'guidelines', item: undefined })} />
         <RailButton icon={ICONS.tools} label="Tools" on={place.page === 'tools'} onClick={() => go({ page: 'tools', item: undefined })} />
+        <RailButton icon={ICONS.harness} label="Harnesses" on={place.page === 'harnesses'} onClick={() => go({ page: 'harnesses', item: undefined })} />
+        <RailButton icon={ICONS.settings} label="Settings" on={place.page === 'settings'} onClick={() => go({ page: 'settings', item: undefined })} />
       </nav>
 
       <main className="content">
@@ -233,6 +237,19 @@ function Shell() {
         {place.page === 'workflows' && <Workflows {...setup('workflows')} onStartWith={workflow => setDialog({ kind: 'goal', workflow })} />}
         {place.page === 'guidelines' && <Guidelines config={config} onSave={saveConfig} />}
         {place.page === 'tools' && <Tools {...setup('tools')} />}
+        {place.page === 'harnesses' && <Harnesses {...setup('harnesses')} />}
+        {place.page === 'settings' && (
+          <Settings
+            config={config}
+            onSave={saveConfig}
+            onGatekeeper={async (scope, exists) => {
+              const name = config?.settings.effective.gatekeeper ?? 'gatekeeper';
+              const next = exists ? config : await saveConfig({ cmd: 'gatekeeper.create', scope });
+              const r = next?.roles.find(x => x.name === name);
+              if (r) go({ page: 'roles', item: `${r.scope}/${r.name}` });
+            }}
+          />
+        )}
       </main>
 
       {dialog?.kind === 'goal' && <StartGoalDialog key={dialog.workflow} config={config} initialWorkflow={dialog.workflow} onClose={() => setDialog(undefined)} onStart={startGoal} />}
@@ -306,6 +323,18 @@ const ICONS = {
     </>,
   ),
   tools: svg(<path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L4 17l3 3 5.2-5.2a4 4 0 0 0 5.3-5.3l-2.6 2.6-2.4-.6-.6-2.4z" />),
+  harness: svg(
+    <>
+      <rect x="4" y="5" width="16" height="11" rx="1.5" />
+      <path d="M8 20h8M12 16v4M7.5 9.5l2 1.5-2 1.5M11.5 12.5h4" />
+    </>,
+  ),
+  settings: svg(
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" />
+    </>,
+  ),
 };
 
 function SignIn({ failed, onToken }: { failed: boolean; onToken: (t: string) => void }) {

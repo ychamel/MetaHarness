@@ -9,7 +9,7 @@ import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
 import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest } from './adapters/types.ts';
 import { addSplit, addTokens, priceSplit, splitTotal, tokenCount, tokensOf, type Tokens } from './costs.ts';
-import { modelSettings } from './settings.ts';
+import { modelSettings, readSettingsFile, writeSettingsFile } from './settings.ts';
 import { Gatekeeper, type GatekeeperLimits, type Judgement } from './gatekeeper.ts';
 import type { ApprovalMode } from './settings.ts';
 import { MCP_SERVER_NAME } from './mcp.ts';
@@ -243,6 +243,9 @@ interface OpenConflict {
   branch: string;
   agent?: string;
 }
+
+/** What pricing an agent needs. */
+type Spender = { harness: string; model: string; tokens?: Tokens; cost?: number; costSplit?: CostSplit; costSource?: 'harness' | 'prices' };
 
 /** The name the gatekeeper's session goes by in the log; no teammate can be called this. */
 export const GATEKEEPER = '(gatekeeper)';
@@ -2122,7 +2125,7 @@ export class Daemon {
 
   private goalView(g: GoalRec) {
     const agents = [...g.agents.values()];
-    const costs = [...agents.map(a => a.cost), g.gatekeeperCost.size ? this.gatekeeperCost(g) : undefined].filter((c): c is number => c !== undefined);
+    const costs = [...agents.map(a => this.priced(a).cost), g.gatekeeperCost.size ? this.gatekeeperCost(g) : undefined].filter((c): c is number => c !== undefined);
     return {
       id: g.id,
       request: g.request,
@@ -2151,7 +2154,7 @@ export class Daemon {
         branch: a.worktree?.branch ?? null,
         worktree: a.worktree?.path ?? null,
         cwd: a.cwd,
-        cost: a.cost ?? null,
+        cost: this.priced(a).cost ?? null,
         contextPct: a.contextPct ?? null,
         unread: a.inbox.length,
         awaitingApproval: a.pendingApprovals,
@@ -2165,16 +2168,29 @@ export class Daemon {
   }
 
   /** What an agent spent, by kind of token, and how long its prompt cache stays warm. */
-  private spendView(a: { harness: string; model: string; tokens?: Tokens; costSplit?: CostSplit; costSource?: string; lastCallAt?: number; cacheMinutes?: number }) {
+  private spendView(a: Spender & { lastCallAt?: number; cacheMinutes?: number }) {
     const minutes = this.cacheLifetime(a);
+    const p = this.priced(a);
     return {
       tokens: a.tokens ?? null,
-      costSplit: a.costSplit ?? null,
-      costSource: a.costSource ?? null,
+      costSplit: p.costSplit ?? null,
+      costSource: p.costSource ?? null,
       lastCallAt: a.lastCallAt ?? null,
       cacheMinutes: minutes,
       cacheUntil: a.lastCallAt ? a.lastCallAt + minutes * 60_000 : null,
     };
+  }
+
+  /**
+   * An agent's cost: the harness's own figure when it reports one, else its tokens at the
+   * settings' current prices (so a price set later counts for work already done).
+   */
+  private priced(a: Spender): { cost?: number; costSplit?: CostSplit; costSource?: 'harness' | 'prices' } {
+    if (a.costSource === 'harness') return a;
+    const prices = modelSettings(this.config.settings, a.harness, a.model).prices;
+    if (!prices || !a.tokens) return a;
+    const costSplit = priceSplit(a.tokens, prices);
+    return { cost: splitTotal(costSplit), costSplit, costSource: 'prices' };
   }
 
   /** The settings' cache lifetime for the model, else what the harness reported, else the default. */
@@ -2185,7 +2201,7 @@ export class Daemon {
   /** A goal not loaded here, as the log left it. */
   private replayView(r: GoalReplay) {
     const agents = [...r.agents.values()];
-    const costs = [...agents.map(a => a.cost), r.gatekeeperCost || undefined].filter((c): c is number => c !== undefined);
+    const costs = [...agents.map(a => this.priced(a).cost), r.gatekeeperCost || undefined].filter((c): c is number => c !== undefined);
     const lead = r.agents.get(r.lead);
     return {
       id: r.id,
@@ -2205,7 +2221,7 @@ export class Daemon {
         name: a.name, role: a.role, harness: a.harness, model: a.model, parent: a.parent, pausing: false,
         state: a.doneNote !== undefined && INTERRUPTED.includes(a.state) ? 'done' : a.state,
         status: a.status, brief: a.brief, quick: a.quick, branch: a.worktree?.branch ?? null, worktree: a.worktree?.path ?? null,
-        cwd: a.cwd, cost: a.cost ?? null, contextPct: a.contextPct ?? null, unread: a.undelivered.length, awaitingApproval: 0,
+        cwd: a.cwd, cost: this.priced(a).cost ?? null, contextPct: a.contextPct ?? null, unread: a.undelivered.length, awaitingApproval: 0,
         nativeSession: a.nativeSession ?? null, limitedUntil: null, doneNote: a.doneNote ?? null,
         ...this.spendView(a),
       })),
@@ -2341,13 +2357,36 @@ export class Daemon {
         const what = String(b.cmd).endsWith('.delete') ? 'Deleted' : 'Saved';
         return { result: `${what} ${file}. Agents started from now on use it.`, file, config: this.configView() };
       }
+      case 'settings.save': {
+        const scope = scopesOf(this.configDirs).find(x => x.scope === b.scope);
+        if (!scope) throw new Error(`There's no ${String(b.scope)} config folder here.`);
+        if (!b.patch || typeof b.patch !== 'object') throw new Error('settings.save needs "patch": the keys to change.');
+        const file = writeSettingsFile(scope.dir, b.patch as Record<string, unknown>);
+        this.reloadConfig();
+        return { result: `Saved ${file}.`, file, config: this.configView() };
+      }
+      case 'gatekeeper.create': {
+        // The built-in gatekeeper, written out so it can be edited like any role.
+        const r = this.config.roles.get(this.config.settings.gatekeeper)!;
+        const file = saveRole(scopesOf(this.configDirs), {
+          scope: b.scope, name: r.name, harness: r.harness, model: r.model, fallback: r.fallback, goodAt: r.goodAt, instructions: r.instructions, helper: true,
+        });
+        this.reloadConfig();
+        return { result: `Saved ${file}.`, file, config: this.configView() };
+      }
+      case 'harness.check': {
+        const p = loadProfiles(this.configDirs).get(s('harness') ?? '');
+        if (!p) throw new Error(`There's no harness profile called ${s('harness')}.`);
+        const { inspect } = await import('./harnesses.ts');
+        return { report: await inspect(p) };
+      }
       case 'harness.models': {
         const harness = s('harness');
         if (!harness) throw new Error('harness.models needs "harness".');
         return await this.harnessModels(harness, b.refresh === true);
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.models, config.get, role.save, role.delete, workflow.save, workflow.delete, guide.save, mcp.save.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, config.get, settings.save, gatekeeper.create, role.save, role.delete, workflow.save, workflow.delete, guide.save, mcp.save.`);
     }
   }
 
@@ -2356,6 +2395,7 @@ export class Daemon {
   /** Reads the config files again: what's saved applies to agents started from now on. */
   reloadConfig(): void {
     this.config = loadConfig(this.configDirs);
+    if (this.settingsOverride) Object.assign(this.config.settings, this.settingsOverride);
   }
 
   /** Roles, workflows, guidelines and MCP servers with the folder each comes from, plus the harnesses a role can name. */
@@ -2369,8 +2409,16 @@ export class Daemon {
       /** MetaHarness can run it here: it's installed and has a transport. */
       runnable: !!this.adapters[id],
       models: profiles.get(id)?.models ?? [],
+      transport: profiles.get(id)?.transport ?? null,
+      manifest: this.adapters[id]?.manifest ?? null,
+      install: profiles.get(id)?.install ?? null,
+      login: profiles.get(id)?.login ?? null,
     }));
-    return { ...configView(scopesOf(this.configDirs)), harnesses, override: this.harnessOverride ?? null };
+    const settings = {
+      effective: this.config.settings,
+      files: scopesOf(this.configDirs).map(s => ({ scope: s.scope, dir: s.dir, values: readSettingsFile(s.dir) })),
+    };
+    return { ...configView(scopesOf(this.configDirs)), harnesses, settings, override: this.harnessOverride ?? null };
   }
 
   /** The models a harness offers: those its profile knows, plus what its CLI lists (asked once every ten minutes). */
