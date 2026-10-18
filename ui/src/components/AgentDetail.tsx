@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.ts';
-import { BUSY, clock, isOwnTool, money, oneLine, STATE_LABEL } from '../format.ts';
+import { BUSY, clock, isOwnTool, money, oneLine, STATE_LABEL, GATE } from '../format.ts';
 import type { Agent, AgentDetail as Detail, Goal, Manifest, MhEvent } from '../types.ts';
 import { CopyText, Ctx, Dialog, Dot, Markdown, More, useConfirm } from './common.tsx';
 
@@ -56,6 +56,10 @@ function streamOf(events: MhEvent[], name: string): Item[] {
         break;
       case 'approval.refused':
         out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: `refused: ${oneLine(d.detail, 100)} — ${oneLine(d.why, 200)}`, warn: true });
+        break;
+      case 'approval.gatekeeper':
+        // Asked: the Inbox item that follows says so.
+        if (d.verdict !== 'ask') out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: `${GATE[d.verdict] ?? d.verdict}: ${oneLine(d.detail, 100)} — ${oneLine(d.reason, 200)}`, warn: d.verdict === 'deny' });
         break;
       case 'inbox.item':
         // A decision it asked for is already in the stream as its message to you.

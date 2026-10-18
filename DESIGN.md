@@ -374,6 +374,21 @@ there are new messages or file changes, so an agent nobody is messaging sees not
   by the daemon itself and logged as `approval.auto`. The check errs towards asking: writes,
   redirections, unknown programs and anything it can't parse still come to you. A role can
   opt out with `auto_approve: none`.
+- **Who decides the rest** is a setting (`approvals` in `settings.json`, or per role), after the
+  fixed rules (the git guard, read-only commands, the role's `allow` list):
+  - `ask`: you, in the Inbox.
+  - `gatekeeper` (the default): a cheap model in the **gatekeeper role** answers ALLOW, DENY or
+    ASK with a reason; ASK comes to you with its reason. One session per goal, one request at a
+    time, reused until it has handled 40 requests or filled half its context. It may read
+    files to judge a script, nothing else. An identical request from the same agent is
+    answered from memory. No answer in two minutes, or no verdict in its answer, comes to you.
+    The gatekeeper can only let through what the fixed rules leave open, and its prompt says
+    the command text is the agent's, not instructions. The role is built in (Claude haiku,
+    with Codex and Antigravity backups) unless a `roles/gatekeeper.md` replaces it; any
+    harness or model can fill it, and teams can't spawn it. Checked live on haiku: about 3
+    seconds a verdict, $0.07 for a session's first four.
+  - `harness`: each harness's own automatic approvals where it has them (Claude Code's `auto`
+    permission mode); what still reaches MetaHarness goes to the gatekeeper, then you.
 - **Questions:** `send("human", …)` also lands in the Inbox.
 - **Steering:** you can message any agent, the lead, or everyone, and pause, resume or stop any
   of them.

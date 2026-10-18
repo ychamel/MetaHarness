@@ -49,6 +49,8 @@ export interface InboxItem {
   kind: 'question' | 'decision' | 'approval' | 'done' | 'stopped' | 'crash';
   text: string;
   ts: string;
+  /** Why it came to you, e.g. what the gatekeeper said. */
+  note?: string;
 }
 
 export interface Manifest {

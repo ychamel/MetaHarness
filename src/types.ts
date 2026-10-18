@@ -45,6 +45,8 @@ export interface Role {
   workflow?: string;
   /** Give agents in this role their own git worktree by default, instead of the shared folder. */
   worktree: boolean;
+  /** How this role's approvals are decided, instead of the settings' default. */
+  approvals?: import('./settings.ts').ApprovalMode;
   file: string;
 }
 

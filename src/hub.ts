@@ -120,7 +120,7 @@ export class Hub {
 
       case 'spawn': {
         const role = str(pick(a, 'role', 'agent', 'type', 'kind', 'as'));
-        if (!role) return `spawn needs a role. Roles you can spawn: ${[...d.config.roles.keys()].join(', ')}.`;
+        if (!role) return `spawn needs a role. Roles you can spawn: ${d.teamRoles().map(r => r.name).join(', ')}.`;
         const brief = str(pick(a, 'brief', 'task', 'prompt', 'text', 'message', 'instructions', 'description'))
           ?? '(No brief was given. Ask whoever spawned you what they need.)';
         const name = str(pick(a, 'name', 'id'));
@@ -191,7 +191,7 @@ export class Hub {
       lines.push(`- ${a.name} (${a.role.name} · ${a.harness} · ${a.model}), spawned by ${by}, ${a.state}${what}${you}`);
     }
     lines.push('', 'Roles you can spawn:');
-    for (const r of this.d.config.roles.values()) lines.push(`- ${r.name}${r.helper ? ' (quick helper)' : ''}: ${r.goodAt || '—'}`);
+    for (const r of this.d.teamRoles()) lines.push(`- ${r.name}${r.helper ? ' (quick helper)' : ''}: ${r.goodAt || '—'}`);
     return lines.join('\n');
   }
 }

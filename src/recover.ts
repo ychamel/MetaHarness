@@ -46,6 +46,7 @@ export interface InboxReplay {
   kind: string;
   text: string;
   ts: string;
+  note?: string;
 }
 
 export interface GoalReplay {
@@ -71,6 +72,8 @@ export interface GoalReplay {
   conflicts: Map<string, { op: 'merge' | 'cherry-pick' | 'revert' | 'rebase'; sha?: string; branch: string; agent?: string }>;
   /** Each shared file's latest version and owner (its first known writer). */
   shared: Map<string, { version: number; owner?: string }>;
+  /** What the goal's gatekeeper has spent. */
+  gatekeeperCost: number;
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -84,7 +87,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
     id: start.goal, request: str(d.request), dir: str(d.dir), sharedDir: str(d.sharedDir), createdAt: start.ts,
     workflow: str(d.workflow) || undefined, branch: str(d.branch) || undefined, base: str(d.base) || undefined,
     ended: false, lead: '', agents: new Map(), counters: new Map(), inbox: [], refs: new Map(), seenOn: new Map(),
-    conflicts: new Map(), shared: new Map(),
+    conflicts: new Map(), shared: new Map(), gatekeeperCost: 0,
   };
   if (g.branch && g.base) g.refs.set(g.branch, g.base);
   const pending = new Map<string, PendingMessage & { to: string }>();
@@ -147,6 +150,9 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
         if (typeof x.costUsd === 'number') a.cost = (a.costBefore ?? 0) + x.costUsd;
         if (typeof x.contextPct === 'number') a.contextPct = x.contextPct;
         break;
+      case 'gatekeeper.usage':
+        if (typeof x.total === 'number') g.gatekeeperCost = x.total;
+        break;
       case 'message.sent':
         if (str(x.id) && str(x.to) && x.to !== 'human') {
           pending.set(str(x.id), { id: str(x.id), to: str(x.to), from: e.agent ?? 'human', text: str(x.text), urgent: x.urgent === true, ts: e.ts });
@@ -156,7 +162,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
         pending.delete(str(x.id));
         break;
       case 'inbox.item':
-        g.inbox.push({ id: str(x.id), agent: e.agent ?? '', kind: str(x.kind), text: str(x.text), ts: e.ts });
+        g.inbox.push({ id: str(x.id), agent: e.agent ?? '', kind: str(x.kind), text: str(x.text), ts: e.ts, ...(str(x.note) ? { note: str(x.note) } : {}) });
         break;
       case 'inbox.resolved':
         g.inbox = g.inbox.filter(i => i.id !== x.id);

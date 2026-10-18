@@ -8,6 +8,8 @@ import { Hub } from './hub.ts';
 import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
 import type { ApprovalDecision, HarnessAdapter, HookRequest, RateLimitInfo, Session, SessionEvents, ToolRequest } from './adapters/types.ts';
+import { Gatekeeper, type GatekeeperLimits, type Judgement } from './gatekeeper.ts';
+import type { ApprovalMode } from './settings.ts';
 import { MCP_SERVER_NAME } from './mcp.ts';
 import { readOnlyCommand } from './readonly.ts';
 import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } from './recover.ts';
@@ -126,6 +128,10 @@ export interface GoalRec {
   counters: Map<string, number>;
   /** The lead finished while teammates still worked: clean up once they're done too. */
   cleanWhenIdle?: boolean;
+  /** Judges this goal's approvals, once one is asked for. */
+  gatekeeper?: Gatekeeper;
+  /** The gatekeeper's spend, by session (each reports its own total). */
+  gatekeeperCost: Map<number, number>;
   /** Resolves when the lead calls done. */
   leadDone: Promise<string>;
   resolveLeadDone: (note: string) => void;
@@ -139,6 +145,8 @@ export interface HumanInboxItem {
   kind: 'question' | 'decision' | 'approval' | 'done' | 'stopped' | 'crash';
   text: string;
   ts: string;
+  /** Why it came to the human, e.g. what the gatekeeper said. */
+  note?: string;
 }
 
 export interface DaemonOptions {
@@ -160,6 +168,9 @@ export interface DaemonOptions {
   /** Remove worktrees and merged branches when a goal's lead finishes (default true). */
   autoClean?: boolean;
   pause?: Partial<PausePolicy>;
+  /** Settings over the ones in settings.json (tests use approvals: 'ask'). */
+  settings?: Partial<import('./settings.ts').Settings>;
+  gatekeeperLimits?: GatekeeperLimits;
 }
 
 /**
@@ -216,6 +227,9 @@ interface OpenConflict {
   agent?: string;
 }
 
+/** The name the gatekeeper's session goes by in the log; no teammate can be called this. */
+export const GATEKEEPER = '(gatekeeper)';
+
 const FINISHED: AgentState[] = ['ended', 'crashed'];
 
 type GoalStatus = 'running' | 'done' | 'ended' | 'stopped';
@@ -259,6 +273,7 @@ export class Daemon {
   /** Git hooks that keep agents from deleting branches, rewinding shared ones, or pushing. */
   readonly guardDir: string;
   private autoClean: boolean;
+  readonly gatekeeperLimits?: GatekeeperLimits;
 
   constructor(o: DaemonOptions) {
     this.home = o.home;
@@ -276,7 +291,12 @@ export class Daemon {
     this.hub = new Hub(this);
     this.guardDir = installGuard(o.home);
     this.autoClean = o.autoClean ?? true;
+    this.gatekeeperLimits = o.gatekeeperLimits;
+    if (o.settings) Object.assign(this.config.settings, o.settings);
+    this.settingsOverride = o.settings;
   }
+
+  private settingsOverride?: DaemonOptions['settings'];
 
   emit(e: NewEvent): MhEvent {
     return this.store.append(e);
@@ -311,7 +331,7 @@ export class Daemon {
     const g: GoalRec = {
       id, request: o.request, dir: o.dir ?? this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
       refs: new Map(), seenOn: new Map(), workflow, conflicts: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
-      status: 'running', agents: new Map(), counters: new Map(), leadDone, resolveLeadDone,
+      status: 'running', agents: new Map(), counters: new Map(), gatekeeperCost: new Map(), leadDone, resolveLeadDone,
     };
     const gs = git.setupGoal(g.dir, id);
     if ('reason' in gs) g.gitNote = gs.reason;
@@ -356,7 +376,7 @@ export class Daemon {
   ): SpawnResult {
     const g = this.goals.get(goalId);
     if (!g) return { ok: false, error: `There's no goal ${goalId}.` };
-    const roleNames = [...this.config.roles.keys()];
+    const roleNames = this.teamRoles().map(r => r.name);
     const res = o.roleDef ? { match: o.roleDef.name, guessed: false, suggestions: [] } : resolveName(o.role, roleNames);
     if (!o.roleDef && !roleNames.length) return { ok: false, error: 'No roles are defined yet. Add one as .metaharness/roles/<name>.md.' };
     if (!res.match) {
@@ -453,6 +473,7 @@ export class Daemon {
           env: g.git ? guardEnv(this.guardDir, rec.worktree?.branch, g.git.repo) : undefined,
           sharedCheckout: this.sharedCheckout(rec),
           deniedCommands: deniedCommandPrefixes(this.sharedCheckout(rec)),
+          approvals: this.approvalMode(rec),
           callTool: (tool, args) => this.hub.call(rec.goal, rec.name, tool, args),
         },
         this.sessionEvents(rec, gen),
@@ -676,28 +697,114 @@ export class Daemon {
     return verdict !== 'ask' ? { allow: verdict.allow, message: verdict.reason } : this.requestApproval(rec, t.tool, t.detail);
   }
 
-  /** Puts a permission request in the human's Inbox and resolves when they decide. */
-  requestApproval(rec: AgentRec, tool: string, detail: string): Promise<ApprovalDecision> {
+  /**
+   * A permission request the rules didn't settle: the gatekeeper's verdict where the approval
+   * mode has one, else (or when it says ASK) the human's, from the Inbox.
+   */
+  async requestApproval(rec: AgentRec, tool: string, detail: string): Promise<ApprovalDecision> {
     const refused = tool === 'Bash' ? refusedGitCommand(detail, { sharedCheckout: this.sharedCheckout(rec) }) : undefined;
     if (refused) {
       this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.refused', data: { tool, detail: detail.slice(0, 2000), why: refused } });
-      return Promise.resolve({ allow: false, message: refused });
+      return { allow: false, message: refused };
     }
     // Commands that only read don't need the human (design §10), whichever harness asks.
     if (tool === 'Bash' && rec.role.autoApprove !== 'none' && readOnlyCommand(detail).readOnly) {
       this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.auto', data: { tool, detail: detail.slice(0, 2000), why: 'read-only' } });
-      return Promise.resolve({ allow: true });
+      return { allow: true };
     }
     const g = this.goals.get(rec.goal)!;
+    let note: string | undefined;
+    if (this.usesGatekeeper(rec)) {
+      const j = await this.gatekeeperFor(g).judge({
+        agent: rec.name, role: rec.role.name, brief: rec.brief, tool, detail,
+        where: `${rec.cwd}${rec.worktree ? ' (its own worktree)' : this.sharedCheckout(rec) ? " (the human's checkout, shared with teammates)" : ''}`,
+      });
+      this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.gatekeeper', data: { tool, detail: detail.slice(0, 2000), verdict: j.verdict, reason: j.reason, ...(j.remembered ? { remembered: true } : {}) } });
+      if (j.verdict === 'allow') return { allow: true };
+      if (j.verdict === 'deny') return { allow: false, message: `The gatekeeper refused this: ${j.reason} If it's really needed, ask the human (send, to: human) and say why.` };
+      note = `Gatekeeper: ${j.reason}`;
+    }
     rec.pendingApprovals++;
     return new Promise(resolve => {
-      this.toHuman(g, rec.name, 'approval', `${tool}: ${detail}`, item =>
-        this.approvals.set(item.id, d => {
-          rec.pendingApprovals--;
-          resolve(d);
-        }),
+      this.toHuman(
+        g, rec.name, 'approval', `${tool}: ${detail}`,
+        item =>
+          this.approvals.set(item.id, d => {
+            rec.pendingApprovals--;
+            resolve(d);
+          }),
+        note,
       );
     });
+  }
+
+  /** How this agent's approvals are decided: its role's setting, else the settings'. */
+  approvalMode(rec: AgentRec): ApprovalMode {
+    return rec.role.approvals ?? this.config.settings.approvals;
+  }
+
+  private usesGatekeeper(rec: AgentRec): boolean {
+    return this.approvalMode(rec) !== 'ask' && rec.role.name !== this.config.settings.gatekeeper && this.config.roles.has(this.config.settings.gatekeeper);
+  }
+
+  /** Roles a team can spawn: all but the gatekeeper. */
+  teamRoles(): Role[] {
+    return [...this.config.roles.values()].filter(r => r.name !== this.config.settings.gatekeeper);
+  }
+
+  /** The goal's gatekeeper: a session of the gatekeeper role, started on its first request. */
+  private gatekeeperFor(g: GoalRec): Gatekeeper {
+    if (g.gatekeeper) return g.gatekeeper;
+    const role = this.config.roles.get(this.config.settings.gatekeeper)!;
+    const log = (type: string, data: Record<string, unknown>) => this.emit({ goal: g.id, agent: GATEKEEPER, type, data });
+    g.gatekeeper = new Gatekeeper(
+      {
+        start: async (brief, events) => {
+          const picked = this.pickRoute(role);
+          if ('error' in picked) throw new Error(picked.error);
+          const { harness, model } = picked.route;
+          const token = randomBytes(16).toString('hex');
+          this.tokens.set(token, { goal: g.id, agent: GATEKEEPER });
+          log('gatekeeper.started', { role: role.name, harness, model, ...(picked.note ? { note: picked.note } : {}) });
+          const agentDir = join(this.home, 'goals', g.id, 'agents', GATEKEEPER);
+          mkdirSync(agentDir, { recursive: true });
+          return this.adapters[harness].start(
+            {
+              goal: g.id, agent: GATEKEEPER, role: { ...role, permissionMode: 'default', approvals: 'ask' }, model,
+              systemPrompt: role.instructions, brief, cwd: g.dir, sharedDir: g.sharedDir, gitDirs: [],
+              mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${token}` : '', hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${token}` : '',
+              agentDir, mcpServers: [], sharedCheckout: true, deniedCommands: deniedCommandPrefixes(true),
+              callTool: async () => 'The gatekeeper has no MetaHarness tools. Answer ALLOW, DENY or ASK.',
+            },
+            events,
+          );
+        },
+        usage: (u, session) => {
+          if (u.costUsd === undefined) return;
+          g.gatekeeperCost.set(session, u.costUsd);
+          log('gatekeeper.usage', { ...u, total: this.gatekeeperCost(g) });
+        },
+        log,
+      },
+      this.gatekeeperLimits,
+    );
+    return g.gatekeeper;
+  }
+
+  private gatekeeperCost(g: GoalRec): number {
+    return [...g.gatekeeperCost.values()].reduce((a, b) => a + b, 0);
+  }
+
+  /** The adapter a session runs on, teammate or gatekeeper. */
+  adapterFor(goal: string, agent: string): HarnessAdapter | undefined {
+    if (agent !== GATEKEEPER) return this.agent(goal, agent)?.adapter;
+    const r = this.pickRoute(this.config.roles.get(this.config.settings.gatekeeper) ?? ({} as Role));
+    return 'error' in r ? undefined : this.adapters[r.route.harness];
+  }
+
+  /** What a tool call by a session that isn't a teammate (the gatekeeper) may do. */
+  outsiderDecision(agent: string, t: ToolRequest): ApprovalDecision {
+    return agent === GATEKEEPER ? Gatekeeper.decide(t) : { allow: false, message: 'MetaHarness does not know this agent.' };
   }
 
   /** Answers or dismisses an Inbox item. Approvals unblock the agent that asked. */
@@ -1056,12 +1163,12 @@ export class Daemon {
     return { error: `There's nobody called "${to}". Teammates: ${agentNames.join(', ') || 'none yet'}. You can also send to lead, all or human.` };
   }
 
-  private toHuman(g: GoalRec, agent: string, kind: HumanInboxItem['kind'], text: string, onCreate?: (item: HumanInboxItem) => void): HumanInboxItem {
-    const item: HumanInboxItem = { id: randomUUID().slice(0, 8), goal: g.id, agent, kind, text, ts: new Date().toISOString() };
+  private toHuman(g: GoalRec, agent: string, kind: HumanInboxItem['kind'], text: string, onCreate?: (item: HumanInboxItem) => void, note?: string): HumanInboxItem {
+    const item: HumanInboxItem = { id: randomUUID().slice(0, 8), goal: g.id, agent, kind, text, ts: new Date().toISOString(), ...(note ? { note } : {}) };
     this.humanInbox.push(item);
     // Before anyone hears of it, so an answer given at once (from an event listener) finds its way back.
     onCreate?.(item);
-    this.emit({ goal: g.id, agent, type: 'inbox.item', data: { id: item.id, kind, text } });
+    this.emit({ goal: g.id, agent, type: 'inbox.item', data: { id: item.id, kind, text, ...(note ? { note } : {}) } });
     return item;
   }
 
@@ -1274,7 +1381,13 @@ export class Daemon {
   async hook(token: string, req: HookRequest): Promise<{ messages?: string; allow?: boolean; reason?: string }> {
     const who = this.tokens.get(token);
     const rec = who && this.agent(who.goal, who.agent);
-    if (!rec) return req.event === 'before_tool' ? { allow: false, reason: 'MetaHarness does not know this agent.' } : {};
+    if (!rec) {
+      if (req.event !== 'before_tool') return {};
+      const adapter = who && this.adapterFor(who.goal, who.agent);
+      const t = adapter?.toolRequest?.(req.tool, req.args ?? {}) ?? { kind: 'other' as const, tool: req.tool, detail: '' };
+      const d = who ? this.outsiderDecision(who.agent, t) : { allow: false, message: 'MetaHarness does not know this agent.' };
+      return { allow: d.allow, reason: d.message };
+    }
     if (req.event === 'before_model') {
       const messages = this.takeForTurn(rec, 'hook');
       return messages ? { messages } : {};
@@ -1626,6 +1739,7 @@ export class Daemon {
       this.stopAgent(goalId, a.name, by);
     }
     g.status = 'ended';
+    void g.gatekeeper?.stop();
     this.emit({ goal: goalId, type: 'goal.ended', data: { reason: `ended by ${by}`, stopped } });
     const res = g.git ? this.runCleanup(g, false) : undefined;
     const cleaned = res ? describeClean(res, `mh clean ${g.id} --force removes them.`) : '';
@@ -1680,6 +1794,8 @@ export class Daemon {
       id: r.id, request: r.request, dir: r.dir, lead: r.lead, createdAt: r.createdAt, sharedDir: r.sharedDir,
       refs: r.refs, seenOn: r.seenOn, workflow: r.workflow, status: 'running', agents: new Map(), counters: r.counters,
       conflicts: r.conflicts, shared: new SharedFolder(r.sharedDir), sharedTouches: [], leadDone, resolveLeadDone,
+      // Spent before the restart; sessions from now on are counted from 0.
+      gatekeeperCost: new Map(r.gatekeeperCost ? [[-1, r.gatekeeperCost]] : []),
     };
     mkdirSync(g.sharedDir, { recursive: true });
     // What's there now counts as seen; changes made while the daemon was down aren't reported.
@@ -1697,7 +1813,7 @@ export class Daemon {
         this.emit({ goal: g.id, agent: i.agent, type: 'inbox.resolved', data: { id: i.id, decision: 'dismiss', reply: null, why: 'the daemon restarted' } });
         continue;
       }
-      this.humanInbox.push({ id: i.id, goal: g.id, agent: i.agent, kind: i.kind as HumanInboxItem['kind'], text: i.text, ts: i.ts });
+      this.humanInbox.push({ id: i.id, goal: g.id, agent: i.agent, kind: i.kind as HumanInboxItem['kind'], text: i.text, ts: i.ts, ...(i.note ? { note: i.note } : {}) });
     }
 
     const resumed: string[] = [];
@@ -1893,7 +2009,7 @@ export class Daemon {
       const r = this.store.ofType('goal.started').some(e => e.goal === goalId) ? replayGoal(this.store.since(goalId)) : undefined;
       if (r) {
         goals.push(this.replayView(r));
-        inbox = r.inbox.map(i => ({ id: i.id, goal: r.id, agent: i.agent, kind: i.kind as HumanInboxItem['kind'], text: i.text, ts: i.ts }));
+        inbox = r.inbox.map(i => ({ id: i.id, goal: r.id, agent: i.agent, kind: i.kind as HumanInboxItem['kind'], text: i.text, ts: i.ts, ...(i.note ? { note: i.note } : {}) }));
       }
     }
     const harnesses = Object.fromEntries(Object.entries(this.adapters).map(([id, a]) => [id, a.manifest]));
@@ -1920,7 +2036,7 @@ export class Daemon {
 
   private goalView(g: GoalRec) {
     const agents = [...g.agents.values()];
-    const costs = agents.map(a => a.cost).filter((c): c is number => c !== undefined);
+    const costs = [...agents.map(a => a.cost), g.gatekeeperCost.size ? this.gatekeeperCost(g) : undefined].filter((c): c is number => c !== undefined);
     return {
       id: g.id,
       request: g.request,
@@ -1963,7 +2079,7 @@ export class Daemon {
   /** A goal not loaded here, as the log left it. */
   private replayView(r: GoalReplay) {
     const agents = [...r.agents.values()];
-    const costs = agents.map(a => a.cost).filter((c): c is number => c !== undefined);
+    const costs = [...agents.map(a => a.cost), r.gatekeeperCost || undefined].filter((c): c is number => c !== undefined);
     const lead = r.agents.get(r.lead);
     return {
       id: r.id,
@@ -2206,6 +2322,7 @@ export class Daemon {
   async close(): Promise<void> {
     clearInterval(this.pollTimer);
     for (const g of this.goals.values()) {
+      await g.gatekeeper?.stop();
       for (const a of g.agents.values()) {
         for (const w of a.waiters) clearTimeout(w.timer);
         clearTimeout(a.limitTimer);

@@ -66,7 +66,8 @@ export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false)
     // All delegation goes through MetaHarness (design §11).
     // Neither can a role's allow list let agents push or delete branches (src/guard.ts).
     '--disallowedTools', 'Agent', ...(spec.deniedCommands ?? []).map(p => `Bash(${p}:*)`),
-    '--permission-mode', spec.role.permissionMode ?? 'acceptEdits',
+    // Claude Code's auto mode lets its own classifier approve what's safe; what it would ask still comes to us.
+    '--permission-mode', spec.role.permissionMode ?? (spec.approvals === 'harness' ? 'auto' : 'acceptEdits'),
     '--permission-prompt-tool', `mcp__${MCP_SERVER_NAME}__${APPROVAL_TOOL}`,
     '--allowedTools', ...allowed,
   ];

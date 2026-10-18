@@ -64,6 +64,8 @@ export interface SessionSpec {
   sharedCheckout?: boolean;
   /** Command prefixes it may never run, for the harness's own deny list (src/guard.ts). */
   deniedCommands?: string[];
+  /** harness: use the harness's own automatic approvals where it has them. */
+  approvals?: import('../settings.ts').ApprovalMode;
 }
 
 /** Callbacks an adapter uses to report what its harness is doing. */

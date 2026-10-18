@@ -89,7 +89,7 @@ test('ending a goal stops everyone and cleans up; spawning yourself; opening a s
 test('past goals: listed, and rebuilt from the log after a restart; agent detail', async () => {
   const home = mkdtempSync(join(tmpdir(), 'mh-test-'));
   const repo = makeRepo();
-  const daemon = () => new Daemon({ home, repo, configDirs: [configDir], adapters: { fake: new FakeAdapter({}) }, harnessOverride: 'fake', pollMs: 0 });
+  const daemon = () => new Daemon({ home, repo, configDirs: [configDir], adapters: { fake: new FakeAdapter({}) }, harnessOverride: 'fake', pollMs: 0, settings: { approvals: 'ask' } });
   const a = daemon();
   const goal = a.startGoal({ request: 'Write the README' });
   await withTimeout(a.goals.get(goal)!.leadDone, 3000, 'lead done');

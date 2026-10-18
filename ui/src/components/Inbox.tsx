@@ -79,6 +79,7 @@ export function InboxCard({ item, onResolve, onSelectAgent, goalLabel, compact }
       <More lines={compact ? 3 : 6} className="body">
         {item.kind === 'approval' ? <pre className="code">{item.text}</pre> : <Markdown text={item.text} />}
       </More>
+      {item.note && <div className="muted small">{item.note}</div>}
       {item.kind === 'approval' && (
         <>
           {replying && <input type="text" autoFocus placeholder="Note or reason for the agent (optional)" value={reply} onChange={e => setReply(e.target.value)} />}

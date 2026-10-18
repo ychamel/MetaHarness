@@ -34,7 +34,7 @@ export async function probeHarness(d: Daemon, harness: string, model: string, o:
   const code2 = randomBytes(3).toString('hex').toUpperCase();
   const dir = mkdtempSync(join(tmpdir(), 'mh-probe-'));
   const role: Role = {
-    name: 'probe', harness, model, fallback: [], goodAt: 'checking a harness', helper: false, allow: ['Bash(sleep*)'], autoApprove: 'read-only', mcp: [], worktree: false, file: '(built in)',
+    name: 'probe', harness, model, fallback: [], goodAt: 'checking a harness', helper: false, allow: ['Bash(sleep*)'], autoApprove: 'read-only', approvals: 'ask', mcp: [], worktree: false, file: '(built in)',
     instructions: 'You are a connectivity probe for MetaHarness. Follow each instruction exactly and briefly, in order. Do nothing else.',
   };
   const brief = [

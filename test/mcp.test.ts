@@ -45,6 +45,7 @@ test('agents reach their tools over MCP, each under its own identity', async () 
     adapters: { fake: capturingAdapter(urls, released) },
     harnessOverride: 'fake',
     pollMs: 0,
+    settings: { approvals: 'ask' },
   });
   const server = await startServer(d, 0, 'secret');
   const clients: Client[] = [];

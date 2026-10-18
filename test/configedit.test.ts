@@ -17,7 +17,7 @@ function setup() {
   writeFileSync(join(personal, 'roles', 'architect.md'), '---\nharness: fake\nmodel: sonnet\n---\nMine.\n');
   mkdirSync(join(repo, 'playbooks'));
   writeFileSync(join(repo, 'playbooks', 'old.md'), 'Do the old thing.\n');
-  const d = new Daemon({ home: mkdtempSync(join(tmpdir(), 'mh-home-')), repo: makeRepo(), dbPath: ':memory:', configDirs: [personal, repo], adapters: { fake: new FakeAdapter(demoScripts) }, pollMs: 0 });
+  const d = new Daemon({ home: mkdtempSync(join(tmpdir(), 'mh-home-')), repo: makeRepo(), dbPath: ':memory:', configDirs: [personal, repo], adapters: { fake: new FakeAdapter(demoScripts) }, pollMs: 0, settings: { approvals: 'ask' } });
   return { d, personal, repo };
 }
 

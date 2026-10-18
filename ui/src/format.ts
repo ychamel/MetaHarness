@@ -2,6 +2,9 @@ import type { AgentState, MhEvent } from './types.ts';
 
 export const money = (v: number | null | undefined) => (v == null ? '—' : v < 0.01 && v > 0 ? `$${v.toFixed(3)}` : `$${v.toFixed(2)}`);
 
+/** How the feed says what the gatekeeper decided. */
+export const GATE: Record<string, string> = { allow: 'gatekeeper allowed', deny: 'gatekeeper refused', ask: 'gatekeeper asked you about' };
+
 export function clock(ts: string | number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 }
@@ -65,6 +68,7 @@ export function eventText(e: MhEvent): string {
     case 'shared.clash': return `⚠ changed shared/${d.path}, which is ${d.owner}'s`;
     case 'approval.auto': return `ran without asking (read-only): ${oneLine(d.detail, 140)}`;
     case 'approval.refused': return `refused: ${oneLine(d.detail, 100)} — ${oneLine(d.why, 160)}`;
+    case 'approval.gatekeeper': return `${GATE[d.verdict as string] ?? d.verdict}${d.remembered ? ' (as before)' : ''}: ${oneLine(d.detail, 100)} — ${oneLine(d.reason, 160)}`;
     case 'inbox.item': return `→ you (${d.kind}): ${oneLine(d.text, 300)}`;
     case 'inbox.resolved': return `you ${d.decision === 'approve' ? 'approved' : d.decision === 'deny' ? 'denied' : 'dismissed'} ${d.id}${d.reply ? `: ${oneLine(d.reply)}` : ''}`;
     case 'account.limit': return `${d.account}: ${d.status}${d.usedPct != null ? `, ${d.usedPct}% used` : ''}`;
@@ -101,7 +105,7 @@ export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
       return e.data.kind === 'approval' ? 'key' : 'hidden';
     case 'shared.write':
       return e.data.version === 1 ? 'key' : 'minor';
-    case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'shared.delete':
+    case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'approval.gatekeeper': case 'shared.delete':
     case 'agent.paused': case 'agent.resumed': case 'agent.paused_between_steps': case 'agent.interrupted': case 'account.limit':
       return 'minor';
     default:
