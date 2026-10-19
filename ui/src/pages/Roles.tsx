@@ -17,6 +17,7 @@ const blank = (config?: ConfigView): RoleDef => ({
   worktree: false,
   workflow: '',
   mcp: [],
+  skills: [],
   autoApprove: 'read-only',
   approvals: '',
   permissionMode: '',
@@ -270,7 +271,6 @@ function RoleForm({ config, draft, set, isNew, original, footer }: { config?: Co
         <Section title="How it works">
           <Toggle checked={draft.helper} onChange={v => set('helper', v)} label="Quick helper" hint="Answers one question and hands the answer straight back (spawn with quick: true). Gets the short helper guidelines." />
           <Toggle checked={draft.worktree} onChange={v => set('worktree', v)} label="Its own worktree by default" hint="A git worktree and branch of its own, for work in parallel. Otherwise it works in your checkout with the team." />
-          <Toggle checked={!!draft.nativeSkills} onChange={v => set('nativeSkills', v)} label="Keep the harness’s own skills" hint="Your personal skills for this harness, and the repository’s in its own folder, as the harness loads them. Off: hidden, so every harness on the team has the same skills (the Skills page)." />
           <Field label="Workflow it follows" hint="Goes into its prompt. A goal's lead gets the goal's workflow instead.">
             <select value={draft.workflow} onChange={e => set('workflow', e.target.value)}>
               <option value="">None</option>
@@ -310,6 +310,14 @@ function RoleForm({ config, draft, set, isNew, original, footer }: { config?: Co
           {draft.mcp.some(n => !config?.mcp.some(m => m.name === n)) && (
             <div className="hint">Names not defined under Tools are looked up in the harness's own MCP settings on each machine.</div>
           )}
+        </Section>
+
+        <Section title="Skills" hint="Guides it carries and reads when they fit, by name. A skill no role names goes to every role.">
+          <ChipList values={draft.skills ?? []} onChange={v => set('skills', v)} placeholder="skill name, e.g. pdf-forms" suggestions={config?.skills.map(k => k.name) ?? []} />
+          {(draft.skills ?? []).some(n => !config?.skills.some(k => k.name === n)) && (
+            <div className="hint">Some of these names aren’t skills here: {(draft.skills ?? []).filter(n => !config?.skills.some(k => k.name === n)).join(', ')}.</div>
+          )}
+          <Toggle checked={!!draft.nativeSkills} onChange={v => set('nativeSkills', v)} label="Keep the harness’s own skills" hint="Your personal skills for this harness, and the repository’s in its own folder, as the harness loads them. Off: hidden, so every harness on the team has the same skills." />
         </Section>
         {!isNew && original && <div className="muted small mono file-path">{original.file}</div>}
       </div>

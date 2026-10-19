@@ -155,6 +155,7 @@ export interface RoleDef {
   worktree: boolean;
   workflow: string;
   mcp: string[];
+  skills: string[];
   autoApprove: 'read-only' | 'none';
   /** Its own approval mode; empty: the settings'. */
   approvals: string;
@@ -188,6 +189,8 @@ export interface RuleDef {
   body: string;
   roles: string[];
   paths: string[];
+  /** A skill the note points at. */
+  skill?: string;
   sections?: string;
   include?: string;
   requires?: string;
@@ -202,7 +205,6 @@ export interface RuleDef {
   switchedBy?: Scope;
 }
 
-export type SkillWhen = 'start' | 'path' | 'new-file' | 'commit';
 /** Where a skill's folder is: MetaHarness's own, personal, the repository's .metaharness, or another harness's folder in it. */
 export type SkillSource = 'built-in' | 'personal' | 'repo' | '.claude' | '.agents';
 
@@ -210,9 +212,6 @@ export type SkillSource = 'built-in' | 'personal' | 'repo' | '.claude' | '.agent
 export interface SkillDef {
   name: string;
   description: string;
-  when: SkillWhen;
-  roles: string[];
-  paths: string[];
   harness: string[];
   body: string;
   dir: string;
@@ -222,6 +221,10 @@ export interface SkillDef {
   on: boolean;
   switchedBy?: Scope;
   files: { path: string; bytes: number }[];
+  /** Roles whose skills: name it; empty: every role carries it. */
+  carriedBy: string[];
+  /** Rules that point at it. */
+  pointedBy: string[];
 }
 
 export interface GuideDef {

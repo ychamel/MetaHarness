@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ConfigView, McpDef, Scope } from '../types.ts';
 import { Field, useConfirm } from '../components/common.tsx';
 import { EditorFooter, keyOf, ListItem, ScopePicker, Section, SetupLayout, useDraft, useLeaveGuard, type SetupProps } from './setup.tsx';
+import { SkillDetail, SkillItem, skillKey } from './Skills.tsx';
 
 /** A server as the form edits it: lists and maps as lines of text. */
 interface Draft {
@@ -48,11 +49,16 @@ function toDef(d: Draft): McpDef {
   return { command: d.command.trim(), ...(args.length ? { args } : {}), ...(Object.keys(env).length ? { env } : {}) };
 }
 
-/** MCP servers roles can name with their Tools setting (mcp.json in each config folder). */
+/**
+ * What roles carry besides MetaHarness's own tools: MCP servers they name under Tools (mcp.json in
+ * each config folder), and skills they name under Skills (read-only here).
+ */
 export function Tools({ config, selected, onSelect, onSave }: SetupProps) {
   const servers = useMemo(() => config?.mcp ?? [], [config]);
+  const skills = config?.skills ?? [];
   const isNew = selected === 'new';
-  const current = servers.find(s => keyOf(s) === selected) ?? (isNew ? undefined : servers[0]);
+  const skill = skills.find(k => skillKey(k) === selected) ?? (!selected && !servers.length ? skills[0] : undefined);
+  const current = servers.find(s => keyOf(s) === selected) ?? (isNew || skill ? undefined : servers[0]);
   const scope0: Scope = config?.scopes.some(s => s.scope === 'repo') ? 'repo' : 'personal';
   const template = useMemo(() => (current && !isNew ? toDraft(current.name, current.scope, current.def) : toDraft('', scope0, { command: '' })), [current, isNew, scope0]);
   const { draft, set, dirty, revert } = useDraft<Draft>(template);
@@ -73,8 +79,12 @@ export function Tools({ config, selected, onSelect, onSave }: SetupProps) {
 
   return (
     <SetupLayout
-      title="Tools"
-      intro={<>MCP servers a role can use besides MetaHarness’s own, such as Blender or a browser. A role names them under <i>Tools</i>; a name that isn’t defined here is looked up in the harness’s own settings.</>}
+      title="Tools & skills"
+      intro={
+        <>
+          What roles carry besides MetaHarness’s own tools. <b>MCP servers</b>, such as Blender or a browser: a role names them under <i>Tools</i>, and a name that isn’t defined here is looked up in the harness’s own settings. <b>Skills</b>, guides with files that agents read when they decide they need one: folders with a <span className="mono">SKILL.md</span> in <span className="mono">.metaharness/skills</span>, <span className="mono">~/.metaharness/skills</span>, or the repository’s <span className="mono">.claude/skills</span> and <span className="mono">.agents/skills</span>. A role names the skills it carries under <i>Skills</i>; one no role names goes to every role.
+        </>
+      }
       action={
         <button className="btn primary" onClick={() => void go('new')}>
           + New server
@@ -82,6 +92,7 @@ export function Tools({ config, selected, onSelect, onSave }: SetupProps) {
       }
       list={
         <>
+          <div className="list-group">MCP servers</div>
           {servers.map(s => (
             <ListItem
               key={keyOf(s)}
@@ -93,10 +104,17 @@ export function Tools({ config, selected, onSelect, onSave }: SetupProps) {
             />
           ))}
           {!servers.length && <div className="empty">No servers defined. Roles can still name servers their harness already has.</div>}
+          <div className="list-group">Skills</div>
+          {skills.map(k => (
+            <SkillItem key={skillKey(k)} skill={k} on={skill ? skillKey(skill) === skillKey(k) : false} onClick={() => void go(skillKey(k))} />
+          ))}
+          {!skills.length && <div className="empty">No skills yet. Add a folder with a SKILL.md to one of the skills folders.</div>}
         </>
       }
       editor={
-        !current && !isNew ? (
+        skill ? (
+          <SkillDetail skill={skill} scopes={config?.scopes ?? []} onSave={onSave} />
+        ) : !current && !isNew ? (
           <div className="empty">Pick a server, or add one.</div>
         ) : (
           <div className="editor">

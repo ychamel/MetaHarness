@@ -1,18 +1,16 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { parseFrontMatter } from './config.ts';
-import { appliesTo, BUILTIN_DIR, forHarness, type Rule, type RuleAgent } from './rules.ts';
+import { BUILTIN_DIR, forHarness, type Rule } from './rules.ts';
 
 /**
  * Skills (design §18): guides with a folder of resources, in the SKILL.md format the harnesses
  * share. The agent decides when to read one, through the skill tool, on every harness alike.
- * MetaHarness only points at them: a line in the prompt, or a rule-style note at the moment a
- * skill becomes relevant. Reading one gives a summary first (its sections and files), and a
- * section or file on request, so nothing long arrives unasked.
+ * Like MCP servers, they're a library roles carry: a role's `skills:` names the ones it has.
+ * MetaHarness only points at them: a line in the prompt, or a rule (`skill:`) at the moment one
+ * fits. Reading one gives a summary first (its sections and files), and a section or file on
+ * request, so nothing long arrives unasked.
  */
-
-export type SkillWhen = 'start' | 'path' | 'new-file' | 'commit';
-export const SKILL_WHENS: SkillWhen[] = ['start', 'path', 'new-file', 'commit'];
 
 /** Where a skill's folder is: MetaHarness's own, ~/.metaharness, or one of the repository's skill folders. */
 export type SkillSource = 'built-in' | 'personal' | 'repo' | '.claude' | '.agents';
@@ -20,13 +18,7 @@ export type SkillSource = 'built-in' | 'personal' | 'repo' | '.claude' | '.agent
 export interface Skill {
   name: string;
   description: string;
-  /** start: a line in the prompt. The others: a note when the moment comes, like a rule's. */
-  when: SkillWhen;
-  /** all, team, helpers, lead, role names, and !name to leave one out. */
-  roles: string[];
-  /** Globs relative to the repository (path, new-file, commit). */
-  paths: string[];
-  /** Harness ids it's for, and !id to leave one out; empty: every harness. */
+  /** Harness ids it works with, and !id to leave one out; empty: every harness. */
   harness: string[];
   body: string;
   dir: string;
@@ -62,14 +54,9 @@ export function skillLayers(configDirs: string[], repo?: string, builtIn = true)
 
 export function parseSkill(folder: string, text: string, dir: string, source: SkillSource): Skill {
   const { meta, body } = parseFrontMatter(text);
-  const when = (SKILL_WHENS as string[]).includes(meta.when ?? '') ? (meta.when as SkillWhen) : 'start';
-  const name = meta.name && NAME.test(meta.name) ? meta.name : folder;
   return {
-    name,
-    when,
+    name: meta.name && NAME.test(meta.name) ? meta.name : folder,
     description: meta.description || body.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim().slice(0, 160) || '',
-    roles: list(meta.roles).length ? list(meta.roles) : ['all'],
-    paths: list(meta.paths).length ? list(meta.paths) : ['**'],
     harness: list(meta.harness ?? meta.harnesses),
     body,
     dir,
@@ -111,63 +98,68 @@ export function nativeSkillNames(dir: string): string[] {
   return [...new Set(loadSkillFolder({ source: 'repo', dir }).flatMap(s => [s.name, s.dir.slice(dir.length + 1)]))];
 }
 
-/* ---------------- who a skill is for ---------------- */
+/* ---------------- who carries a skill ---------------- */
 
-export interface SkillAgent extends RuleAgent {
+export interface SkillAgent {
   harness: string;
+  /** Its role's `skills:`. */
+  skills: string[];
 }
 
-export function skillFor(s: Skill, a: SkillAgent): boolean {
-  return !s.off && forHarness(s.harness, a.harness) && appliesTo(s, a);
-}
-
-export function skillsFor(skills: Iterable<Skill>, a: SkillAgent): Skill[] {
-  return [...skills].filter(s => skillFor(s, a)).sort((x, y) => x.name.localeCompare(y.name));
+/** The skills some role names: only those roles carry them. */
+export function claimedSkills(roles: Iterable<{ skills?: string[] }>): Set<string> {
+  return new Set([...roles].flatMap(r => r.skills ?? []));
 }
 
 /**
- * A skill with a moment as a rule the rules engine fires: its note names the skill and what it's
- * for, never its text.
+ * Whether an agent carries a skill: it's on, works with the agent's harness, and either its role
+ * names it or no role does (then every role carries it).
  */
-export function skillRules(skills: Iterable<Skill>): Rule[] {
-  return [...skills]
-    .filter(s => !s.off && s.when !== 'start')
-    .map(s => ({
-      name: `skill:${s.name}`,
-      skill: s.name,
-      when: s.when,
-      description: s.description,
-      body: `The skill ${s.name} may help here: ${s.description}\nRead it with skill("${s.name}") if it fits what you're doing.`,
-      roles: s.roles,
-      paths: s.paths,
-      harness: s.harness,
-      changes: ['added', 'modified', 'deleted', 'renamed'],
-      edited: false,
-      off: false,
-      file: s.file,
-    }));
+export function skillFor(s: Skill, a: SkillAgent, claimed: Set<string>): boolean {
+  return !s.off && forHarness(s.harness, a.harness) && (a.skills.includes(s.name) || !claimed.has(s.name));
+}
+
+export function skillsFor(skills: Iterable<Skill>, a: SkillAgent, claimed: Set<string>): Skill[] {
+  return [...skills].filter(s => skillFor(s, a, claimed)).sort((x, y) => x.name.localeCompare(y.name));
+}
+
+/**
+ * Rules as an agent gets them: a rule that points at a skill (`skill:`) only when the agent
+ * carries that skill, with a line naming it and what it's for after the rule's own text.
+ */
+export function withSkills(rules: Iterable<Rule>, mine: Skill[]): Rule[] {
+  const out: Rule[] = [];
+  for (const r of rules) {
+    if (!r.skill) {
+      out.push(r);
+      continue;
+    }
+    const s = mine.find(x => x.name === r.skill);
+    if (!s) continue;
+    const pointer = `The skill ${s.name} may help here: ${s.description}\nRead it with skill("${s.name}") if it fits what you're doing.`;
+    out.push({ ...r, body: r.body ? `${r.body}\n\n${pointer}` : pointer, description: r.description || `points to the skill ${s.name}` });
+  }
+  return out;
 }
 
 const HOW = 'skill("<name>") gives a summary with its sections and files, and skill("<name>", part) one section or file.';
 
-/** The Skills part of an agent's prompt; empty when no skill is for it. */
-export function skillsPrompt(skills: Iterable<Skill>, a: SkillAgent): string {
-  const mine = skillsFor(skills, a);
+/** The Skills part of an agent's prompt; empty when it carries none. */
+export function skillsPrompt(mine: Skill[]): string {
   if (!mine.length) return '';
-  const start = mine.filter(s => s.when === 'start');
-  const parts = ['## Skills', `Guides for particular kinds of work, with files to go with them. Read one with the \`skill\` tool when it fits: ${HOW}`];
-  if (start.length) parts.push(start.map(s => `- ${s.name}: ${s.description}`).join('\n'));
-  if (start.length < mine.length) parts.push('Others are suggested when they become relevant, in a note marked "[MetaHarness · skill <name>]". skill() lists every skill for your role.');
-  return parts.join('\n\n');
+  return [
+    '## Skills',
+    `Guides for particular kinds of work, with files to go with them. Read one with the \`skill\` tool when it fits what you're doing: ${HOW}`,
+    mine.map(s => `- ${s.name}: ${s.description}`).join('\n'),
+  ].join('\n\n');
 }
 
 /* ---------------- reading one ---------------- */
 
-/** All the skills for an agent, for skill() without a name. */
+/** All the skills an agent carries, for skill() without a name. */
 export function skillList(mine: Skill[]): string {
   if (!mine.length) return 'There are no skills for your role.';
-  const moment: Record<SkillWhen, string> = { start: '', path: ' (suggested when you look at files)', 'new-file': ' (suggested when you create a file)', commit: ' (suggested when you commit)' };
-  return `Skills:\n${mine.map(s => `- ${s.name}: ${s.description}${moment[s.when]}`).join('\n')}\n\nRead one with ${HOW}`;
+  return `Skills:\n${mine.map(s => `- ${s.name}: ${s.description}`).join('\n')}\n\nRead one with ${HOW}`;
 }
 
 interface Heading {

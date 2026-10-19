@@ -32,8 +32,8 @@ Milestone 1 in progress:
   any rule off or write your own.
 - **Skills** (`SKILL.md` folders, including the repository's `.claude/skills` and
   `.agents/skills`) reach every harness through one `skill` tool: a summary first, then the
-  section or file an agent needs. They're named in the prompt or suggested at the moment they
-  fit, by role and harness. Personal skills are hidden so every harness is on equal terms.
+  section or file an agent needs. Roles carry them like MCP servers, and a rule can point at
+  one at the moment it fits. Personal skills are hidden so every harness is on equal terms.
 - The team works **in your checkout**, like native subagents; worktrees (on `mh/<goal>/<agent>`)
   are only for code written in parallel, when a workflow asks for them. They get hard-linked
   copies of your ignored `node_modules`/`vendor`, merge conflicts show up in `mh tail`, and

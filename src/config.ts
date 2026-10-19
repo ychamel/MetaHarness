@@ -96,6 +96,7 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string
         permissionMode: meta.permission_mode || undefined,
         autoApprove: /^(none|no|off|false|ask)$/i.test(meta.auto_approve ?? '') ? 'none' : 'read-only',
         mcp: list(meta.mcp),
+        skills: list(meta.skills),
         workflow: meta.workflow || undefined,
         worktree: /^(true|yes|1)$/i.test(meta.worktree ?? ''),
         nativeSkills: /^(true|yes|1)$/i.test(meta.native_skills ?? ''),

@@ -337,27 +337,28 @@ restarting the daemon. The pages write the same files described below.
   (that writes `"rules": {"map": false}` into `settings.json`), or add a file of the same name
   with `off: true`.
 - **Skills** are guides for a kind of work with files to go with them: a folder with a
-  `SKILL.md`, in the format Claude Code, Codex and Antigravity share. Agents on every harness
-  read them with their `skill` tool: first a summary (what it's for, its sections, its files),
-  then the one section or file they need, so nothing long arrives unasked. Put a skill in
+  `SKILL.md`, in the format Claude Code, Codex and Antigravity share. Rules are for moments
+  MetaHarness can see (a path, a new file, a commit); skills are for needs only the agent
+  recognizes, like writing a migration or cutting a release, so the agent reads one when it
+  decides it needs it. Agents on every harness use their `skill` tool: first a summary (what
+  it's for, its sections, its files), then the one section or file they need. Put a skill in
   `.metaharness/skills/<name>/` or `~/.metaharness/skills/<name>/`; the repository's
-  `.claude/skills` and `.agents/skills` count too, for every harness. The **Skills** page
-  lists them with a switch each. Front-matter keys say who gets one and when:
+  `.claude/skills` and `.agents/skills` count too, for every harness.
 
   ```markdown
   ---
   name: pdf-forms
   description: filling PDF forms with the scripts in this folder
-  when: path                 # start (default): named in the prompt; path, new-file, commit: suggested then
-  paths: forms/**            # for path, new-file and commit
-  roles: implementer         # all, team, helpers, lead, role names, !name
-  harness: claude-code       # optional; !id leaves one out
+  harness: claude-code       # optional: what it works with; !id leaves one out
   ---
   ```
 
-  A skill with a `when:` other than `start` is not named in the prompt: when the moment comes,
-  a short note names it and says what it's for, and the agent decides whether to read it.
-  `harness:` works for rules too.
+  The **Tools & skills** page lists them, with a switch each. A role names the skills it
+  carries under **Skills** (`skills: pdf-forms` in its file); a skill no role names goes to
+  every role. Each agent's prompt names the skills it carries. To remind agents at a moment,
+  give a rule a skill to point at (`skill: pdf-forms`, with `when: path` and `paths: forms/**`):
+  its note names the skill when they open a form. A rule that grows long is usually better as
+  a skill.
 - **Personal skills stay out.** Skills you installed for yourself (in `~/.claude/skills`, your
   Codex skills, `~/.gemini/config/skills`) are hidden from agents, so every harness on a team
   has the same ones. So are each harness's own copies of the repository's skills, which come

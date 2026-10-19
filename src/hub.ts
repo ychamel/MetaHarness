@@ -185,7 +185,7 @@ export class Hub {
         const r = resolveName(want, mine.map(s => s.name));
         if (!r.match) {
           const other = d.config.skills.get(want);
-          const why = !other ? `There's no skill called "${want}".` : other.off ? `The skill ${want} is turned off.` : `The skill ${want} isn't for your role (${rec.role.name}) on ${rec.harness}.`;
+          const why = !other ? `There's no skill called "${want}".` : other.off ? `The skill ${want} is turned off.` : `Your role (${rec.role.name} on ${rec.harness}) doesn't carry the skill ${want}.`;
           return `${why} ${skillList(mine)}`;
         }
         const sk = mine.find(s => s.name === r.match)!;

@@ -23,7 +23,7 @@ import { deniedCommandPrefixes, guardEnv, installGuard, refusedGitCommand } from
 import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
 import { onCommit, onDone, onToolCall, rulesPrompt, RuleState, type Rule, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
-import { skillRules, skillsFor, skillsPrompt, type Skill } from './skills.ts';
+import { claimedSkills, skillsFor, skillsPrompt, withSkills, type Skill } from './skills.ts';
 
 export interface InboxEntry {
   id: string;
@@ -636,9 +636,9 @@ export class Daemon {
       const list = [...this.config.workflows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
       parts.push(`## Workflows\n\nGuides for running kinds of tasks. If one fits this goal, read it with the \`workflow\` tool and follow it.\n\n${list}`);
     }
-    const rules = rulesPrompt(this.config.rules.values(), ruleAgent(rec), rec.cwd);
+    const rules = rulesPrompt(this.agentRules(rec), ruleAgent(rec), rec.cwd);
     if (rules) parts.push(rules);
-    const skills = skillsPrompt(this.config.skills.values(), ruleAgent(rec));
+    const skills = skillsPrompt(this.skillsFor(rec));
     if (skills) parts.push(skills);
     parts.push(
       [
@@ -1385,33 +1385,33 @@ export class Daemon {
 
   /* ---------------- rules and skills (design §18) ---------------- */
 
-  /** The rules, plus the skills that are suggested at a moment, which fire the same way. */
-  private momentRules(): Rule[] {
-    return [...this.config.rules.values(), ...skillRules(this.config.skills.values())];
+  /** The rules as an agent gets them: those pointing at a skill only when it carries the skill. */
+  private agentRules(rec: AgentRec): Rule[] {
+    return withSkills(this.config.rules.values(), this.skillsFor(rec));
   }
 
-  /** The skills an agent may read: for its role and harness, and on. */
+  /** The skills an agent carries: those its role names, and those no role names; on, and for its harness. */
   skillsFor(rec: AgentRec): Skill[] {
-    return skillsFor(this.config.skills.values(), ruleAgent(rec));
+    return skillsFor(this.config.skills.values(), { harness: rec.harness, skills: rec.role.skills ?? [] }, claimedSkills(this.config.roles.values()));
   }
 
   /** Path and new-file rules for one tool call. */
   private toolRules(rec: AgentRec, tool: string, summary: string, info?: ToolInfo): void {
     if (FINISHED.includes(rec.state)) return;
-    for (const n of onToolCall(this.momentRules(), ruleAgent(rec), rec.cwd, rec.rules, tool, summary, info)) this.ruleNote(rec, n);
+    for (const n of onToolCall(this.agentRules(rec), ruleAgent(rec), rec.cwd, rec.rules, tool, summary, info)) this.ruleNote(rec, n);
   }
 
   /** Commit rules for a commit an agent made (not a merge). */
   private commitRules(g: GoalRec, gg: git.GoalGit, name: string, sha: string): void {
     const rec = g.agents.get(name);
     if (!rec || rec.quick) return;
-    const notes = onCommit(this.momentRules(), ruleAgent(rec), rec.cwd, rec.rules, sha, git.changedFiles(gg, sha));
+    const notes = onCommit(this.agentRules(rec), ruleAgent(rec), rec.cwd, rec.rules, sha, git.changedFiles(gg, sha));
     for (const n of notes) this.ruleNote(rec, n);
   }
 
   /** The done rules an agent hasn't had this session: the reply that holds its first done back. */
   doneRules(rec: AgentRec): string | undefined {
-    const n = onDone(this.config.rules.values(), ruleAgent(rec), rec.cwd, rec.rules);
+    const n = onDone(this.agentRules(rec), ruleAgent(rec), rec.cwd, rec.rules);
     if (!n) return undefined;
     this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: [] } });
     return n.text;
@@ -1419,9 +1419,8 @@ export class Daemon {
 
   /** In a turn, a rule's note joins it; between turns it waits for whatever reaches the agent next, so it never wakes anyone. */
   private ruleNote(rec: AgentRec, n: RuleNote): void {
-    const skill = /^skill:(.+)$/.exec(n.rule)?.[1];
-    if (skill) this.emit({ goal: rec.goal, agent: rec.name, type: 'skill.suggested', data: { skill, when: n.when, paths: n.paths.slice(0, 20) } });
-    else this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: n.paths.slice(0, 20) } });
+    const skill = this.config.rules.get(n.rule)?.skill;
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: n.paths.slice(0, 20), ...(skill ? { skill } : {}) } });
     if (rec.session?.busy() && !FINISHED.includes(rec.state)) this.notice(rec, n.text);
     else rec.ruleNotes.push(n.text);
   }
@@ -3002,8 +3001,8 @@ export function formatForAgent(entries: InboxEntry[]): string {
 }
 
 /** Whether a role's allow list (Claude Code style, e.g. "Bash(npm test*)") covers a shell command. */
-/** Who an agent is, for the roles: and harness: lines of rules and skills. */
-function ruleAgent(rec: AgentRec): RuleAgent & { harness: string } {
+/** Who an agent is, for the roles: and harness: lines of rules. */
+function ruleAgent(rec: AgentRec): RuleAgent {
   return { role: rec.role.name, helper: rec.quick || rec.role.helper, lead: rec.isLead, harness: rec.harness };
 }
 

@@ -4,7 +4,7 @@ import { loadConfig, parseFrontMatter } from './config.ts';
 import type { McpServerDef } from './mcpservers.ts';
 import { BUILTIN_DIR, loadRuleFiles, loadRules, RULE_WHENS, type Rule } from './rules.ts';
 import { loadSettings } from './settings.ts';
-import { loadSkillFolder, loadSkills, skillFiles, skillLayers, SKILL_WHENS, type Skill, type SkillSource } from './skills.ts';
+import { loadSkillFolder, loadSkills, skillFiles, skillLayers, type Skill, type SkillSource } from './skills.ts';
 
 /**
  * Reading and writing the configuration from a client (the web app): roles, workflows, rules, the
@@ -57,6 +57,7 @@ export interface RoleView {
   worktree: boolean;
   workflow: string;
   mcp: string[];
+  skills: string[];
   autoApprove: 'read-only' | 'none';
   /** Its own approval mode; empty: the settings'. */
   approvals: string;
@@ -96,6 +97,10 @@ export interface SkillView extends Omit<Skill, 'off'> {
   switchedBy?: Scope;
   /** The files in its folder besides SKILL.md. */
   files: { path: string; bytes: number }[];
+  /** The roles whose skills: name it; empty: every role carries it. */
+  carriedBy: string[];
+  /** Rules that point at it. */
+  pointedBy: string[];
 }
 
 export interface GuideView {
@@ -145,7 +150,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
       const before = roles.get(r.name);
       roles.set(r.name, {
         name: r.name, scope, file: r.file, overrides: before?.scope, harness: r.harness, model: r.model, fallback: r.fallback, goodAt: r.goodAt,
-        instructions: r.instructions, helper: r.helper, worktree: r.worktree, workflow: r.workflow ?? '', mcp: r.mcp, autoApprove: r.autoApprove, approvals: r.approvals ?? '',
+        instructions: r.instructions, helper: r.helper, worktree: r.worktree, workflow: r.workflow ?? '', mcp: r.mcp, skills: r.skills ?? [], autoApprove: r.autoApprove, approvals: r.approvals ?? '',
         permissionMode: r.permissionMode ?? '', allow: r.allow, nativeSkills: !!r.nativeSkills,
       });
     }
@@ -161,7 +166,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
     roles: byName(roles),
     workflows: byName(workflows),
     rules: rulesView(scopes),
-    skills: skillsView(scopes),
+    skills: skillsView(scopes, byName(roles), rulesView(scopes)),
     methodology: guide('methodology.md', builtIn.methodology),
     helperMethodology: guide('helper-methodology.md', builtIn.helperMethodology),
     mcp: byName(mcp),
@@ -200,14 +205,18 @@ function repoOf(scopes: ScopeDir[]): string | undefined {
 }
 
 /** Every skill with the folder it's in, what it replaces, and whether it's on. */
-function skillsView(scopes: ScopeDir[]): SkillView[] {
+function skillsView(scopes: ScopeDir[], roles: RoleView[], rules: RuleView[]): SkillView[] {
   const layers = skillLayers(scopes.map(s => s.dir), repoOf(scopes));
   const effective = loadSkills(layers, loadSettings(scopes.map(s => s.dir)).skills);
   const out = new Map<string, SkillView>();
   for (const layer of layers) {
     for (const sk of loadSkillFolder(layer)) {
       const { off: _off, ...rest } = sk;
-      out.set(sk.name, { ...rest, overrides: out.get(sk.name)?.source, on: !effective.get(sk.name)?.off, files: skillFiles(sk.dir, 40).files });
+      out.set(sk.name, {
+        ...rest, overrides: out.get(sk.name)?.source, on: !effective.get(sk.name)?.off, files: skillFiles(sk.dir, 40).files,
+        carriedBy: roles.filter(r => r.skills.includes(sk.name)).map(r => r.name),
+        pointedBy: rules.filter(r => r.skill === sk.name).map(r => r.name),
+      });
     }
   }
   for (const { scope, dir } of scopes) {
@@ -216,7 +225,7 @@ function skillsView(scopes: ScopeDir[]): SkillView[] {
       if (v) v.switchedBy = scope;
     }
   }
-  return [...out.values()].sort((a, b) => SKILL_WHENS.indexOf(a.when) - SKILL_WHENS.indexOf(b.when) || a.name.localeCompare(b.name));
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /* ---------------- writing ---------------- */
@@ -237,7 +246,7 @@ function writeDoc(file: string, meta: [string, string][], body: string, keep = '
 }
 
 /** Keys the app writes for a role; anything else already in the file is kept as it was. */
-const ROLE_KEYS = ['harness', 'model', 'fallback', 'fallbacks', 'good_at', 'helper', 'worktree', 'workflow', 'mcp', 'auto_approve', 'approvals', 'permission_mode', 'allow', 'native_skills'];
+const ROLE_KEYS = ['harness', 'model', 'fallback', 'fallbacks', 'good_at', 'helper', 'worktree', 'workflow', 'mcp', 'auto_approve', 'approvals', 'permission_mode', 'allow', 'native_skills', 'skills'];
 
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : []).map(x => String(x).trim()).filter(Boolean);
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
@@ -275,6 +284,7 @@ export function saveRole(scopes: ScopeDir[], b: Record<string, unknown>): string
       ['worktree', b.worktree === true ? 'true' : ''],
       ['workflow', str(b.workflow)],
       ['mcp', strList(b.mcp).join(', ')],
+      ['skills', strList(b.skills).join(', ')],
       ['auto_approve', b.autoApprove === 'none' ? 'none' : ''],
       ['approvals', ['ask', 'gatekeeper', 'harness'].includes(str(b.approvals)) ? str(b.approvals) : ''],
       ['permission_mode', str(b.permissionMode)],
@@ -309,7 +319,7 @@ export function saveWorkflow(scopes: ScopeDir[], b: Record<string, unknown>): st
 }
 
 /** Keys the app writes for a rule; anything else already in the file is kept as it was. */
-const RULE_KEYS = ['when', 'description', 'roles', 'paths', 'sections', 'include', 'requires', 'missing', 'changes', 'unless_changed', 'edited', 'off'];
+const RULE_KEYS = ['when', 'description', 'roles', 'paths', 'sections', 'include', 'requires', 'missing', 'changes', 'unless_changed', 'edited', 'off', 'skill'];
 
 /** Saves a rule as rules/<name>.md. Saving a built-in one into a folder makes a copy that replaces it there. */
 export function saveRule(scopes: ScopeDir[], b: Record<string, unknown>): string {
@@ -318,7 +328,8 @@ export function saveRule(scopes: ScopeDir[], b: Record<string, unknown>): string
   const when = str(b.when);
   if (!(RULE_WHENS as string[]).includes(when)) throw new Error(`A rule's "when" is one of ${RULE_WHENS.join(', ')}.`);
   const body = str(b.body);
-  if (!body && b.off !== true) throw new Error('A rule needs its text: what the agent should read.');
+  const skill = str(b.skill);
+  if (!body && !skill && b.off !== true) throw new Error('A rule needs its text (what the agent should read), or a skill to point at.');
   const file = join(dir, 'rules', `${name}.md`);
   const prev = (b.previous ?? {}) as Previous;
   const prevFile = prev.name && prev.scope !== ('built-in' as Scope) ? join(dirOf(scopes, prev.scope ?? b.scope), 'rules', `${checkName(prev.name, 'rule')}.md`) : undefined;
@@ -335,6 +346,7 @@ export function saveRule(scopes: ScopeDir[], b: Record<string, unknown>): string
       ['description', str(b.description)],
       ['roles', joined(b.roles) === 'all' ? '' : joined(b.roles)],
       ['paths', paths === '**' ? '' : paths],
+      ['skill', skill],
       ['sections', str(b.sections)],
       ['include', str(b.include)],
       ['requires', str(b.requires)],

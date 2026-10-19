@@ -41,6 +41,8 @@ export interface Role {
   permissionMode?: string;
   /** MCP servers this role may use besides MetaHarness's own, by name (resolved on each machine). */
   mcp: string[];
+  /** Skills this role carries, by name. A skill no role names is carried by every role (design §18). */
+  skills?: string[];
   /** A workflow this role follows; it goes into the agent's prompt. */
   workflow?: string;
   /** Give agents in this role their own git worktree by default, instead of the shared folder. */

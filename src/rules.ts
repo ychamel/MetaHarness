@@ -28,7 +28,7 @@ export interface Rule {
   paths: string[];
   /** Harness ids it's for, and !id to leave one out; empty: every harness. */
   harness: string[];
-  /** Set when it's a skill's suggestion (src/skills.ts): the skill's name. */
+  /** A skill the note points at (src/skills.ts): only for agents that carry it. */
   skill?: string;
   /** A repository file whose path-headed sections come along (path rules). */
   sections?: string;
@@ -67,6 +67,7 @@ export function parseRule(name: string, text: string, file: string): Rule {
     roles: list(meta.roles).length ? list(meta.roles) : ['all'],
     paths: list(meta.paths).length ? list(meta.paths) : ['**'],
     harness: list(meta.harness ?? meta.harnesses),
+    skill: meta.skill || undefined,
     sections: meta.sections || undefined,
     include: meta.include || undefined,
     requires: meta.requires || undefined,
@@ -329,7 +330,7 @@ export interface RuleNote {
   text: string;
 }
 
-const head = (r: Pick<Rule, 'name' | 'skill'>) => (r.skill ? `[MetaHarness · skill ${r.skill}]` : `[MetaHarness · rule ${r.name}]`);
+const head = (r: Pick<Rule, 'name'>) => `[MetaHarness · rule ${r.name}]`;
 
 function withInclude(rule: Rule, cwd: string): string {
   const inc = rule.include && readRepoFile(cwd, rule.include);
@@ -348,7 +349,7 @@ const TRIGGER: Record<Exclude<RuleWhen, 'start'>, string> = {
  * others so the agent knows their notes will come. Empty when no rule is for this agent.
  */
 export function rulesPrompt(rules: Iterable<Rule>, a: RuleAgent, cwd: string): string {
-  const mine = [...rules].filter(r => !r.off && !r.skill && appliesTo(r, a) && holds(r, cwd));
+  const mine = [...rules].filter(r => !r.off && appliesTo(r, a) && holds(r, cwd));
   const start = mine.filter(r => r.when === 'start');
   const later = mine.filter(r => r.when !== 'start');
   if (!start.length && !later.length) return '';

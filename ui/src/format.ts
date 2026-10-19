@@ -77,7 +77,6 @@ export function eventText(e: MhEvent): string {
     case 'inbox.resolved': return `you ${d.decision === 'approve' ? 'approved' : d.decision === 'deny' ? 'denied' : 'dismissed'} ${d.id}${d.reply ? `: ${oneLine(d.reply)}` : ''}`;
     case 'account.limit': return `${d.account}: ${d.status}${d.usedPct != null ? `, ${d.usedPct}% used` : ''}`;
     case 'rule.fired': return ruleLine(d);
-    case 'skill.suggested': return skillLine(d);
     case 'skill.read': return skillLine(d);
     default: return '';
   }
@@ -94,12 +93,12 @@ function moment(d: Record<string, any>): string {
 
 /** A rule's note reaching an agent: "rule map (looking at src/api/orders.ts)". */
 export function ruleLine(d: Record<string, any>): string {
-  return `rule ${d.rule} (${moment(d)})`;
+  return `rule ${d.rule}${d.skill ? ` → skill ${d.skill}` : ''} (${moment(d)})`;
 }
 
-/** A skill suggested to an agent, or read by it: "skill pdf suggested (looking at forms/a.pdf)", "read skill pdf: scripts/fill.py". */
+/** A skill an agent read: "read skill pdf: scripts/fill.py". */
 export function skillLine(d: Record<string, any>): string {
-  return d.when ? `skill ${d.skill} suggested (${moment(d)})` : `read skill ${d.skill}${d.part ? `: ${d.part}` : ''}`;
+  return `read skill ${d.skill}${d.part ? `: ${d.part}` : ''}`;
 }
 
 /** Kinds of feed line, for styling and filtering. */
@@ -134,7 +133,7 @@ export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
       return e.data.version === 1 ? 'key' : 'minor';
     case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'approval.gatekeeper': case 'agent.cache_expiring': case 'shared.delete':
     case 'agent.paused': case 'agent.resumed': case 'agent.paused_between_steps': case 'agent.interrupted': case 'account.limit': case 'agent.context_full':
-    case 'rule.fired': case 'skill.suggested': case 'skill.read':
+    case 'rule.fired': case 'skill.read':
       return 'minor';
     default:
       return 'hidden';

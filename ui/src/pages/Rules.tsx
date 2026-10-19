@@ -162,6 +162,18 @@ export function Rules({ config, selected, onSelect, onSave }: SetupProps) {
                 )}
                 {draft.when === 'done' && <Toggle checked={draft.edited} onChange={v => set('edited', v)} label="Only for agents that changed files" hint="Reviewers and reporters that only read finish without it." />}
               </Section>
+              <Section title="Points at a skill" hint="Optional. The note then names the skill and what it’s for, so the agent reads it when it fits.">
+                <select value={draft.skill ?? ''} onChange={e => set('skill', e.target.value || undefined)}>
+                  <option value="">No skill</option>
+                  {config?.skills.map(k => (
+                    <option key={k.name} value={k.name}>
+                      {k.name}: {k.description.slice(0, 80)}
+                    </option>
+                  ))}
+                  {draft.skill && !config?.skills.some(k => k.name === draft.skill) && <option value={draft.skill}>{draft.skill} (missing)</option>}
+                </select>
+                {draft.skill && <div className="hint">Only agents whose role carries {draft.skill} get this rule.</div>}
+              </Section>
               <Section
                 title="What the agent reads"
                 hint={
@@ -182,7 +194,13 @@ export function Rules({ config, selected, onSelect, onSave }: SetupProps) {
                 ) : (
                   <textarea className="instructions" rows={10} value={draft.body} onChange={e => set('body', e.target.value)} placeholder={'Handlers in src/api take a request and return a response; they never touch the database directly.'} />
                 )}
-                <div className="hint">Keep it short: it arrives in the middle of the agent’s work. Point to files for anything long.</div>
+                <div className="hint">
+                  {draft.body.length > 1500
+                    ? 'This is long for a note that arrives mid-work. A guide this size makes a better skill (a folder with a SKILL.md): agents read it when they need it, and this rule can point at it.'
+                    : draft.skill
+                      ? 'Optional with a skill: anything to say before pointing at it.'
+                      : 'Keep it short: it arrives in the middle of the agent’s work. Point to files for anything long.'}
+                </div>
               </Section>
               <details className="advanced" open={!!(draft.sections || draft.include || draft.requires || draft.missing)}>
                 <summary>Files it uses</summary>

@@ -219,16 +219,21 @@ Findings from the run:
       the built-in, personal and `.metaharness/skills/` folders and the repository's
       `.claude/skills` and `.agents/skills`, for every harness. A `skill(name?, part?)` tool: a
       summary first (description, SKILL.md whole when short, else its opening and headings; its
-      files by path), then one section or file. Pointed at rule-style: `when: start` is a line in
-      the prompt, `path` / `new-file` / `commit` a note naming the skill when the moment comes
-      (through the rules engine); `roles:` and `harness:` filters (rules take `harness:` too);
-      `skills: {name: false}` in settings; a Skills page with a switch each, and a role toggle
-      for `native_skills: true`. Each harness's native copy of the repository's skills is hidden
-      (Claude Code `Skill(name)` denied, Codex `repo` scope off, Antigravity stubs). Live on
-      haiku, luna and gemini flash in a scratch repository: all three listed the skills, got the
-      path suggestion on reading `src/`, read the summary and the right section. Claude Code
-      still lists a hidden `.claude/skills` skill but its call was refused; Codex no longer
-      listed the `.agents/skills` one; Antigravity's stub won over the workspace's
+      files by path), then one section or file. Each harness's native copy of the repository's
+      skills is hidden (Claude Code `Skill(name)` denied, Codex `repo` scope off, Antigravity
+      stubs); `native_skills: true` on a role keeps them. Live on haiku, luna and gemini flash in
+      a scratch repository: all three listed the skills, got the note on reading `src/`, read the
+      summary and the right section. Claude Code still lists a hidden `.claude/skills` skill but
+      its call was refused; Codex no longer listed the `.agents/skills` one; Antigravity's stub
+      won over the workspace's
+- [x] **Skills carried like MCP servers** (2026-10-20, after talking it through): a role's
+      `skills:` names what it carries (a skill no role names goes to every role), a rule's
+      `skill:` points at one at a moment, and a skill's own file keeps only `harness:` and
+      `off:`. Skills moved to the *Tools & skills* page (read-only, with a switch, who carries
+      it and which rules point at it); the Roles page has a Skills field, the Rules page *Points
+      at a skill* and a hint when a rule's text grows long. Re-run live on the same three: a
+      skill only the Claude role names was listed for it alone, and a `skill:` rule on `src/**`
+      led each agent to the skill's summary and the right section
 - [ ] An agent that goes quiet mid-turn for a long time (no tool calls, no text): not detected
 - [ ] Test each workflow on its own, once more workflows and roles exist (quality, cost, time,
       interventions). A single-model baseline comparison is dropped for now (2026-10-18)

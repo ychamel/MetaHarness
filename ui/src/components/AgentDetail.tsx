@@ -82,7 +82,6 @@ function streamOf(events: MhEvent[], name: string): Item[] {
       case 'shared.write':
       case 'shared.clash':
       case 'rule.fired':
-      case 'skill.suggested':
       case 'skill.read':
         out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: noteText(e), warn: ['agent.crashed', 'git.conflict', 'shared.clash', 'agent.limited', 'agent.moved'].includes(e.type) });
         break;
@@ -111,7 +110,7 @@ function noteText(e: MhEvent): string {
     case 'shared.write': return `wrote shared/${d.path} (v${d.version})`;
     case 'shared.clash': return `changed shared/${d.path}, which is ${d.owner}'s`;
     case 'rule.fired': return ruleLine(d);
-    case 'skill.suggested': case 'skill.read': return skillLine(d);
+    case 'skill.read': return skillLine(d);
     default: return e.type;
   }
 }

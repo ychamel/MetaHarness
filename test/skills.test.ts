@@ -1,17 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeAdapter, type FakeScript } from '../src/adapters/fake.ts';
 import { agyHiddenSkills } from '../src/adapters/agy.ts';
 import { claudeArgs } from '../src/adapters/claude.ts';
 import type { SessionSpec } from '../src/adapters/types.ts';
-import { configView } from '../src/configedit.ts';
+import { configView, saveRole, saveRule } from '../src/configedit.ts';
 import { Daemon } from '../src/daemon.ts';
 import { git } from '../src/git.ts';
-import { onToolCall, RuleState } from '../src/rules.ts';
-import { loadSkills, nativeSkillNames, skillLayers, skillPart, skillRules, skillsFor, skillsPrompt, skillSummary } from '../src/skills.ts';
+import { onToolCall, parseRule, rulesPrompt, RuleState } from '../src/rules.ts';
+import { claimedSkills, loadSkills, nativeSkillNames, skillLayers, skillPart, skillsFor, skillsPrompt, skillSummary, withSkills } from '../src/skills.ts';
 import { makeRepo, withTimeout } from './helpers.ts';
 
 function put(dir: string, files: Record<string, string>): void {
@@ -54,8 +54,8 @@ function setup() {
     'skills/notes/SKILL.md': skill('description: personal notes, replaced by the repository'),
   });
   put(repo, {
-    '.claude/skills/frontend/SKILL.md': skill('description: building UI components\nwhen: path\npaths: ui/**\nroles: implementer'),
-    '.agents/skills/release/SKILL.md': skill('description: writing release notes\nroles: lead'),
+    '.claude/skills/frontend/SKILL.md': skill('description: building UI components'),
+    '.agents/skills/release/SKILL.md': skill('description: writing release notes'),
     '.agents/skills/claude-only/SKILL.md': skill('description: Claude Code tricks\nharness: claude-code'),
     '.metaharness/skills/notes/SKILL.md': skill('description: notes in this repository'),
     'ui/app.tsx': 'export {};\n',
@@ -63,9 +63,11 @@ function setup() {
   return { personal, repo, dirs: [personal, join(repo, '.metaharness')] };
 }
 
-const agent = (role: string, o: { harness?: string; lead?: boolean; helper?: boolean } = {}) => ({ role, harness: o.harness ?? 'codex', lead: !!o.lead, helper: !!o.helper });
+const agent = (skills: string[] = [], harness = 'codex') => ({ harness, skills });
+/** implementer carries frontend, lead carries release; nobody names the others. */
+const claimed = claimedSkills([{ skills: ['frontend'] }, { skills: ['release'] }, {}]);
 
-test('skills: layers, overrides, switches, and who each is for', () => {
+test('skills: layers, overrides, switches, and which roles carry them', () => {
   const { repo, dirs } = setup();
   const layers = skillLayers(dirs, repo, false);
   assert.deepEqual(layers.map(l => l.source), ['personal', '.claude', '.agents', 'repo']);
@@ -75,32 +77,35 @@ test('skills: layers, overrides, switches, and who each is for', () => {
   assert.equal(skills.get('notes')!.description, 'notes in this repository');
   assert.ok(skills.get('release')!.off, 'turned off in the settings');
 
-  const names = (a: ReturnType<typeof agent>) => skillsFor(skills.values(), a).map(s => s.name);
-  assert.deepEqual(names(agent('implementer')), ['frontend', 'notes', 'pdf']);
-  assert.deepEqual(names(agent('reviewer', { harness: 'claude-code' })), ['claude-only', 'notes', 'pdf'], 'harness: keeps one to Claude Code');
-  assert.deepEqual(names(agent('architect', { lead: true })), ['notes', 'pdf'], 'release would be for the lead, but it is off');
+  const names = (a: ReturnType<typeof agent>) => skillsFor(skills.values(), a, claimed).map(s => s.name);
+  assert.deepEqual(names(agent(['frontend'])), ['frontend', 'notes', 'pdf'], 'its own, plus those no role names');
+  assert.deepEqual(names(agent([], 'claude-code')), ['claude-only', 'notes', 'pdf'], 'harness: keeps one to Claude Code; frontend is the implementer\'s');
+  assert.deepEqual(names(agent(['release'])), ['notes', 'pdf'], 'release is named by this role, but it is off');
 
   assert.deepEqual(nativeSkillNames(join(repo, '.claude', 'skills')), ['frontend']);
 });
 
-test('skills: the prompt names start skills; the others come as notes when their moment comes', () => {
+test('skills: the prompt names the skills an agent carries; a rule can point at one when the moment comes', () => {
   const { repo, dirs } = setup();
   const skills = loadSkills(skillLayers(dirs, repo, false));
-  const prompt = skillsPrompt(skills.values(), agent('implementer'));
+  const mine = skillsFor(skills.values(), agent(['frontend']), claimed);
+  const prompt = skillsPrompt(mine);
   assert.match(prompt, /^## Skills\n\nGuides for particular kinds of work[\s\S]*skill\("<name>", part\)/);
-  assert.match(prompt, /- notes: notes in this repository\n- pdf: filling PDF forms/);
-  assert.doesNotMatch(prompt, /frontend/, 'a path skill is suggested later, not listed');
-  assert.match(prompt, /Others are suggested when they become relevant/);
-  assert.equal(skillsPrompt(skills.values(), { ...agent('x'), harness: 'none' }).includes('frontend'), false);
+  assert.match(prompt, /- frontend: building UI components\n- notes: notes in this repository\n- pdf: filling PDF forms/);
+  assert.equal(skillsPrompt([]), '');
 
-  const st = new RuleState();
-  const rules = skillRules(skills.values());
-  const first = onToolCall(rules, agent('implementer'), repo, st, 'read', 'ui/app.tsx', { kind: 'read' });
-  assert.equal(first.length, 1);
-  assert.equal(first[0].rule, 'skill:frontend');
-  assert.match(first[0].text, /^\[MetaHarness · skill frontend\] You're looking at ui\/app.tsx\.\nThe skill frontend may help here: building UI components\nRead it with skill\("frontend"\)/);
-  assert.deepEqual(onToolCall(rules, agent('implementer'), repo, st, 'read', 'ui/app.tsx', { kind: 'read' }), [], 'once per session');
-  assert.deepEqual(onToolCall(rules, agent('reviewer'), repo, new RuleState(), 'read', 'ui/app.tsx', { kind: 'read' }), [], 'not for that role');
+  const pointer = parseRule('ui-skill', '---\nwhen: path\npaths: ui/**\nskill: frontend\n---\n', 'ui-skill.md');
+  const both = parseRule('ui-note', '---\nwhen: path\npaths: ui/**\nskill: frontend\n---\nComponents live in ui/.', 'ui-note.md');
+  const rules = withSkills([pointer, both], mine);
+  assert.equal(rules[0].description, 'points to the skill frontend');
+  const notes = onToolCall(rules, { role: 'implementer', helper: false, lead: false }, repo, new RuleState(), 'read', 'ui/app.tsx', { kind: 'read' });
+  assert.deepEqual(notes.map(n => n.rule), ['ui-skill', 'ui-note']);
+  assert.match(notes[0].text, /^\[MetaHarness · rule ui-skill\] You're looking at ui\/app.tsx\.\nThe skill frontend may help here: building UI components\nRead it with skill\("frontend"\)/);
+  assert.match(notes[1].text, /\nComponents live in ui\/\.\n\nThe skill frontend may help here/, "the rule's own text, then the pointer");
+  assert.match(rulesPrompt(rules, { role: 'implementer', helper: false, lead: false }, repo), /- ui-skill, when you look at files \(ui\/\*\*\): points to the skill frontend/);
+
+  const without = skillsFor(skills.values(), agent([]), claimed);
+  assert.deepEqual(withSkills([pointer, both], without), [], "an agent that doesn't carry the skill doesn't get rules pointing at it");
 });
 
 test('skills: a summary first, then a section or a file on request', () => {
@@ -140,9 +145,11 @@ test('skills: each harness hides its native copy of the repository skills, unles
   assert.deepEqual(agyHiddenSkills(spec(true), ['mine']), []);
 });
 
-function team(scripts: Record<string, FakeScript>) {
+function team(scripts: Record<string, FakeScript>, roleSkills: Record<string, string> = {}) {
   const { personal, repo } = setup();
-  put(personal, Object.fromEntries(Object.keys(scripts).map(n => [`roles/${n}.md`, `---\nharness: fake\nmodel: m\n---\nYou do ${n} things.\n`])));
+  put(personal, Object.fromEntries(Object.keys(scripts).map(n => [`roles/${n}.md`, `---\nharness: fake\nmodel: m\n${roleSkills[n] ? `skills: ${roleSkills[n]}\n` : ''}---\nYou do ${n} things.\n`])));
+  put(personal, { 'roles/reviewer.md': '---\nharness: fake\nmodel: m\nskills: claude-only\n---\nReview.\n' });
+  put(repo, { '.metaharness/rules/ui-skill.md': '---\nwhen: path\npaths: ui/**\nskill: frontend\n---\n' });
   writeFileSync(join(personal, 'settings.json'), JSON.stringify({ skills: { release: false } }));
   git(repo, 'add', '.');
   git(repo, 'commit', '-qm', 'Skills');
@@ -151,41 +158,44 @@ function team(scripts: Record<string, FakeScript>) {
   return { d, fake, repo, personal };
 }
 
-test('skills in a run: listed, suggested at the moment, read through the tool', async () => {
+test('skills in a run: listed, pointed at by a rule, read through the tool', async () => {
   const seen: Record<string, string | null> = {};
-  const { d, fake } = team({
-    implementer: async ctx => {
-      seen.list = await ctx.tool('skill', {});
-      ctx.read('ui/app.tsx');
-      seen.note = await ctx.nextMessage(2000);
-      seen.summary = await ctx.tool('skill', { name: 'pdf' });
-      seen.part = await ctx.tool('skill', { name: 'pdf', part: 'scripts/fields.py' });
-      seen.guess = await ctx.tool('skill', 'frontnd');
-      seen.notMine = await ctx.tool('skill', { name: 'claude-only' });
-      seen.off = await ctx.tool('skill', { name: 'release' });
-      await ctx.tool('done', { note: 'ok' });
+  const { d, fake } = team(
+    {
+      implementer: async ctx => {
+        seen.list = await ctx.tool('skill', {});
+        ctx.read('ui/app.tsx');
+        seen.note = await ctx.nextMessage(2000);
+        seen.summary = await ctx.tool('skill', { name: 'pdf' });
+        seen.part = await ctx.tool('skill', { name: 'pdf', part: 'scripts/fields.py' });
+        seen.guess = await ctx.tool('skill', 'frontnd');
+        seen.notMine = await ctx.tool('skill', { name: 'claude-only' });
+        seen.off = await ctx.tool('skill', { name: 'release' });
+        await ctx.tool('done', { note: 'ok' });
+      },
     },
-  });
+    { implementer: 'frontend, release' },
+  );
   const goal = d.startGoal({ request: 'Build the page', lead: 'implementer' });
   await withTimeout(d.goals.get(goal)!.leadDone, 10_000, 'lead done');
 
-  assert.match(fake.started[0].spec.systemPrompt, /## Skills[\s\S]*- notes: notes in this repository/);
-  assert.match(seen.list!, /^Skills:\n- frontend: building UI components \(suggested when you look at files\)\n- notes:/);
-  assert.match(seen.note!, /^\[MetaHarness · skill frontend\] You're looking at ui\/app.tsx/);
+  assert.match(fake.started[0].spec.systemPrompt, /## Skills[\s\S]*- frontend: building UI components\n- notes: notes in this repository\n- pdf/);
+  assert.match(seen.list!, /^Skills:\n- frontend: building UI components\n- notes:/);
+  assert.match(seen.note!, /^\[MetaHarness · rule ui-skill\] You're looking at ui\/app.tsx\.\nThe skill frontend may help here/);
   assert.match(seen.summary!, /^# Skill: pdf[\s\S]*Sections of SKILL.md/);
   assert.match(seen.part!, /print\("fields"\)/);
   assert.match(seen.guess!, /^\(Took "frontnd" to mean frontend\.\)\n# Skill: frontend/);
-  assert.match(seen.notMine!, /^The skill claude-only isn't for your role \(implementer\) on fake\./);
+  assert.match(seen.notMine!, /^Your role \(implementer on fake\) doesn't carry the skill claude-only\./);
   assert.match(seen.off!, /^The skill release is turned off\./);
 
-  const events = d.store.since(goal).filter(e => e.type.startsWith('skill.')).map(e => `${e.type} ${e.data.skill}${e.data.part ? ` ${e.data.part}` : ''}`);
-  assert.deepEqual(events, ['skill.suggested frontend', 'skill.read pdf', 'skill.read pdf scripts/fields.py', 'skill.read frontend']);
-  assert.equal(d.store.since(goal).filter(e => e.type === 'rule.fired' && String(e.data.rule).startsWith('skill:')).length, 0);
+  const events = d.store.since(goal).filter(e => e.type === 'skill.read' || (e.type === 'rule.fired' && e.data.skill)).map(e => `${e.type} ${e.data.skill}${e.data.part ? ` ${e.data.part}` : ''}`);
+  assert.deepEqual(events, ['rule.fired frontend', 'skill.read pdf', 'skill.read pdf scripts/fields.py', 'skill.read frontend']);
 });
 
 test('skills in the app: each with its folder, what it replaces, its files and its switch', () => {
   const { repo, personal } = setup();
   writeFileSync(join(personal, 'settings.json'), JSON.stringify({ skills: { pdf: false } }));
+  put(personal, { 'roles/designer.md': '---\nharness: codex\nskills: frontend\n---\nDesign.\n', 'rules/ui-skill.md': '---\nwhen: path\nskill: frontend\n---\n' });
   const view = configView([{ scope: 'personal', dir: personal }, { scope: 'repo', dir: join(repo, '.metaharness') }]);
   const by = Object.fromEntries(view.skills.map(s => [s.name, s]));
   assert.equal(by.notes.source, 'repo');
@@ -194,5 +204,15 @@ test('skills in the app: each with its folder, what it replaces, its files and i
   assert.equal(by.pdf.on, false);
   assert.equal(by.pdf.switchedBy, 'personal');
   assert.deepEqual(by.pdf.files.map(f => f.path), ['scripts/fields.py', 'scripts/fill.py']);
-  assert.equal(view.skills[view.skills.length - 1].when, 'path', 'start skills first');
+  assert.deepEqual(by.frontend.carriedBy, ['designer']);
+  assert.deepEqual(by.pdf.carriedBy, [], 'no role names it: every role carries it');
+  assert.deepEqual(by.frontend.pointedBy, ['ui-skill']);
+  assert.deepEqual(view.roles.find(r => r.name === 'designer')!.skills, ['frontend']);
+
+  const scopes = view.scopes;
+  const file = saveRule(scopes, { name: 'forms', scope: 'repo', when: 'path', paths: ['forms/**'], skill: 'pdf', body: '' });
+  assert.equal(readFileSync(file, 'utf8'), '---\nwhen: path\npaths: forms/**\nskill: pdf\n---\n\n', 'a rule may be only a pointer');
+  assert.throws(() => saveRule(scopes, { name: 'empty', scope: 'repo', when: 'path', body: '' }), /or a skill to point at/);
+  const role = saveRole(scopes, { name: 'designer', scope: 'personal', harness: 'codex', skills: ['frontend', 'pdf'], previous: { name: 'designer', scope: 'personal' } });
+  assert.match(readFileSync(role, 'utf8'), /\nskills: frontend, pdf\n/);
 });

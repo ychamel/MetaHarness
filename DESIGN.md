@@ -945,8 +945,15 @@ apply**:
   daemon can see.
 - **Skills**: the agent decides. The `SKILL.md` format the harnesses already share (a name and
   a one-line description, plus a folder of resources), served the same way on every harness
-  through a `skill` tool. MetaHarness only points at them, at the start or, like a rule, at
-  the moment one fits.
+  through a `skill` tool.
+
+The line between them is **who can tell when it's needed**. MetaHarness sees paths, new files,
+commits and `done`, so a rule can arrive at exactly that moment, and it stays short because it
+arrives mid-work. Only the agent knows it's about to write a migration, chase a flaky test or
+cut a release: nothing the daemon sees says so. Guidance for that is a skill, often long and
+with scripts, read only when needed. A rule can point at a skill, which bridges the two: the
+moment is MetaHarness's, the reading the agent's. Workflows stay apart from both: the human
+picks one per goal (an exploratory one, a straight-to-the-point one), and the lead follows it.
 
 The mechanism is MetaHarness's; the content is the user's. What ships is a default pack the
 user can edit, extend or turn off.
@@ -960,6 +967,8 @@ when: path                  # start | path | new-file | commit | done
 description: the part of ARCHITECTURE.md for where you're working
 roles: all                  # all · team · helpers · lead · role names · !name to leave one out
 paths: **                   # globs, !glob to leave some out (path, new-file, commit)
+harness: codex              # optional: harness ids, !id to leave one out
+skill: pdf-forms            # optional: the note points at this skill (the body may be empty)
 sections: ARCHITECTURE.md   # attach the sections of this repo file whose heading is a path
 requires: ARCHITECTURE.md   # only when this file exists in the repo (missing: the opposite)
                             # include: FILE adds a repo file's text after the body, when it exists
@@ -1028,32 +1037,39 @@ to approve both, and commits them. Linters and formatters are left out on purpos
 ---
 name: pdf-forms
 description: filling PDF forms with the scripts in this folder
-when: path                  # start (default) | path | new-file | commit
-paths: forms/**             # globs, as for rules (path, new-file, commit)
-roles: implementer          # as for rules
-harness: claude-code, codex # optional; !id leaves one out (rules take it too)
+harness: claude-code, codex # optional: what it works with; !id leaves one out
 ---
 # PDF forms
 ...
 ```
+
+Skills are a library roles carry, like MCP servers: what exists is in the library, who carries
+what is on the role, and when to remind is a rule. So a skill's own file only says what it is
+and what it works with.
 
 - **Where they come from**, least specific first: the built-in folder (`defaults/skills/`,
   empty for now), the personal `~/.metaharness/skills/`, the repository's `.claude/skills/` and
   `.agents/skills/` (so skills written for one harness reach all of them), then
   `.metaharness/skills/`. The same name replaces the one before; `off: true` or
   `settings.json` `skills: {name: false}` turns one off.
-- **Pointing at them**: a `start` skill is a line in the prompt's *Skills* part (name and
-  description). Any other `when` is a rule the rules engine fires (same paths, roles, once per
-  session), whose note names the skill and what it's for, never its text:
-  `[MetaHarness · skill pdf-forms] You're looking at forms/a.pdf. The skill pdf-forms may help
-  here: …`. Those aren't listed in the prompt; `skill()` lists everything for the agent.
+- **Who carries one**: a role's `skills: pdf-forms, frontend`. A skill no role names goes to
+  every role; once a role names it, only the roles that do. Imported skills work at once, and
+  a role is attached to a skill without editing a file Claude Code or Codex also reads.
+- **Pointing at them**: the prompt's *Skills* part names each skill the agent carries with its
+  description. A rule with `skill:` adds the moment: `[MetaHarness · rule forms] You're looking
+  at forms/a.pdf. The skill pdf-forms may help here: …`, only for agents that carry the skill.
 - **Reading one** costs only what's needed. `skill(name)` gives the description, then SKILL.md
   whole when it's short (2,500 characters), else its opening and its headings as an outline;
   then the folder's files by path and size. `skill(name, part)` gives one section by heading
-  or one file by path, inside the skill's folder only. A skill not for the agent's role or
-  harness, or off, is refused with the list it can read.
-- Logged as `skill.suggested` {skill, when, paths} and `skill.read` {skill, part}, for the
-  role×model stats later.
+  or one file by path, inside the skill's folder only. A skill the agent doesn't carry, or one
+  that's off, is refused with the list it can read.
+- **In the app**: skills are listed on the *Tools & skills* page with where each comes from,
+  which roles carry it, the rules pointing at it, its text and files, and a switch. Read-only:
+  a skill is a folder written in an editor. A role's *Skills* field names what it carries; a
+  rule's *Points at a skill* adds the moment. A rule whose text grows long is pointed towards
+  becoming a skill.
+- Logged as `skill.read` {skill, part}, and `rule.fired` carries the skill a rule pointed at,
+  for the role×model stats later.
 
 ### Native skills: hidden, so every harness sees the same
 
