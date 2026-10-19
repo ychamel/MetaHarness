@@ -288,7 +288,7 @@ The terminal can do all of this too:
 
 ## 8. Tailoring it
 
-Roles, workflows, rules, the agent guidelines and MCP servers each have a page under **Setup** in the
+Roles, workflows, rules, skills, the agent guidelines and MCP servers each have a page under **Setup** in the
 web app. Each item shows whether it lives in this repository or in your personal folder, and
 you choose where to save it. What you save applies to agents started from then on, without
 restarting the daemon. The pages write the same files described below.
@@ -336,9 +336,34 @@ restarting the daemon. The pages write the same files described below.
   `unless_changed:` for commits, `edited: true` for done. To turn a rule off, flip its switch
   (that writes `"rules": {"map": false}` into `settings.json`), or add a file of the same name
   with `off: true`.
+- **Skills** are guides for a kind of work with files to go with them: a folder with a
+  `SKILL.md`, in the format Claude Code, Codex and Antigravity share. Agents on every harness
+  read them with their `skill` tool: first a summary (what it's for, its sections, its files),
+  then the one section or file they need, so nothing long arrives unasked. Put a skill in
+  `.metaharness/skills/<name>/` or `~/.metaharness/skills/<name>/`; the repository's
+  `.claude/skills` and `.agents/skills` count too, for every harness. The **Skills** page
+  lists them with a switch each. Front-matter keys say who gets one and when:
+
+  ```markdown
+  ---
+  name: pdf-forms
+  description: filling PDF forms with the scripts in this folder
+  when: path                 # start (default): named in the prompt; path, new-file, commit: suggested then
+  paths: forms/**            # for path, new-file and commit
+  roles: implementer         # all, team, helpers, lead, role names, !name
+  harness: claude-code       # optional; !id leaves one out
+  ---
+  ```
+
+  A skill with a `when:` other than `start` is not named in the prompt: when the moment comes,
+  a short note names it and says what it's for, and the agent decides whether to read it.
+  `harness:` works for rules too.
 - **Personal skills stay out.** Skills you installed for yourself (in `~/.claude/skills`, your
   Codex skills, `~/.gemini/config/skills`) are hidden from agents, so every harness on a team
-  has the same ones. Each harness's own skills, like Codex's image generation, stay.
+  has the same ones. So are each harness's own copies of the repository's skills, which come
+  through the `skill` tool instead, filtered by role. Each harness's built-in skills, like
+  Codex's image generation, stay. A role with `native_skills: true` (*Keep the harness's own
+  skills* on the Roles page) keeps all of them, as the harness loads them.
 - **MCP servers.** A role names what it needs, for example `mcp: blender`. Each name is looked
   up in `~/.metaharness/mcp.json`, in the format every harness uses
   (`{"mcpServers": {"blender": {"command": "…", "args": […]}}}`), else among the servers that

@@ -1,7 +1,8 @@
 import { resolveName } from './fuzzy.ts';
+import { skillList, skillPart, skillSummary } from './skills.ts';
 import type { AgentRec, Daemon, InboxEntry } from './daemon.ts';
 
-export const TOOL_NAMES = ['team', 'spawn', 'send', 'wait', 'status', 'done', 'workflow'] as const;
+export const TOOL_NAMES = ['team', 'spawn', 'send', 'wait', 'status', 'done', 'workflow', 'skill'] as const;
 
 /** Descriptions the MCP layer will publish. Written for the agents that read them. */
 export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: string; params: Record<string, string> }> = {
@@ -35,6 +36,10 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
   workflow: {
     description: 'Read a workflow: a guide for running a kind of task, e.g. the next one a workflow says to continue with. Without a name, lists them.',
     params: { name: 'Workflow name (optional)' },
+  },
+  skill: {
+    description: 'Read a skill: a guide for a kind of work, with files. With a name, a summary: what it is for, its sections and its files. With part, one section (by heading) or file (by path). Without a name, lists the skills for your role.',
+    params: { name: 'Skill name (optional)', part: 'A section heading or a file path from the summary (optional)' },
   },
 };
 
@@ -77,7 +82,7 @@ function formatWait(entries: InboxEntry[]): string {
   return out.join('\n\n');
 }
 
-/** The six agent tools. Every answer is plain language, and nothing an agent sends is rejected outright. */
+/** The agent tools. Every answer is plain language, and nothing an agent sends is rejected outright. */
 export class Hub {
   private d: Daemon;
 
@@ -170,6 +175,23 @@ export class Hub {
         if (!r.match) return `There's no workflow called "${want}". Workflows:\n${list()}`;
         const w = d.config.workflows.get(r.match)!;
         return `${r.guessed ? `(Took "${want}" to mean ${w.name}.)\n` : ''}# Workflow: ${w.name}\n\n${w.body}`;
+      }
+
+      case 'skill': {
+        const want = str(pick(a, 'name', 'skill', 'text'));
+        const part = str(pick(a, 'part', 'section', 'file', 'path', 'heading'));
+        const mine = d.skillsFor(rec);
+        if (!want) return skillList(mine);
+        const r = resolveName(want, mine.map(s => s.name));
+        if (!r.match) {
+          const other = d.config.skills.get(want);
+          const why = !other ? `There's no skill called "${want}".` : other.off ? `The skill ${want} is turned off.` : `The skill ${want} isn't for your role (${rec.role.name}) on ${rec.harness}.`;
+          return `${why} ${skillList(mine)}`;
+        }
+        const sk = mine.find(s => s.name === r.match)!;
+        d.emit({ goal: rec.goal, agent: rec.name, type: 'skill.read', data: { skill: sk.name, ...(part ? { part } : {}) } });
+        const text = part ? skillPart(sk, part) : skillSummary(sk);
+        return `${r.guessed ? `(Took "${want}" to mean ${sk.name}.)\n` : ''}${text}`;
       }
 
       case 'done': {

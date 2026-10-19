@@ -7,10 +7,10 @@ import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, Sessio
 /**
  * Config overrides that keep a thread to what MetaHarness gives it: the user's global MCP servers
  * are turned off, and so are plugins and app connectors, which bring their own skills and tools,
- * and the user's personal skills (design §18). Codex's built-in system skills remain; they're
+ * and the user's personal skills and the repository's (design §18). Codex's built-in system skills remain; they're
  * part of the harness (imagegen is the manual for its image_gen tool).
  */
-export function isolationConfig(userMcpServers: string[], keep: string[] = [], personalSkills: string[] = []): Record<string, unknown> {
+export function isolationConfig(userMcpServers: string[], keep: string[] = [], hidden: string[] = []): Record<string, unknown> {
   const cfg: Record<string, unknown> = {
     'features.plugins': false,
     'features.apps': false,
@@ -21,15 +21,20 @@ export function isolationConfig(userMcpServers: string[], keep: string[] = [], p
   for (const name of userMcpServers) {
     if (name !== MCP_SERVER_NAME && !keep.includes(name) && /^[\w-]+$/.test(name)) cfg[`mcp_servers.${name}.enabled`] = false;
   }
-  if (personalSkills.length) cfg['skills.config'] = personalSkills.map(path => ({ path, enabled: false }));
+  if (hidden.length) cfg['skills.config'] = hidden.map(path => ({ path, enabled: false }));
   return cfg;
 }
 
-/** The SKILL.md paths of the user's own skills (scope "user") that Codex would load in `cwd`. */
-export async function personalSkills(server: { request(method: string, params: unknown): Promise<any> }, cwd: string): Promise<string[]> {
+/**
+ * The SKILL.md paths Codex would load in `cwd` that MetaHarness hides: the user's own (scope
+ * "user") and the repository's .agents/skills (scope "repo"), which reach every harness through
+ * the skill tool instead. None for a role with native_skills.
+ */
+export async function hiddenSkills(server: { request(method: string, params: unknown): Promise<any> }, cwd: string, native = false): Promise<string[]> {
+  if (native) return [];
   try {
     const r = await server.request('skills/list', { cwds: [cwd] });
-    return ((r?.data ?? []) as { skills?: { scope?: string; path?: string }[] }[]).flatMap(e => e.skills ?? []).filter(k => k.scope === 'user' && k.path).map(k => String(k.path));
+    return ((r?.data ?? []) as { skills?: { scope?: string; path?: string }[] }[]).flatMap(e => e.skills ?? []).filter(k => (k.scope === 'user' || k.scope === 'repo') && k.path).map(k => String(k.path));
   } catch {
     // An older Codex without skills/list: nothing to turn off that we can see.
     return [];
@@ -137,7 +142,7 @@ export class CodexAdapter implements HarnessAdapter {
     }
     const server = await this.server;
     this.userServers ??= listUserMcpServers(this.bin);
-    const skills = await personalSkills(server, spec.cwd);
+    const skills = await hiddenSkills(server, spec.cwd, spec.role.nativeSkills);
     const config = { ...isolationConfig(await this.userServers, spec.mcpServers.map(s => s.name), skills), ...mcpServerConfig(spec.mcpServers) };
     const session = new CodexSession(server, spec, events, config);
     await session.init(opts.resume);

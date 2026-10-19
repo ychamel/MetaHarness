@@ -13,9 +13,10 @@ import { Roles } from './pages/Roles.tsx';
 import { Workflows } from './pages/Workflows.tsx';
 import { Guidelines } from './pages/Guidelines.tsx';
 import { Rules } from './pages/Rules.tsx';
+import { Skills } from './pages/Skills.tsx';
 import { Tools } from './pages/Tools.tsx';
 
-type Page = 'home' | 'goal' | 'roles' | 'workflows' | 'rules' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
+type Page = 'home' | 'goal' | 'roles' | 'workflows' | 'rules' | 'skills' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
 
 /** Where you are, kept in the address so a reload or a shared link comes back to it. */
 interface Place {
@@ -206,6 +207,7 @@ function Shell() {
         <RailButton icon={ICONS.roles} label="Roles" on={place.page === 'roles'} onClick={() => go({ page: 'roles', item: undefined })} />
         <RailButton icon={ICONS.workflows} label="Workflows" on={place.page === 'workflows'} onClick={() => go({ page: 'workflows', item: undefined })} />
         <RailButton icon={ICONS.rules} label="Rules" on={place.page === 'rules'} onClick={() => go({ page: 'rules', item: undefined })} />
+        <RailButton icon={ICONS.skills} label="Skills" on={place.page === 'skills'} onClick={() => go({ page: 'skills', item: undefined })} />
         <RailButton icon={ICONS.guide} label="Guidelines" on={place.page === 'guidelines'} onClick={() => go({ page: 'guidelines', item: undefined })} />
         <RailButton icon={ICONS.tools} label="Tools" on={place.page === 'tools'} onClick={() => go({ page: 'tools', item: undefined })} />
         <RailButton icon={ICONS.harness} label="Harnesses" on={place.page === 'harnesses'} onClick={() => go({ page: 'harnesses', item: undefined })} />
@@ -245,6 +247,7 @@ function Shell() {
         {place.page === 'roles' && <Roles {...setup('roles')} />}
         {place.page === 'workflows' && <Workflows {...setup('workflows')} onStartWith={workflow => setDialog({ kind: 'goal', workflow })} />}
         {place.page === 'rules' && <Rules {...setup('rules')} />}
+        {place.page === 'skills' && <Skills {...setup('skills')} />}
         {place.page === 'guidelines' && <Guidelines config={config} onSave={saveConfig} />}
         {place.page === 'tools' && <Tools {...setup('tools')} />}
         {place.page === 'harnesses' && <Harnesses {...setup('harnesses')} />}
@@ -346,6 +349,12 @@ const ICONS = {
     <>
       <path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z" />
       <path d="M9 12l2 2 4-4" />
+    </>,
+  ),
+  skills: svg(
+    <>
+      <path d="M4 5.5C6.5 4.5 9.5 4.5 12 6c2.5-1.5 5.5-1.5 8-.5V19c-2.5-1-5.5-1-8 .5-2.5-1.5-5.5-1.5-8-.5z" />
+      <path d="M12 6v13.5" />
     </>,
   ),
   guide: svg(

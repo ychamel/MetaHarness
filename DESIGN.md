@@ -176,7 +176,7 @@ optional harness profiles (§16) and MCP server definitions (§17).
 
 ## 5. Agent tools (MCP)
 
-Seven tools. All of them accept loose input and answer in plain language.
+Eight tools. All of them accept loose input and answer in plain language.
 
 | Tool | What it does |
 |---|---|
@@ -187,6 +187,7 @@ Seven tools. All of them accept loose input and answer in plain language.
 | `status(text)` | A one-line progress update, shown in the UI and in `team()` |
 | `done(note?)` | "I'm finished." The note goes to whoever spawned you. Your session stays resumable for follow-ups |
 | `workflow(name?)` | Read a workflow, e.g. the one the current one says to continue with; without a name, list them (§17) |
+| `skill(name?, part?)` | Read a skill: a summary (what it's for, its sections, its files), or with `part` one section or file; without a name, the skills for your role (§18) |
 
 Every tool result also says whether you have unread messages and which shared files changed
 since you last looked, so agents notice them naturally.
@@ -942,9 +943,10 @@ apply**:
 
 - **Rules**: MetaHarness decides. A rule is a short note that reaches an agent at a moment the
   daemon can see.
-- **Skills** (the second step): the agent decides. The `SKILL.md` format the harnesses already
-  share (a name and a one-line description, plus a folder of resources), served the same way on
-  every harness through a `skill(name)` tool.
+- **Skills**: the agent decides. The `SKILL.md` format the harnesses already share (a name and
+  a one-line description, plus a folder of resources), served the same way on every harness
+  through a `skill` tool. MetaHarness only points at them, at the start or, like a rule, at
+  the moment one fits.
 
 The mechanism is MetaHarness's; the content is the user's. What ships is a default pack the
 user can edit, extend or turn off.
@@ -1019,6 +1021,40 @@ The **`map-bootstrap`** workflow (built in) has explorers survey the code area b
 `ARCHITECTURE.md` (and a `CONVENTIONS.md` when the code has clear conventions), asks the human
 to approve both, and commits them. Linters and formatters are left out on purpose.
 
+### A skill
+
+```markdown
+<!-- .metaharness/skills/pdf-forms/SKILL.md, next to scripts/fill.py and reference.md -->
+---
+name: pdf-forms
+description: filling PDF forms with the scripts in this folder
+when: path                  # start (default) | path | new-file | commit
+paths: forms/**             # globs, as for rules (path, new-file, commit)
+roles: implementer          # as for rules
+harness: claude-code, codex # optional; !id leaves one out (rules take it too)
+---
+# PDF forms
+...
+```
+
+- **Where they come from**, least specific first: the built-in folder (`defaults/skills/`,
+  empty for now), the personal `~/.metaharness/skills/`, the repository's `.claude/skills/` and
+  `.agents/skills/` (so skills written for one harness reach all of them), then
+  `.metaharness/skills/`. The same name replaces the one before; `off: true` or
+  `settings.json` `skills: {name: false}` turns one off.
+- **Pointing at them**: a `start` skill is a line in the prompt's *Skills* part (name and
+  description). Any other `when` is a rule the rules engine fires (same paths, roles, once per
+  session), whose note names the skill and what it's for, never its text:
+  `[MetaHarness · skill pdf-forms] You're looking at forms/a.pdf. The skill pdf-forms may help
+  here: …`. Those aren't listed in the prompt; `skill()` lists everything for the agent.
+- **Reading one** costs only what's needed. `skill(name)` gives the description, then SKILL.md
+  whole when it's short (2,500 characters), else its opening and its headings as an outline;
+  then the folder's files by path and size. `skill(name, part)` gives one section by heading
+  or one file by path, inside the skill's folder only. A skill not for the agent's role or
+  harness, or off, is refused with the list it can read.
+- Logged as `skill.suggested` {skill, when, paths} and `skill.read` {skill, part}, for the
+  role×model stats later.
+
 ### Native skills: hidden, so every harness sees the same
 
 A team mixes harnesses, so a personal skill only one of them can see makes agents unequal.
@@ -1037,9 +1073,14 @@ What each harness brings falls in three tiers:
 - **Antigravity** has no switch for its global folder, but a workspace customization wins over
   a global one of the same name, so the agent's own customization root gets a stub for each
   personal skill saying it's off.
-- Skills in the repository (`.claude/skills/`, `.agents/skills/`) stay for now; the skills step
-  picks them up for every harness. A role will be able to ask for the user's own with
-  `native_skills: true`.
+- **The repository's skills** come through the `skill` tool, filtered by role and harness, so
+  each harness's own copy is hidden: Claude Code gets `--disallowedTools Skill(<name>)` for each
+  of `.claude/skills` (it still lists them, but calling one is refused); Codex turns off the
+  `repo`-scope skills from `skills/list` like the `user` ones; Antigravity gets a stub for each
+  of `.agents/skills` in the agent's customization root, which wins over the workspace's
+  (checked live 2026-10-20). Claude Code doesn't read `.agents/skills`, nor Codex `.claude/skills`.
+- **`native_skills: true`** on a role keeps the harness's own: Claude Code reads the `user`
+  setting source too, Codex and Antigravity hide nothing.
 
 ---
 

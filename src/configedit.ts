@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { loadConfig, parseFrontMatter } from './config.ts';
 import type { McpServerDef } from './mcpservers.ts';
 import { BUILTIN_DIR, loadRuleFiles, loadRules, RULE_WHENS, type Rule } from './rules.ts';
 import { loadSettings } from './settings.ts';
+import { loadSkillFolder, loadSkills, skillFiles, skillLayers, SKILL_WHENS, type Skill, type SkillSource } from './skills.ts';
 
 /**
  * Reading and writing the configuration from a client (the web app): roles, workflows, rules, the
@@ -61,6 +62,7 @@ export interface RoleView {
   approvals: string;
   permissionMode: string;
   allow: string[];
+  nativeSkills: boolean;
 }
 
 export interface WorkflowView {
@@ -85,6 +87,17 @@ export interface RuleView extends Omit<Rule, 'off'> {
   switchedBy?: Scope;
 }
 
+export interface SkillView extends Omit<Skill, 'off'> {
+  /** The same name in a folder before this one, which it replaces. */
+  overrides?: SkillSource;
+  /** What agents get: false when its file or the settings turn it off. */
+  on: boolean;
+  /** The settings' switch for it, where one is set: the folder whose settings.json says so. */
+  switchedBy?: Scope;
+  /** The files in its folder besides SKILL.md. */
+  files: { path: string; bytes: number }[];
+}
+
 export interface GuideView {
   /** What agents get: the most specific folder's file, or the built-in text. */
   text: string;
@@ -99,6 +112,7 @@ export interface ConfigView {
   roles: RoleView[];
   workflows: WorkflowView[];
   rules: RuleView[];
+  skills: SkillView[];
   methodology: GuideView;
   helperMethodology: GuideView;
   mcp: { name: string; scope: Scope; def: McpServerDef }[];
@@ -132,7 +146,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
       roles.set(r.name, {
         name: r.name, scope, file: r.file, overrides: before?.scope, harness: r.harness, model: r.model, fallback: r.fallback, goodAt: r.goodAt,
         instructions: r.instructions, helper: r.helper, worktree: r.worktree, workflow: r.workflow ?? '', mcp: r.mcp, autoApprove: r.autoApprove, approvals: r.approvals ?? '',
-        permissionMode: r.permissionMode ?? '', allow: r.allow,
+        permissionMode: r.permissionMode ?? '', allow: r.allow, nativeSkills: !!r.nativeSkills,
       });
     }
     for (const w of c.workflows.values()) {
@@ -147,6 +161,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
     roles: byName(roles),
     workflows: byName(workflows),
     rules: rulesView(scopes),
+    skills: skillsView(scopes),
     methodology: guide('methodology.md', builtIn.methodology),
     helperMethodology: guide('helper-methodology.md', builtIn.helperMethodology),
     mcp: byName(mcp),
@@ -178,6 +193,32 @@ function rulesView(scopes: ScopeDir[]): RuleView[] {
   return [...out.values()].sort((a, b) => RULE_WHENS.indexOf(a.when) - RULE_WHENS.indexOf(b.when) || a.name.localeCompare(b.name));
 }
 
+/** The repository a repo scope's .metaharness folder is in. */
+function repoOf(scopes: ScopeDir[]): string | undefined {
+  const dir = scopes.find(s => s.scope === 'repo')?.dir;
+  return dir && basename(dir) === '.metaharness' ? dirname(dir) : undefined;
+}
+
+/** Every skill with the folder it's in, what it replaces, and whether it's on. */
+function skillsView(scopes: ScopeDir[]): SkillView[] {
+  const layers = skillLayers(scopes.map(s => s.dir), repoOf(scopes));
+  const effective = loadSkills(layers, loadSettings(scopes.map(s => s.dir)).skills);
+  const out = new Map<string, SkillView>();
+  for (const layer of layers) {
+    for (const sk of loadSkillFolder(layer)) {
+      const { off: _off, ...rest } = sk;
+      out.set(sk.name, { ...rest, overrides: out.get(sk.name)?.source, on: !effective.get(sk.name)?.off, files: skillFiles(sk.dir, 40).files });
+    }
+  }
+  for (const { scope, dir } of scopes) {
+    for (const name of Object.keys(loadSettings([dir]).skills)) {
+      const v = out.get(name);
+      if (v) v.switchedBy = scope;
+    }
+  }
+  return [...out.values()].sort((a, b) => SKILL_WHENS.indexOf(a.when) - SKILL_WHENS.indexOf(b.when) || a.name.localeCompare(b.name));
+}
+
 /* ---------------- writing ---------------- */
 
 /** One front-matter value on one line. */
@@ -196,7 +237,7 @@ function writeDoc(file: string, meta: [string, string][], body: string, keep = '
 }
 
 /** Keys the app writes for a role; anything else already in the file is kept as it was. */
-const ROLE_KEYS = ['harness', 'model', 'fallback', 'fallbacks', 'good_at', 'helper', 'worktree', 'workflow', 'mcp', 'auto_approve', 'approvals', 'permission_mode', 'allow'];
+const ROLE_KEYS = ['harness', 'model', 'fallback', 'fallbacks', 'good_at', 'helper', 'worktree', 'workflow', 'mcp', 'auto_approve', 'approvals', 'permission_mode', 'allow', 'native_skills'];
 
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : []).map(x => String(x).trim()).filter(Boolean);
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
@@ -238,6 +279,7 @@ export function saveRole(scopes: ScopeDir[], b: Record<string, unknown>): string
       ['approvals', ['ask', 'gatekeeper', 'harness'].includes(str(b.approvals)) ? str(b.approvals) : ''],
       ['permission_mode', str(b.permissionMode)],
       ['allow', allow.join(', ')],
+      ['native_skills', b.nativeSkills === true ? 'true' : ''],
       ...extra,
     ],
     str(b.instructions),

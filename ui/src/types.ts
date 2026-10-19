@@ -160,6 +160,8 @@ export interface RoleDef {
   approvals: string;
   permissionMode: string;
   allow: string[];
+  /** Keeps the harness's own skills instead of hiding them. */
+  nativeSkills: boolean;
 }
 
 export interface WorkflowDef {
@@ -200,6 +202,28 @@ export interface RuleDef {
   switchedBy?: Scope;
 }
 
+export type SkillWhen = 'start' | 'path' | 'new-file' | 'commit';
+/** Where a skill's folder is: MetaHarness's own, personal, the repository's .metaharness, or another harness's folder in it. */
+export type SkillSource = 'built-in' | 'personal' | 'repo' | '.claude' | '.agents';
+
+/** A guide with files that agents read through the skill tool (design §18). */
+export interface SkillDef {
+  name: string;
+  description: string;
+  when: SkillWhen;
+  roles: string[];
+  paths: string[];
+  harness: string[];
+  body: string;
+  dir: string;
+  file: string;
+  source: SkillSource;
+  overrides?: SkillSource;
+  on: boolean;
+  switchedBy?: Scope;
+  files: { path: string; bytes: number }[];
+}
+
 export interface GuideDef {
   text: string;
   from: Scope | 'built-in';
@@ -221,6 +245,7 @@ export interface ConfigView {
   roles: RoleDef[];
   workflows: WorkflowDef[];
   rules: RuleDef[];
+  skills: SkillDef[];
   methodology: GuideDef;
   helperMethodology: GuideDef;
   mcp: { name: string; scope: Scope; def: McpDef }[];

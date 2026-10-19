@@ -118,7 +118,7 @@ export function buildAssistantServer(d: Daemon): McpServer {
     };
   });
 
-  tool('config', 'The setup: roles (harness, model, backups, approvals), workflows, rules (notes agents get at moments: start, path, new-file, commit, done), settings (approvals, prices, cache), the harnesses on this machine and what they can do, and accounts near their limits.', {}, () => {
+  tool('config', 'The setup: roles (harness, model, backups, approvals), workflows, rules (notes agents get at moments: start, path, new-file, commit, done), skills (guides with files agents read through their skill tool), settings (approvals, prices, cache), the harnesses on this machine and what they can do, and accounts near their limits.', {}, () => {
     const c = d.configView();
     return {
       folders: c.scopes,
@@ -126,6 +126,7 @@ export function buildAssistantServer(d: Daemon): McpServer {
       builtInRoles: [d.config.settings.gatekeeper, d.config.settings.assistant].filter(n => !c.roles.some(r => r.name === n)),
       workflows: c.workflows.map(w => ({ name: w.name, savedIn: w.scope, goodAt: w.goodAt })),
       rules: c.rules.map(r => ({ name: r.name, savedIn: r.scope, on: r.on, when: r.when, roles: r.roles, paths: r.paths, description: r.description, body: r.body })),
+      skills: c.skills.map(k => ({ name: k.name, folder: k.dir, from: k.source, on: k.on, when: k.when, roles: k.roles, paths: k.paths, harness: k.harness, description: k.description })),
       settings: c.settings.effective,
       harnesses: c.harnesses.map(h => ({ id: h.id, title: h.title, runsHere: h.runnable, models: h.models, can: h.manifest })),
       accounts: d.snapshot().accounts,
@@ -147,7 +148,7 @@ export function buildAssistantServer(d: Daemon): McpServer {
       'settings.save: { scope: "personal" | "repo", patch: { approvals?, models?: { "harness/model": { prices?: { input, output, cacheRead?, cacheWrite? }, cacheMinutes? } } } } (prices in dollars per million tokens). ' +
       'workflow.save: { scope, name, goodAt, body }. ' +
       'rule.save: { scope, name, when: start|path|new-file|commit|done, description, body, roles?: [..], paths?: [..], sections?, include?, requires?, missing?, changes?: [..], unlessChanged?, edited? }; ' +
-      'to turn a rule off or on without a file, settings.save with patch: { rules: { "<name>": false|true } }. Always give a one-line summary of the change and why.',
+      'to turn a rule or skill off or on without a file, settings.save with patch: { rules: { "<name>": false|true } } or { skills: { … } }. Always give a one-line summary of the change and why.',
     { summary: z.string(), command: z.string(), args: z.record(z.string(), z.unknown()).optional() },
     a => {
       if (!PROPOSABLE.includes(a.command)) return `I can't propose ${a.command}. Proposable: ${PROPOSABLE.join(', ')}.`;

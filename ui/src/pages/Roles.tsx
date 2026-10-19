@@ -21,6 +21,7 @@ const blank = (config?: ConfigView): RoleDef => ({
   approvals: '',
   permissionMode: '',
   allow: [],
+  nativeSkills: false,
 });
 
 export function Roles({ config, selected, onSelect, onSave, onCommand }: SetupProps) {
@@ -269,6 +270,7 @@ function RoleForm({ config, draft, set, isNew, original, footer }: { config?: Co
         <Section title="How it works">
           <Toggle checked={draft.helper} onChange={v => set('helper', v)} label="Quick helper" hint="Answers one question and hands the answer straight back (spawn with quick: true). Gets the short helper guidelines." />
           <Toggle checked={draft.worktree} onChange={v => set('worktree', v)} label="Its own worktree by default" hint="A git worktree and branch of its own, for work in parallel. Otherwise it works in your checkout with the team." />
+          <Toggle checked={!!draft.nativeSkills} onChange={v => set('nativeSkills', v)} label="Keep the harness’s own skills" hint="Your personal skills for this harness, and the repository’s in its own folder, as the harness loads them. Off: hidden, so every harness on the team has the same skills (the Skills page)." />
           <Field label="Workflow it follows" hint="Goes into its prompt. A goal's lead gets the goal's workflow instead.">
             <select value={draft.workflow} onChange={e => set('workflow', e.target.value)}>
               <option value="">None</option>

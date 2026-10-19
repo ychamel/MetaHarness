@@ -55,6 +55,8 @@ export interface Settings {
   models: Record<string, ModelSettings>;
   /** Rules turned off (false) or back on (true) by name, without a file (design §18). */
   rules: Record<string, boolean>;
+  /** Skills turned off (false) or back on (true) by name. */
+  skills: Record<string, boolean>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -70,6 +72,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stallMinutes: 10,
   models: {},
   rules: {},
+  skills: {},
 };
 
 const FILE = 'settings.json';
@@ -118,14 +121,15 @@ function apply(s: Settings, raw: Record<string, unknown>): void {
   if (raw.models && typeof raw.models === 'object') {
     for (const [key, v] of Object.entries(raw.models)) s.models[key] = { ...s.models[key], ...readModel(v) };
   }
-  if (raw.rules && typeof raw.rules === 'object') {
-    for (const [name, on] of Object.entries(raw.rules)) if (typeof on === 'boolean') s.rules[name] = on;
+  for (const k of ['rules', 'skills'] as const) {
+    const v = raw[k];
+    if (v && typeof v === 'object') for (const [name, on] of Object.entries(v)) if (typeof on === 'boolean') s[k][name] = on;
   }
 }
 
 /** Settings from each directory in order; later ones override earlier ones. */
 export function loadSettings(dirs: string[]): Settings {
-  const s: Settings = { ...DEFAULT_SETTINGS, models: {}, rules: {} };
+  const s: Settings = { ...DEFAULT_SETTINGS, models: {}, rules: {}, skills: {} };
   for (const dir of dirs) {
     // The older prices.json: { "<model>": { input, cachedInput, output } }.
     const old = readJson(join(dir, 'prices.json'));
@@ -157,15 +161,15 @@ export function writeSettingsFile(dir: string, patch: Record<string, unknown>): 
       }
       if (Object.keys(models).length) cur.models = models;
       else delete cur.models;
-    } else if (k === 'rules' && v && typeof v === 'object') {
-      // One rule at a time: true or false sets it, null goes back to the folder before.
-      const rules = { ...((cur.rules as Record<string, unknown>) ?? {}) };
+    } else if ((k === 'rules' || k === 'skills') && v && typeof v === 'object') {
+      // One at a time: true or false sets it, null goes back to the folder before.
+      const switches = { ...((cur[k] as Record<string, unknown>) ?? {}) };
       for (const [name, on] of Object.entries(v as Record<string, unknown>)) {
-        if (typeof on === 'boolean') rules[name] = on;
-        else delete rules[name];
+        if (typeof on === 'boolean') switches[name] = on;
+        else delete switches[name];
       }
-      if (Object.keys(rules).length) cur.rules = rules;
-      else delete cur.rules;
+      if (Object.keys(switches).length) cur[k] = switches;
+      else delete cur[k];
     } else if (v === null) delete cur[k];
     else cur[k] = v;
   }

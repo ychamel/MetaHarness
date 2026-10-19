@@ -26,6 +26,10 @@ export interface Rule {
   roles: string[];
   /** Globs relative to the repository, and !glob to leave some out. */
   paths: string[];
+  /** Harness ids it's for, and !id to leave one out; empty: every harness. */
+  harness: string[];
+  /** Set when it's a skill's suggestion (src/skills.ts): the skill's name. */
+  skill?: string;
   /** A repository file whose path-headed sections come along (path rules). */
   sections?: string;
   /** A repository file whose text follows the body, when it exists. */
@@ -62,6 +66,7 @@ export function parseRule(name: string, text: string, file: string): Rule {
     body,
     roles: list(meta.roles).length ? list(meta.roles) : ['all'],
     paths: list(meta.paths).length ? list(meta.paths) : ['**'],
+    harness: list(meta.harness ?? meta.harnesses),
     sections: meta.sections || undefined,
     include: meta.include || undefined,
     requires: meta.requires || undefined,
@@ -110,9 +115,18 @@ export interface RuleAgent {
   /** A quick helper, or an agent in a helper role. */
   helper: boolean;
   lead: boolean;
+  /** Its harness id, for harness: lines. */
+  harness?: string;
 }
 
-export function appliesTo(rule: Rule, a: RuleAgent): boolean {
+export function forHarness(harnesses: string[], harness: string): boolean {
+  const out = harnesses.filter(h => h.startsWith('!')).map(h => h.slice(1));
+  const inc = harnesses.filter(h => !h.startsWith('!'));
+  return (inc.length ? inc.includes(harness) : true) && !out.includes(harness);
+}
+
+export function appliesTo(rule: Pick<Rule, 'roles'> & Partial<Pick<Rule, 'harness'>>, a: RuleAgent): boolean {
+  if (rule.harness?.length && a.harness && !forHarness(rule.harness, a.harness)) return false;
   const is = (t: string) => t === 'all' || (t === 'team' && !a.helper) || (t === 'helpers' && a.helper) || (t === 'lead' && a.lead) || t === a.role;
   const out = rule.roles.filter(t => t.startsWith('!')).map(t => t.slice(1));
   const inc = rule.roles.filter(t => !t.startsWith('!'));
@@ -315,7 +329,7 @@ export interface RuleNote {
   text: string;
 }
 
-const head = (rule: string) => `[MetaHarness · rule ${rule}]`;
+const head = (r: Pick<Rule, 'name' | 'skill'>) => (r.skill ? `[MetaHarness · skill ${r.skill}]` : `[MetaHarness · rule ${r.name}]`);
 
 function withInclude(rule: Rule, cwd: string): string {
   const inc = rule.include && readRepoFile(cwd, rule.include);
@@ -334,7 +348,7 @@ const TRIGGER: Record<Exclude<RuleWhen, 'start'>, string> = {
  * others so the agent knows their notes will come. Empty when no rule is for this agent.
  */
 export function rulesPrompt(rules: Iterable<Rule>, a: RuleAgent, cwd: string): string {
-  const mine = [...rules].filter(r => !r.off && appliesTo(r, a) && holds(r, cwd));
+  const mine = [...rules].filter(r => !r.off && !r.skill && appliesTo(r, a) && holds(r, cwd));
   const start = mine.filter(r => r.when === 'start');
   const later = mine.filter(r => r.when !== 'start');
   if (!start.length && !later.length) return '';
@@ -345,7 +359,7 @@ export function rulesPrompt(rules: Iterable<Rule>, a: RuleAgent, cwd: string): s
       const where = r.paths.join(', ') === '**' ? '' : ` (${r.paths.join(', ')})`;
       return `- ${r.name}, ${TRIGGER[r.when as Exclude<RuleWhen, 'start'>]}${where}: ${r.description}`;
     });
-    parts.push(`MetaHarness adds notes from these rules to what reaches you while you work (tool results, messages), each marked "${head('<name>')}":\n\n${lines.join('\n')}`);
+    parts.push(`MetaHarness adds notes from these rules to what reaches you while you work (tool results, messages), each marked "${head({ name: '<name>' })}":\n\n${lines.join('\n')}`);
   }
   return parts.join('\n\n');
 }
@@ -372,7 +386,7 @@ export function onToolCall(rules: Iterable<Rule>, a: RuleAgent, cwd: string, st:
       const created = paths.filter(p => !p.exists && matchesPaths(p.path, r.paths)).map(p => p.path);
       if (!created.length || !holds(r, cwd)) continue;
       st.fired.add(r.name);
-      out.push({ rule: r.name, when: r.when, paths: created, text: `${head(r.name)} You created ${created.join(', ')}.\n${withInclude(r, cwd)}` });
+      out.push({ rule: r.name, when: r.when, paths: created, text: `${head(r)} You created ${created.join(', ')}.\n${withInclude(r, cwd)}` });
     }
   }
   return out;
@@ -384,7 +398,7 @@ function pathNote(r: Rule, cwd: string, st: RuleState, touched: string[]): RuleN
   if (!r.sections) {
     if (st.fired.has(r.name)) return undefined;
     st.fired.add(r.name);
-    return { rule: r.name, when: r.when, paths: hits, text: `${head(r.name)} You're looking at ${hits.join(', ')}.\n${withInclude(r, cwd)}` };
+    return { rule: r.name, when: r.when, paths: hits, text: `${head(r)} You're looking at ${hits.join(', ')}.\n${withInclude(r, cwd)}` };
   }
   const given = st.given.get(r.name) ?? new Set<string>();
   st.given.set(r.name, given);
@@ -404,10 +418,10 @@ function pathNote(r: Rule, cwd: string, st: RuleState, touched: string[]): RuleN
   if (first) {
     given.add('');
     st.fired.add(r.name);
-    parts.push(`${head(r.name)} You're looking at ${hits.join(', ')}.\n${withInclude(r, cwd)}`);
+    parts.push(`${head(r)} You're looking at ${hits.join(', ')}.\n${withInclude(r, cwd)}`);
     if (doc.overview) parts.push(cap(doc.overview, OVERVIEW_MAX, r.sections));
   } else {
-    parts.push(`${head(r.name)} From ${r.sections}, for ${fresh.map(s => s.path + '/').join(', ')}:`);
+    parts.push(`${head(r)} From ${r.sections}, for ${fresh.map(s => s.path + '/').join(', ')}:`);
   }
   for (const s of fresh) {
     if (given.has(s.path)) continue;
@@ -436,7 +450,7 @@ export function onCommit(rules: Iterable<Rule>, a: RuleAgent, cwd: string, st: R
     if (!hits.length) continue;
     const shown = hits.slice(0, 8).map(f => (f.kind === 'renamed' ? `renamed ${f.from} → ${f.path}` : `${f.kind} ${f.path}`));
     if (hits.length > 8) shown.push(`and ${hits.length - 8} more`);
-    out.push({ rule: r.name, when: r.when, paths: hits.map(f => f.path), text: `${head(r.name)} Your commit ${sha.slice(0, 7)} ${shown.join(', ')}.\n${withInclude(r, cwd)}` });
+    out.push({ rule: r.name, when: r.when, paths: hits.map(f => f.path), text: `${head(r)} Your commit ${sha.slice(0, 7)} ${shown.join(', ')}.\n${withInclude(r, cwd)}` });
   }
   return out;
 }
@@ -449,6 +463,6 @@ export function onDone(rules: Iterable<Rule>, a: RuleAgent, cwd: string, st: Rul
   const due = [...rules].filter(r => !r.off && r.when === 'done' && !st.fired.has(r.name) && appliesTo(r, a) && (!r.edited || st.edited) && holds(r, cwd));
   if (!due.length) return undefined;
   for (const r of due) st.fired.add(r.name);
-  const text = [...due.map(r => `${head(r.name)} Before you finish:\n${withInclude(r, cwd)}`), "Your done wasn't sent yet. When that's settled, call done again (it goes through then)."].join('\n\n');
+  const text = [...due.map(r => `${head(r)} Before you finish:\n${withInclude(r, cwd)}`), "Your done wasn't sent yet. When that's settled, call done again (it goes through then)."].join('\n\n');
   return { rule: due.map(r => r.name).join(', '), when: 'done', paths: [], text };
 }

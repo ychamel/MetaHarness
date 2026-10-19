@@ -22,7 +22,8 @@ import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
 import { deniedCommandPrefixes, guardEnv, installGuard, refusedGitCommand } from './guard.ts';
 import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
-import { onCommit, onDone, onToolCall, rulesPrompt, RuleState, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
+import { onCommit, onDone, onToolCall, rulesPrompt, RuleState, type Rule, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
+import { skillRules, skillsFor, skillsPrompt, type Skill } from './skills.ts';
 
 export interface InboxEntry {
   id: string;
@@ -338,7 +339,7 @@ export class Daemon {
     mkdirSync(o.home, { recursive: true });
     this.store = new EventStore(o.dbPath ?? join(o.home, 'mh.db'));
     this.configDirs = o.configDirs ?? [o.home, join(o.repo, '.metaharness')];
-    this.config = loadConfig(this.configDirs);
+    this.config = loadConfig(this.configDirs, { repo: this.repo });
     this.adapters = o.adapters ?? {};
     this.harnessOverride = o.harnessOverride;
     this.quickTimeoutMs = o.quickTimeoutMs ?? 120_000;
@@ -637,6 +638,8 @@ export class Daemon {
     }
     const rules = rulesPrompt(this.config.rules.values(), ruleAgent(rec), rec.cwd);
     if (rules) parts.push(rules);
+    const skills = skillsPrompt(this.config.skills.values(), ruleAgent(rec));
+    if (skills) parts.push(skills);
     parts.push(
       [
         '## Where you are',
@@ -1380,19 +1383,29 @@ export class Daemon {
     return out.join('\n');
   }
 
-  /* ---------------- rules (design §18) ---------------- */
+  /* ---------------- rules and skills (design §18) ---------------- */
+
+  /** The rules, plus the skills that are suggested at a moment, which fire the same way. */
+  private momentRules(): Rule[] {
+    return [...this.config.rules.values(), ...skillRules(this.config.skills.values())];
+  }
+
+  /** The skills an agent may read: for its role and harness, and on. */
+  skillsFor(rec: AgentRec): Skill[] {
+    return skillsFor(this.config.skills.values(), ruleAgent(rec));
+  }
 
   /** Path and new-file rules for one tool call. */
   private toolRules(rec: AgentRec, tool: string, summary: string, info?: ToolInfo): void {
     if (FINISHED.includes(rec.state)) return;
-    for (const n of onToolCall(this.config.rules.values(), ruleAgent(rec), rec.cwd, rec.rules, tool, summary, info)) this.ruleNote(rec, n);
+    for (const n of onToolCall(this.momentRules(), ruleAgent(rec), rec.cwd, rec.rules, tool, summary, info)) this.ruleNote(rec, n);
   }
 
   /** Commit rules for a commit an agent made (not a merge). */
   private commitRules(g: GoalRec, gg: git.GoalGit, name: string, sha: string): void {
     const rec = g.agents.get(name);
     if (!rec || rec.quick) return;
-    const notes = onCommit(this.config.rules.values(), ruleAgent(rec), rec.cwd, rec.rules, sha, git.changedFiles(gg, sha));
+    const notes = onCommit(this.momentRules(), ruleAgent(rec), rec.cwd, rec.rules, sha, git.changedFiles(gg, sha));
     for (const n of notes) this.ruleNote(rec, n);
   }
 
@@ -1406,7 +1419,9 @@ export class Daemon {
 
   /** In a turn, a rule's note joins it; between turns it waits for whatever reaches the agent next, so it never wakes anyone. */
   private ruleNote(rec: AgentRec, n: RuleNote): void {
-    this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: n.paths.slice(0, 20) } });
+    const skill = /^skill:(.+)$/.exec(n.rule)?.[1];
+    if (skill) this.emit({ goal: rec.goal, agent: rec.name, type: 'skill.suggested', data: { skill, when: n.when, paths: n.paths.slice(0, 20) } });
+    else this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: n.paths.slice(0, 20) } });
     if (rec.session?.busy() && !FINISHED.includes(rec.state)) this.notice(rec, n.text);
     else rec.ruleNotes.push(n.text);
   }
@@ -2872,7 +2887,7 @@ export class Daemon {
 
   /** Reads the config files again: what's saved applies to agents started from now on. */
   reloadConfig(): void {
-    this.config = loadConfig(this.configDirs);
+    this.config = loadConfig(this.configDirs, { repo: this.repo });
     if (this.settingsOverride) Object.assign(this.config.settings, this.settingsOverride);
   }
 
@@ -2987,9 +3002,9 @@ export function formatForAgent(entries: InboxEntry[]): string {
 }
 
 /** Whether a role's allow list (Claude Code style, e.g. "Bash(npm test*)") covers a shell command. */
-/** Who an agent is, for the rules' roles: lines. */
-function ruleAgent(rec: AgentRec): RuleAgent {
-  return { role: rec.role.name, helper: rec.quick || rec.role.helper, lead: rec.isLead };
+/** Who an agent is, for the roles: and harness: lines of rules and skills. */
+function ruleAgent(rec: AgentRec): RuleAgent & { harness: string } {
+  return { role: rec.role.name, helper: rec.quick || rec.role.helper, lead: rec.isLead, harness: rec.harness };
 }
 
 export function roleAllows(role: Role, command: string): boolean {

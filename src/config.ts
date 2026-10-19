@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { loadMcpDefs, type McpServerDef } from './mcpservers.ts';
 import { BUILTIN_DIR, loadRules, type Rule } from './rules.ts';
+import { loadSkills, skillLayers, type Skill } from './skills.ts';
 import { APPROVAL_MODES, loadSettings, type ApprovalMode, type Settings } from './settings.ts';
 import type { Role, Workflow } from './types.ts';
 
@@ -13,6 +14,8 @@ export interface Config {
   workflows: Map<string, Workflow>;
   /** From rules/: the built-in pack, then each folder's; those turned off are kept, marked off (design §18). */
   rules: Map<string, Rule>;
+  /** From skills/ folders and the repository's .claude/skills and .agents/skills; those turned off are kept, marked off. */
+  skills: Map<string, Skill>;
   /** MCP server definitions from mcp.json, for roles' `mcp:` names. */
   mcp: Map<string, McpServerDef>;
   settings: Settings;
@@ -56,7 +59,7 @@ function markdownFiles(dir: string): string[] {
  * Loads config from each directory in order; later directories override earlier ones. The
  * built-in rules and workflows come first, unless `builtIn` is false (one folder on its own).
  */
-export function loadConfig(dirs: string[], o: { builtIn?: boolean } = {}): Config {
+export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string } = {}): Config {
   const builtIn = o.builtIn !== false;
   const settings = loadSettings(dirs);
   const cfg: Config = {
@@ -65,6 +68,7 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean } = {}): Confi
     helperMethodology: DEFAULT_HELPER_METHODOLOGY,
     workflows: new Map(),
     rules: loadRules(builtIn ? [BUILTIN_DIR, ...dirs] : dirs, settings.rules),
+    skills: loadSkills(skillLayers(dirs, o.repo, builtIn), settings.skills),
     mcp: loadMcpDefs(dirs),
     settings,
   };
@@ -94,6 +98,7 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean } = {}): Confi
         mcp: list(meta.mcp),
         workflow: meta.workflow || undefined,
         worktree: /^(true|yes|1)$/i.test(meta.worktree ?? ''),
+        nativeSkills: /^(true|yes|1)$/i.test(meta.native_skills ?? ''),
         ...(APPROVAL_MODES.includes(meta.approvals as ApprovalMode) ? { approvals: meta.approvals as ApprovalMode } : {}),
         file,
       });
@@ -138,6 +143,7 @@ const BUILTIN_ASSISTANT: Role = {
   autoApprove: 'read-only',
   mcp: [],
   worktree: false,
+  nativeSkills: false,
   file: '(built in)',
 };
 
@@ -175,5 +181,6 @@ const BUILTIN_GATEKEEPER: Role = {
   autoApprove: 'read-only',
   mcp: [],
   worktree: false,
+  nativeSkills: false,
   file: '(built in)',
 };

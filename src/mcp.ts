@@ -22,6 +22,7 @@ const SCHEMAS: Record<(typeof TOOL_NAMES)[number], z.ZodType> = {
   status: z.looseObject({ text: z.string().optional() }),
   done: z.looseObject({ note: z.string().optional() }),
   workflow: z.looseObject({ name: z.string().optional() }),
+  skill: z.looseObject({ name: z.string().optional(), part: z.string().optional() }),
 };
 
 function describe(name: (typeof TOOL_NAMES)[number]): string {

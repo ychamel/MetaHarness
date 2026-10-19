@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { parseFrontMatter } from '../config.ts';
 import { MCP_SERVER_NAME } from '../mcp.ts';
 import { run } from '../harnesses.ts';
+import { nativeSkillNames } from '../skills.ts';
 import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest } from './types.ts';
 
 /**
@@ -21,7 +22,8 @@ import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, Sessio
  *   agy config or the agent's worktree.
  * - agy has no switch for the user's global customizations (~/.gemini/config/), but a workspace
  *   skill wins over a global one of the same name, so each personal skill gets a stub there
- *   saying it's off (design §18). Its built-in skills stay.
+ *   saying it's off (design §18); so do the repository's .agents/skills, which come through the
+ *   skill tool. Its built-in skills stay.
  * - No interrupt: the daemon restarts the session from its conversation ID instead.
  * - Usage limits come from `agy -p=/quota`, per pool: Gemini models, Gemini 4 Argon, and
  *   Claude/GPT models each have their own.
@@ -177,14 +179,23 @@ export function agyPersonalSkills(dir = AGY_PERSONAL_SKILLS): string[] {
 }
 
 /**
- * The agent's own customization root: our MCP server, the hooks, the role prompt as an always-on
- * rule, and a stub for each personal skill.
+ * The skills agy would load that MetaHarness hides: the user's own, and the repository's
+ * .agents/skills, which reach every harness through the skill tool instead. None for a role with
+ * native_skills.
  */
-export function writeAgentConfig(spec: SessionSpec, hookScript: string, personalSkills = agyPersonalSkills()): void {
+export function agyHiddenSkills(spec: SessionSpec, personal = agyPersonalSkills()): string[] {
+  return spec.role.nativeSkills ? [] : [...new Set([...personal, ...nativeSkillNames(join(spec.cwd, '.agents', 'skills'))])];
+}
+
+/**
+ * The agent's own customization root: our MCP server, the hooks, the role prompt as an always-on
+ * rule, and a stub for each hidden skill.
+ */
+export function writeAgentConfig(spec: SessionSpec, hookScript: string, hidden = agyHiddenSkills(spec)): void {
   const dir = join(spec.agentDir, '.agents');
   mkdirSync(join(dir, 'rules'), { recursive: true });
   rmSync(join(dir, 'skills'), { recursive: true, force: true });
-  for (const name of personalSkills) {
+  for (const name of hidden) {
     mkdirSync(join(dir, 'skills', name.replace(/:/g, '-')), { recursive: true });
     writeFileSync(
       join(dir, 'skills', name.replace(/:/g, '-'), 'SKILL.md'),

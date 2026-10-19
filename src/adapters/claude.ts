@@ -1,9 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { APPROVAL_TOOL, MCP_SERVER_NAME } from '../mcp.ts';
 import { claudeMcpDef } from '../mcpservers.ts';
 import { run } from '../harnesses.ts';
+import { nativeSkillNames } from '../skills.ts';
 import type { CapabilityManifest, CostSplit, HarnessAdapter, LimitWindow, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest, Usage } from './types.ts';
 
 /**
@@ -65,6 +67,7 @@ export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false)
     const def = s.def ?? claudeMcpDef(s.name, spec.cwd);
     if (def && s.name !== MCP_SERVER_NAME) servers[s.name] = def;
   }
+  const hiddenSkills = spec.role.nativeSkills ? [] : nativeSkillNames(join(spec.cwd, '.claude', 'skills'));
   const allowed = [`mcp__${MCP_SERVER_NAME}`, ...Object.keys(servers).filter(n => n !== MCP_SERVER_NAME).map(n => `mcp__${n}`), ...spec.role.allow];
   const args = [
     '-p',
@@ -75,12 +78,14 @@ export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false)
     '--append-system-prompt', spec.systemPrompt,
     '--mcp-config', JSON.stringify({ mcpServers: servers }),
     '--strict-mcp-config',
-    // Leave out user-level settings (plugins, hooks, permission rules); the role decides instead.
-    '--setting-sources', 'project,local',
+    // Leave out user-level settings (plugins, hooks, permission rules, personal skills); the role
+    // decides instead. A role with native_skills keeps them.
+    '--setting-sources', spec.role.nativeSkills ? 'user,project,local' : 'project,local',
     '--add-dir', spec.sharedDir,
     // All delegation goes through MetaHarness (design §11).
     // Neither can a role's allow list let agents push or delete branches (src/guard.ts).
-    '--disallowedTools', 'Agent', ...(spec.deniedCommands ?? []).map(p => `Bash(${p}:*)`),
+    // The repository's .claude/skills come through the skill tool, for every harness (design §18).
+    '--disallowedTools', 'Agent', ...(spec.deniedCommands ?? []).map(p => `Bash(${p}:*)`), ...hiddenSkills.map(n => `Skill(${n})`),
     // Claude Code's auto mode lets its own classifier approve what's safe; what it would ask still comes to us.
     '--permission-mode', spec.role.permissionMode ?? (spec.approvals === 'harness' ? 'auto' : 'acceptEdits'),
     '--permission-prompt-tool', `mcp__${MCP_SERVER_NAME}__${APPROVAL_TOOL}`,

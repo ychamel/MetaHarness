@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeAdapter, type FakeScript } from '../src/adapters/fake.ts';
 import { agyPersonalSkills, writeAgentConfig } from '../src/adapters/agy.ts';
-import { isolationConfig, personalSkills } from '../src/adapters/codex.ts';
+import { hiddenSkills, isolationConfig } from '../src/adapters/codex.ts';
 import type { SessionSpec } from '../src/adapters/types.ts';
 import { loadConfig } from '../src/config.ts';
 import { Daemon } from '../src/daemon.ts';
@@ -218,7 +218,7 @@ test('rules: a lead in a repository without a map is told it can have one; a swi
   assert.match(prompt, /- map-bootstrap: creating ARCHITECTURE.md/, 'the built-in workflow is offered');
 });
 
-test('native skills: Codex turns off user-scope skills, Antigravity shadows personal ones', async () => {
+test('native skills: Codex turns off user and repository skills, Antigravity shadows personal ones', async () => {
   const server = {
     request: async () => ({
       data: [{ skills: [
@@ -228,11 +228,12 @@ test('native skills: Codex turns off user-scope skills, Antigravity shadows pers
       ] }],
     }),
   };
-  const skills = await personalSkills(server, '/repo');
-  assert.deepEqual(skills, ['/home/u/.codex/skills/mine/SKILL.md'], 'system and repository skills stay');
-  assert.deepEqual(isolationConfig([], [], skills)['skills.config'], [{ path: '/home/u/.codex/skills/mine/SKILL.md', enabled: false }]);
+  const skills = await hiddenSkills(server, '/repo');
+  assert.deepEqual(skills, ['/home/u/.codex/skills/mine/SKILL.md', '/repo/.agents/skills/team/SKILL.md'], 'system skills stay; the repository\'s come through the skill tool');
+  assert.deepEqual(await hiddenSkills(server, '/repo', true), [], 'native_skills keeps them all');
+  assert.deepEqual(isolationConfig([], [], skills.slice(0, 1))['skills.config'], [{ path: '/home/u/.codex/skills/mine/SKILL.md', enabled: false }]);
   assert.equal(isolationConfig([])['skills.config'], undefined);
-  assert.deepEqual(await personalSkills({ request: async () => Promise.reject(new Error('unknown method')) }, '/repo'), []);
+  assert.deepEqual(await hiddenSkills({ request: async () => Promise.reject(new Error('unknown method')) }, '/repo'), []);
 
   const global = mkdtempSync(join(tmpdir(), 'mh-agy-skills-'));
   mkdirSync(join(global, 'release-notes'));

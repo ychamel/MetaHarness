@@ -45,6 +45,8 @@ export interface Role {
   workflow?: string;
   /** Give agents in this role their own git worktree by default, instead of the shared folder. */
   worktree: boolean;
+  /** Keep the harness's own skills (the user's personal ones, the repository's in its own folder) instead of hiding them (design §18). */
+  nativeSkills?: boolean;
   /** How this role's approvals are decided, instead of the settings' default. */
   approvals?: import('./settings.ts').ApprovalMode;
   file: string;
