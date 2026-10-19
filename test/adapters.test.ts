@@ -48,6 +48,17 @@ test('rate-limit reports from Claude Code and Codex become one shape', () => {
   assert.equal(rateLimitInfo({ status: 'rejected' })?.status, 'limited');
   assert.equal(rateLimitInfo({ status: 'allowed' })?.status, 'ok');
   assert.equal(rateLimitInfo(undefined), undefined);
+  // An allowed turn gives no utilization of its own, only every window's.
+  assert.deepEqual(
+    rateLimitInfo({
+      status: 'allowed', resetsAt: 1_792_459_800, rateLimitType: 'five_hour',
+      unifiedWindows: { five_hour: { utilization: 0.54, resetsAt: 1_792_459_800 }, seven_day: { utilization: 0.69, resetsAt: 1_792_728_000 } },
+    }),
+    {
+      status: 'ok', usedPct: 69, resetsAt: 1_792_728_000_000, window: '7d',
+      windows: [{ name: '5h', usedPct: 54, resetsAt: 1_792_459_800_000 }, { name: '7d', usedPct: 69, resetsAt: 1_792_728_000_000 }],
+    },
+  );
 
   const snap = {
     primary: { usedPercent: 40, resetsAt: 1_800_000_000, windowDurationMins: 300 },

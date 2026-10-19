@@ -123,7 +123,7 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
                   <input type="number" min={0} value={draft.limitCheckMinutes} onChange={e => set('limitCheckMinutes', Number(e.target.value))} />
                 </Field>
               </div>
-              <div className="hint">Each harness is asked where its plan’s windows stand (Claude Code’s /usage, Codex’s rate limits, Antigravity’s /quota) without running a turn, so it costs nothing. Agents also report them as they work.</div>
+              <div className="hint">Each harness is asked where its plan’s windows stand (Claude Code’s /usage, Codex’s rate limits, Antigravity’s /quota). Claude Code is asked with a one-word Haiku turn (about 500 tokens); the others answer for free. An account an agent has just reported is skipped.</div>
             </Section>
 
             <Section title="Keeping agents going" hint={where('contextHandoffPct')}>

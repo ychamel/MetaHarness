@@ -97,7 +97,7 @@ export function AccountList({ accounts, checks, onCheck, empty }: { accounts: Ac
           >
             {checking || checks.some(c => c.checking) ? 'Checking…' : 'Check now'}
           </button>
-          <span className="muted small">Asks each harness without running a turn: it costs nothing.</span>
+          <span className="muted small">Asks each harness. Claude Code is asked with a one-word Haiku turn; the others answer for free.</span>
         </div>
       )}
     </div>

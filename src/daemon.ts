@@ -1849,7 +1849,7 @@ export class Daemon {
   }
 
   /**
-   * Asks harnesses where their accounts stand, without running a turn: every one that can say,
+   * Asks harnesses where their accounts stand, between turns: every one that can say,
    * or just `harness`. At most once a minute per harness unless forced. Agents waiting out a
    * limit that has lifted carry on straight away.
    */
@@ -1881,13 +1881,17 @@ export class Daemon {
     );
   }
 
-  /** Checks limits now, then every `limitCheckMinutes` (the setting is read each time, so a change applies). */
+  /**
+   * Checks limits now, then every `limitCheckMinutes` (the setting is read each time, so a change
+   * applies). An account a turn reported within that time is fresh already: Claude's check costs a turn.
+   */
   startLimitChecks(): void {
     if (this.limitTimer) return;
     const tick = () => {
       const every = this.config.settings.limitCheckMinutes * 60_000;
       if (every <= 0) return;
-      const due = Object.keys(this.adapters).filter(id => this.adapters[id].readLimits && Date.now() - (this.limitChecks.get(id)?.at ?? 0) >= every);
+      const stale = (at = 0) => Date.now() - at >= every;
+      const due = Object.keys(this.adapters).filter(id => this.adapters[id].readLimits && stale(this.limitChecks.get(id)?.at) && stale(this.accounts.get(id)?.checkedAt));
       for (const id of due) void this.checkLimits(id);
     };
     tick();

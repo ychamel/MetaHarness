@@ -282,8 +282,11 @@ The terminal can do all of this too:
   team stays stuck after the lead was told; your reply goes to the lead.
 - **Plan limits** on Home and on each harness's page show every window of each subscription
   (the five-hour and the weekly one, each pool on Antigravity), how full it is and when it
-  resets. The daemon asks the harnesses every 10 minutes (Settings) without running a turn, so
-  it costs nothing; *Check now* asks straight away. A running goal's header shows the fullest
+  resets. The daemon asks the harnesses every 10 minutes (Settings), skipping an account a
+  working agent has just reported; *Check now* asks straight away. Codex and Antigravity answer
+  without a turn. Claude Code's `/usage` no longer gives the windows, so a subscription is asked
+  with a one-word Haiku turn (about 500 tokens), which also starts a five-hour window if none
+  is running. A running goal's header shows the fullest
   window of each account its agents use.
 
 ## 8. Tailoring it

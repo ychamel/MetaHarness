@@ -290,7 +290,8 @@ Findings from the run:
       config, guide) and propose/apply for setup changes; fresh session per conversation.
       Checked live on luna against a copy of the Evolution run's log, and in headless Chrome
 - [x] **Plan limits** (2026-10-18): every window of every account (Claude Code session and
-      weekly, Codex 5h and 7d, each Antigravity pool), read without a turn: `claude -p /usage`,
+      weekly, Codex 5h and 7d, each Antigravity pool), read without a turn: `claude -p /usage` (since 2026-10-20 a one-word Haiku ping when its text
+      has no windows),
       Codex `account/rateLimits/read`, `agy -p=/quota` (now with stdin closed; it waited on it
       before). At start, every `limitCheckMinutes` (10), and *Check now* (`limits.check`). Home
       and Harnesses show them, a running goal's header a chip per account. A lifted limit

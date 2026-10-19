@@ -155,8 +155,8 @@ export interface HarnessAdapter {
    */
   account?(model: string): string;
   /**
-   * Where each of the harness's accounts stands, read without running a turn (Claude Code's
-   * /usage, Codex's account/rateLimits/read, Antigravity's /quota). Keyed by account.
+   * Where each of the harness's accounts stands, read between turns (Claude Code's /usage
+   * or a Haiku ping, Codex's account/rateLimits/read, Antigravity's /quota). Keyed by account.
    */
   readLimits?(): Promise<Record<string, RateLimitInfo>>;
   /** What a tool call means, for harnesses whose hooks ask MetaHarness before each tool runs. */

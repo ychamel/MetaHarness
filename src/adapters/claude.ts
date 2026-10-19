@@ -40,17 +40,36 @@ export class ClaudeAdapter implements HarnessAdapter {
     return claudeToolRequest(tool, args);
   }
 
-  /** `/usage` runs locally in print mode: no model call, no cost. */
+  /**
+   * `/usage` runs locally in print mode: no model call, no cost. Newer Claude Code leaves the
+   * windows out of it, so a subscription is then pinged with a one-word Haiku turn instead.
+   */
   async readLimits(): Promise<Record<string, RateLimitInfo>> {
     const r = await run(this.bin, ['-p', '/usage', '--output-format', 'json', '--no-session-persistence'], { ...process.env, ...this.env }, 60_000, tmpdir());
-    let text: unknown;
+    let text: string;
     try {
-      text = JSON.parse(r.stdout).result;
+      text = String(JSON.parse(r.stdout).result ?? '');
     } catch {
       throw new Error(`claude /usage said: ${r.out.slice(0, 200) || `exit ${r.code}`}`);
     }
-    const info = claudeUsage(String(text ?? ''));
+    const info = claudeUsage(text) ?? (/using your subscription/i.test(text) ? await this.pingLimits() : undefined);
     return info ? { [this.manifest.harness]: info } : {};
+  }
+
+  /** A turn's rate_limit_event has every window. No tools, settings or MCP servers: about 500 tokens. */
+  private async pingLimits(): Promise<RateLimitInfo | undefined> {
+    const args = ['-p', 'Reply with one word: ok', '--model', 'haiku', '--output-format', 'stream-json', '--verbose', '--no-session-persistence'];
+    args.push('--tools', '', '--system-prompt', 'Reply briefly.', '--strict-mcp-config', '--setting-sources', '', '--disable-slash-commands');
+    const r = await run(this.bin, args, { ...process.env, ...this.env }, 45_000, tmpdir());
+    let info: RateLimitInfo | undefined;
+    for (const line of r.stdout.split('\n')) {
+      try {
+        const m = JSON.parse(line);
+        if (m?.type === 'rate_limit_event') info = rateLimitInfo(m.rate_limit_info) ?? info;
+      } catch {}
+    }
+    if (!info && r.code) throw new Error(`claude limits ping said: ${r.out.slice(-200) || `exit ${r.code}`}`);
+    return info;
   }
 
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
@@ -333,15 +352,26 @@ const splitOf = (t: Tokens, each: number, cacheMinutes?: number): CostSplit => (
 /** How a refused turn reads when Claude Code has no rate_limit_event for it. */
 const LIMIT_ERROR = /usage limit|rate limit|limit reached|out of (extra )?usage/i;
 
-/** Claude Code's rate_limit_info: status allowed | allowed_warning | rejected, utilization 0–1, resetsAt in seconds. */
+/**
+ * Claude Code's rate_limit_info: status allowed | allowed_warning | rejected, utilization 0–1,
+ * resetsAt in seconds. An allowed turn leaves out utilization and gives every window's in
+ * unifiedWindows instead; then the fullest window is the one reported.
+ */
 export function rateLimitInfo(r: any): RateLimitInfo | undefined {
   if (!r || typeof r !== 'object' || typeof r.status !== 'string') return undefined;
   const status = r.status === 'rejected' ? 'limited' : r.status === 'allowed_warning' ? 'warning' : 'ok';
+  const windows: LimitWindow[] = [];
+  for (const [name, w] of Object.entries(r.unifiedWindows ?? {}) as [string, any][]) {
+    if (typeof w?.utilization !== 'number') continue;
+    windows.push({ name: claudeWindow(name), usedPct: Math.round(w.utilization * 100), ...(typeof w.resetsAt === 'number' ? { resetsAt: w.resetsAt * 1000 } : {}) });
+  }
+  const top = typeof r.utilization === 'number' ? undefined : windows.slice().sort((a, b) => b.usedPct - a.usedPct)[0];
   return {
     status,
-    usedPct: typeof r.utilization === 'number' ? Math.round(r.utilization * 100) : undefined,
-    resetsAt: typeof r.resetsAt === 'number' ? r.resetsAt * 1000 : undefined,
-    window: typeof r.rateLimitType === 'string' ? claudeWindow(r.rateLimitType) : undefined,
+    usedPct: typeof r.utilization === 'number' ? Math.round(r.utilization * 100) : top?.usedPct,
+    resetsAt: top ? top.resetsAt : typeof r.resetsAt === 'number' ? r.resetsAt * 1000 : undefined,
+    window: top ? top.name : typeof r.rateLimitType === 'string' ? claudeWindow(r.rateLimitType) : undefined,
+    ...(windows.length ? { windows } : {}),
   };
 }
 
