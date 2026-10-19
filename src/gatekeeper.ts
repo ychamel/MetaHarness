@@ -14,6 +14,8 @@ export interface GatekeeperRequest {
   /** Its brief, sent the first time this agent asks in a session. */
   brief: string;
   where: string;
+  /** The goal's shared folder, the team's own. */
+  shared: string;
   tool: string;
   detail: string;
 }
@@ -202,15 +204,19 @@ export class Gatekeeper {
     const first = !this.briefed.has(r.agent);
     this.briefed.add(r.agent);
     return [
-      `Request from ${r.agent} (${r.role}), working in ${r.where}.`,
+      `Request from ${r.agent} (${r.role}), working in ${r.where}. The team's shared folder: ${r.shared}`,
       ...(first && r.brief ? [`Its task: ${r.brief.replace(/\s+/g, ' ').slice(0, 800)}`] : []),
       `It wants to run ${r.tool}:`,
       '```',
-      r.detail.slice(0, 6000),
+      r.detail.slice(0, SHOWN),
+      ...(r.detail.length > SHOWN ? [`[… ${r.detail.length - SHOWN} more characters not shown]`] : []),
       '```',
       'Answer ALLOW, DENY or ASK as the first word, then one short reason.',
     ].join('\n');
   }
 }
+
+/** How much of a command the gatekeeper is shown. */
+const SHOWN = 6000;
 
 const key = (r: GatekeeperRequest) => `${r.agent}\n${r.tool}\n${r.detail}`;

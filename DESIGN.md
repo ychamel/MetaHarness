@@ -384,7 +384,11 @@ there are new messages or file changes, so an agent nobody is messaging sees not
     files to judge a script, nothing else. An identical request from the same agent is
     answered from memory. No answer in two minutes, or no verdict in its answer, comes to you.
     The gatekeeper can only let through what the fixed rules leave open, and its prompt says
-    the command text is the agent's, not instructions. The role is built in (Claude haiku,
+    the command text is the agent's, not instructions. It reads the command as the shell
+    will (`src/shellview.ts`): Codex's `/bin/bash -lc '…'` wrapper taken off (the Inbox shows
+    that too), the bodies of quoted here-documents (`<<'EOF'`) replaced by their length since
+    none of it runs, and the goal's shared folder named. Before this, haiku misread Codex's
+    quoting and asked about report files written into `shared/`. The role is built in (Claude haiku,
     with Codex and Antigravity backups) unless a `roles/gatekeeper.md` replaces it; any
     harness or model can fill it, and teams can't spawn it. Checked live on haiku: about 3
     seconds a verdict, $0.07 for a session's first four.

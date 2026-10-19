@@ -11,6 +11,7 @@ import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, LimitWin
 import { addSplit, addTokens, priceSplit, splitTotal, tokenCount, tokensOf, type Tokens } from './costs.ts';
 import { modelSettings, readSettingsFile, writeSettingsFile } from './settings.ts';
 import { Gatekeeper, type GatekeeperLimits, type Judgement } from './gatekeeper.ts';
+import { elideHeredocs, unwrapShell } from './shellview.ts';
 import { Assistant, assistantDecision } from './assistant.ts';
 import type { ApprovalMode } from './settings.ts';
 import { MCP_SERVER_NAME } from './mcp.ts';
@@ -831,13 +832,16 @@ export class Daemon {
       return { allow: true };
     }
     const g = this.goals.get(rec.goal)!;
+    // What the gatekeeper and the human read: the script without Codex's `bash -lc '…'` around it.
+    const shown = tool === 'Bash' ? unwrapShell(detail) : detail;
     let note: string | undefined;
     if (this.usesGatekeeper(rec)) {
+      const seen = tool === 'Bash' ? elideHeredocs(shown) : shown;
       const j = await this.gatekeeperFor(g).judge({
-        agent: rec.name, role: rec.role.name, brief: rec.brief, tool, detail,
+        agent: rec.name, role: rec.role.name, brief: rec.brief, tool, detail: seen, shared: g.sharedDir,
         where: `${rec.cwd}${rec.worktree ? ' (its own worktree)' : this.sharedCheckout(rec) ? " (the human's checkout, shared with teammates)" : ''}`,
       });
-      this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.gatekeeper', data: { tool, detail: detail.slice(0, 2000), verdict: j.verdict, reason: j.reason, ...(j.remembered ? { remembered: true } : {}) } });
+      this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.gatekeeper', data: { tool, detail: seen.slice(0, 2000), verdict: j.verdict, reason: j.reason, ...(j.remembered ? { remembered: true } : {}) } });
       if (j.verdict === 'allow') return { allow: true };
       if (j.verdict === 'deny') return { allow: false, message: `The gatekeeper refused this: ${j.reason} If it's really needed, ask the human (send, to: human) and say why.` };
       note = `Gatekeeper: ${j.reason}`;
@@ -845,7 +849,7 @@ export class Daemon {
     rec.pendingApprovals++;
     return new Promise(resolve => {
       this.toHuman(
-        g, rec.name, 'approval', `${tool}: ${detail}`,
+        g, rec.name, 'approval', `${tool}: ${shown}`,
         item =>
           this.approvals.set(item.id, d => {
             rec.pendingApprovals--;

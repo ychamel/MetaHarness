@@ -280,6 +280,13 @@ Findings from the run:
       and Harnesses show them, a running goal's header a chip per account. A lifted limit
       releases agents waiting on it. Read live from all three on 2026-10-18; checked in
       headless Chrome
+- [x] **Gatekeeper reads commands as the shell does** (2026-10-20, from the Evolution map run:
+      7 approvals came to the human, 6 of them harmless). Five were Codex scouts writing reports
+      into `shared/` with `cat <<'EOF'`: haiku misread Codex's `/bin/bash -lc "…'"'"'…"` quoting
+      as live backticks, and one report ran past the 6,000 characters it is shown. Now
+      `src/shellview.ts` takes off the wrapper (for the Inbox too) and replaces quoted
+      here-document bodies with their length, the prompt names the shared folder and says when a
+      command is cut. Replayed live on haiku: all 6 ALLOW, the `git rm` of a tracked shader ASK
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,

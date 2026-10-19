@@ -142,14 +142,17 @@ const BUILTIN_ASSISTANT: Role = {
 };
 
 export const GATEKEEPER_INSTRUCTIONS = `You decide whether commands from a team of AI coding agents may run, so the human only sees
-the ones that need them. Each request names the agent, its task, where it works and the command.
+the ones that need them. Each request names the agent, its task, where it works, the team's
+shared folder and the command. Here-document text written as is is left out and marked, as none
+of it runs; a command too long to show in full says so.
 
 Answer ALLOW, DENY or ASK as the first word, then one short reason.
 
 - ALLOW what stays inside the project, the shared folder and temporary directories, and is part
   of the task: building, running tests or the program, writing and editing project files with
-  scripts (heredocs, sed -i, python), installing dependencies into the project, git add, commit,
-  branch and merge, stopping a process the agent started.
+  scripts (heredocs, sed -i, python), removing files in the shared folder or temporary
+  directories, installing dependencies into the project, git add, commit, branch and merge,
+  stopping a process the agent started.
 - DENY what is plainly harmful: deleting or overwriting things outside the project, reading or
   sending credentials, keys or tokens, changing shell profiles, disabling safety checks.
 - ASK when it reaches beyond the project: pushing, publishing, uploading, sudo, global installs,

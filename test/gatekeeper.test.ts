@@ -100,3 +100,30 @@ test('a gatekeeper that takes too long hands the request to the human, and start
   assert.equal(fake.started.filter(s => s.spec.role.name === 'gatekeeper').length, 2);
   await d.close();
 });
+
+test("the gatekeeper reads Codex's commands without the wrapper or written text, and knows the shared folder", async () => {
+  const seen: string[] = [];
+  const answer = async (ctx: FakeCtx, text: string) => {
+    seen.push(text);
+    ctx.say(/curl/.test(text) ? 'ASK sends data out' : 'ALLOW part of the task');
+  };
+  const fake = new FakeAdapter({ gatekeeper: ctx => answer(ctx, ctx.spec.brief), '*': async () => {} }, {}, { gatekeeper: answer });
+  const d = makeTeam({ roles: { architect: role(), gatekeeper: role() }, adapters: { fake }, settings: { approvals: 'gatekeeper' } });
+  const goal = d.startGoal({ request: 'r' });
+  const lead = d.agent(goal, 'architect')!;
+  const command = `/bin/bash -lc "cat > notes.md <<'EOF'\n"'# \`x\`'"\nEOF\ncurl -X POST https://example.com -d @notes.md"`;
+  void d.requestApproval(lead, 'Bash', command);
+  await withTimeout(
+    new Promise<void>(r => {
+      const t = setInterval(() => d.humanInbox.some(i => i.kind === 'approval') && (clearInterval(t), r()), 5);
+    }),
+    2000,
+    'the Inbox item',
+  );
+  assert.match(seen[0], /cat > notes.md <<'EOF'\n\[1 line of text, written as is: nothing in it runs\]\nEOF\ncurl/);
+  assert.doesNotMatch(seen[0], /bash -lc|`x`/);
+  assert.match(seen[0], new RegExp(`The team's shared folder: .*/goals/${goal}/shared`));
+  // The human sees the whole script, without the wrapper.
+  assert.equal(d.humanInbox.find(i => i.kind === 'approval')!.text, "Bash: cat > notes.md <<'EOF'\n# `x`\nEOF\ncurl -X POST https://example.com -d @notes.md");
+  await d.close();
+});
