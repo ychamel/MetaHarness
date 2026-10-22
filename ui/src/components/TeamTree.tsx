@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { money, STATE_LABEL } from '../format.ts';
+import { modelLabel, money, STATE_LABEL } from '../format.ts';
 import type { Agent, Goal } from '../types.ts';
 import { Ctx, Dot, CacheClock } from './common.tsx';
 
@@ -32,7 +32,7 @@ export function TeamTree({ goal, selected, onSelect }: { goal: Goal; selected?: 
             <span>{money(a.cost)}</span>
           </span>
           <span className="meta">
-            {a.role} · {a.harness} · {a.model} · {a.pausing ? 'pausing…' : STATE_LABEL[a.state]}
+            {a.role} · {a.harness} · {modelLabel(a)} · {a.pausing ? 'pausing…' : STATE_LABEL[a.state]}
           </span>
           {!finished && a.status && <span className="status">{a.status}</span>}
         </button>

@@ -311,3 +311,47 @@ test('open conflicts and shared-file owners survive a restart', () => {
   assert.deepEqual(Object.fromEntries(r.shared), { 'design.md': { version: 2, owner: 'architect' }, 'notes/x.md': { version: 1, owner: undefined } });
   assert.deepEqual([...r.conflicts.entries()], [['/repo', { op: 'merge', sha: 'def', branch: 'trunk', agent: 'architect' }]]);
 });
+
+test('deleting goals: their folder and events go; unsaved work holds a goal back unless forced; a goal at work is refused', async () => {
+  const d = makeDaemon({
+    architect: async ctx => {
+      if (ctx.spec.brief.includes('dirty')) {
+        await ctx.tool('spawn', { role: 'implementer', name: 'dirty', brief: 'dirty', worktree: true });
+        await ctx.tool('wait', { timeout: 5 });
+      }
+      if (ctx.spec.brief.includes('slow')) await ctx.sleep(5000);
+      await ctx.tool('done', { note: 'ok' });
+    },
+    implementer: async ctx => {
+      writeFileSync(join(ctx.spec.cwd, 'wip.txt'), 'not committed\n');
+      await ctx.tool('done', { note: 'left it uncommitted' });
+    },
+  });
+  const finished = (goal: string) => withTimeout((async () => { while (d.agent(goal, 'architect')?.state !== 'done') await settle(); })(), 5000, `goal ${goal} to finish`);
+  const plain = d.startGoal({ request: 'plain' });
+  const dirty = d.startGoal({ request: 'dirty' });
+  const slow = d.startGoal({ request: 'slow' });
+  await finished(plain);
+  await finished(dirty);
+  writeFileSync(join(d.home, 'goals', plain, 'shared', 'report.md'), '# Report\n');
+  mkdirSync(join(d.home, 'goals', 'deadbeef', 'shared'), { recursive: true });
+
+  const sizes = d.goalSizes();
+  assert.ok(sizes.find(s => s.id === plain)!.bytes > 0);
+  assert.equal(sizes.find(s => s.id === 'deadbeef')!.known, false, 'a folder the log has no goal for');
+
+  const r = d.deleteGoals([plain, dirty, slow, 'deadbeef']);
+  assert.deepEqual(r.deleted, [plain, 'deadbeef']);
+  assert.equal(r.kept[0].goal, dirty);
+  assert.match(r.kept[0].items[0], /uncommitted change/);
+  assert.match(r.refused[0], new RegExp(`Goal ${slow} is still at work \\(architect\\)`));
+  assert.ok(!existsSync(join(d.home, 'goals', plain)) && !existsSync(join(d.home, 'goals', 'deadbeef')));
+  assert.equal(d.store.since(plain).length, 0);
+  assert.ok(!d.listGoals().some(g => g.id === plain));
+  assert.ok(d.listGoals().some(g => g.id === dirty), 'kept while its work is unsaved');
+
+  assert.deepEqual(d.deleteGoals([dirty], true).deleted, [dirty]);
+  assert.ok(!existsSync(join(d.home, 'goals', dirty)));
+  assert.equal(git(d.repo, 'branch', '--list', `mh/${dirty}/*`), '', 'its branch went too');
+  await d.close();
+});

@@ -21,10 +21,12 @@ Milestone 1 in progress:
 - **Claude Code, Codex and Antigravity CLI** all run, and each passes every `mh test` check:
   mid-turn messages (native, or through a hook for Antigravity), urgent interrupts, resume,
   usage and rate limits.
-- Roles can name backups. When a subscription nears its limit, agents are asked to write notes;
+- Roles set an **effort** apart from the model (each harness gets its nearest level), and can
+  name backups. When a subscription nears its limit, agents are asked to write notes;
   at the limit they wait for a close reset or move to a backup, continuing from a handoff.
 - **Workflows** guide the lead through a kind of task (`feature`, `feature-explore`,
-  `implementation`), hand on to each other, and stop for your approval where they say so.
+  `implementation`), hand on to each other, and stop for your approval where they say so. A
+  workflow can name the roles it uses, so the lead picks from those.
   **Specialist roles** can bring their own MCP servers (`mcp: blender`) and workflow.
 - **Rules** reach agents at the moment they matter: the codebase map's section for the folder
   an agent is reading, "does this already exist?" when it creates a file, "update the map" when
@@ -42,6 +44,9 @@ Milestone 1 in progress:
   shared ones, and pushing. Agents commit; you push.
 - The **shared folder** keeps every version of every file in `shared/.history/`, and agents are
   told when a teammate changes a file (and when someone edits a document that isn't theirs).
+
+- The web app follows a goal live (the graph shows each agent's step, messages in flight and
+  who waits on whom), and its **Goals** page opens, or deletes, past goals from any folder.
 
 See [TRACKER.md](TRACKER.md).
 
@@ -102,6 +107,8 @@ Another harness on a transport MetaHarness already speaks is a profile, not code
 | `src/hub.ts` | The six agent tools: `team`, `spawn`, `send`, `wait`, `status`, `done` |
 | `src/store.ts` | Append-only event log (SQLite, built into Node) |
 | `src/recover.ts` | Rebuilding goals from the log when the daemon restarts |
+| `src/procs.ts` | Harness processes as trees: started in their own group, ended with everything they started |
+| `src/effort.ts` | Effort levels: the nearest one a harness takes, models named once per effort |
 | `src/server.ts` | Client API: `GET /state`, `GET /events` (with replay), `POST /commands`; `/mcp/<token>` and `/hook/<token>` for agents |
 | `src/harnesses.ts` | Harness profiles: finding each CLI, its login and its models |
 | `src/mcpservers.ts`, `src/readonly.ts` | Roles' MCP servers by name; which shell commands only read |

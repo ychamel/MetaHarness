@@ -1,4 +1,6 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { endTree, spawnTree } from '../procs.ts';
+import { CLAUDE_EFFORTS, nearestEffort } from '../effort.ts';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -111,6 +113,8 @@ export function claudeArgs(spec: SessionSpec, sessionId: string, resume = false)
     '--allowedTools', ...allowed,
   ];
   if (spec.model) args.push('--model', spec.model);
+  const effort = spec.effort && nearestEffort(spec.effort, CLAUDE_EFFORTS);
+  if (effort) args.push('--effort', effort);
   return args;
 }
 
@@ -162,7 +166,7 @@ class ClaudeSession implements Session {
     this.ev = ev;
     this.nativeId = resume ?? randomUUID();
     this.contextWindow = /\[1m\]/i.test(spec.model) ? 1_000_000 : 200_000;
-    this.proc = spawn(bin, claudeArgs(spec, this.nativeId, !!resume), {
+    this.proc = spawnTree(bin, claudeArgs(spec, this.nativeId, !!resume), {
       cwd: spec.cwd,
       env: { ...process.env, ...env, ...spec.env, MCP_TOOL_TIMEOUT: '900000' },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -205,9 +209,7 @@ class ClaudeSession implements Session {
     if (this.stopped) return;
     this.stopped = true;
     this.running = false;
-    this.proc.stdin.end();
-    const kill = setTimeout(() => this.proc.kill('SIGTERM'), 3000);
-    this.proc.once('exit', () => clearTimeout(kill));
+    endTree(this.proc);
     this.ev.exited('stopped');
   }
 

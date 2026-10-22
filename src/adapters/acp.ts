@@ -1,4 +1,6 @@
-import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcess, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { endTree, spawnTree } from '../procs.ts';
+import { nearestEffort } from '../effort.ts';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { MCP_SERVER_NAME } from '../mcp.ts';
@@ -117,7 +119,7 @@ class AcpSession implements Session {
     this.opts = opts;
     this.spec = spec;
     this.ev = ev;
-    this.proc = spawn(opts.bin, opts.args, { cwd: spec.cwd, env: { ...process.env, ...opts.env, ...spec.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.proc = spawnTree(opts.bin, opts.args, { cwd: spec.cwd, env: { ...process.env, ...opts.env, ...spec.env }, stdio: ['pipe', 'pipe', 'pipe'] });
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (c: string) => this.onData(c));
     this.proc.stderr.setEncoding('utf8');
@@ -156,7 +158,7 @@ class AcpSession implements Session {
       this.nativeId = String(r?.sessionId ?? '');
       if (!this.nativeId) throw new Error(`${this.opts.id} started no session`);
     }
-    await this.selectModel(r?.configOptions);
+    await this.selectEffort(await this.selectModel(r?.configOptions));
     // Started right away, so the session is busy when the daemon first delivers messages.
     if (this.spec.brief) void this.send(this.spec.brief, 'new_turn');
   }
@@ -211,10 +213,10 @@ class AcpSession implements Session {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    for (const t of this.terminals.values()) if (!t.exit) t.proc.kill();
+    // Commands it ran go with it, including what they left running in the background.
+    for (const t of this.terminals.values()) endTree(t.proc, 0);
     // ACP agents exit when stdin closes; make sure.
-    this.proc.stdin.end();
-    setTimeout(() => this.proc.kill(), 2000).unref();
+    endTree(this.proc, 2000);
   }
 
   /* ---------------- JSON-RPC ---------------- */
@@ -387,11 +389,11 @@ class AcpSession implements Session {
         return t.exit;
       }
       case 'terminal/kill':
-        this.terminal(p.terminalId).proc.kill();
+        endTree(this.terminal(p.terminalId).proc, 0);
         return {};
       case 'terminal/release': {
         const t = this.terminal(p.terminalId);
-        if (!t.exit) t.proc.kill();
+        if (!t.exit) endTree(t.proc, 0);
         this.terminals.delete(String(p.terminalId));
         return {};
       }
@@ -419,7 +421,7 @@ class AcpSession implements Session {
     const env: Record<string, string> = { ...process.env, ...this.opts.env, ...this.spec.env } as Record<string, string>;
     for (const v of Array.isArray(p.env) ? p.env : []) if (v?.name) env[v.name] = String(v.value ?? '');
     // A command with no args may be a whole shell line.
-    const proc = spawn(String(p.command), args, { cwd: p.cwd || this.spec.cwd, env, shell: args.length === 0, stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawnTree(String(p.command), args, { cwd: p.cwd || this.spec.cwd, env, shell: args.length === 0, stdio: ['ignore', 'pipe', 'pipe'], keepOrphans: true });
     const t: Terminal = { proc, output: '', limit: num(p.outputByteLimit), truncated: false, exited: Promise.resolve(), delivered: false };
     const add = (c: Buffer) => {
       t.output += c.toString('utf8');
@@ -470,18 +472,30 @@ class AcpSession implements Session {
   }
 
   /** Picks the role's model through the session's model config option, if the harness has one. */
-  private async selectModel(configOptions: unknown): Promise<void> {
-    if (!this.spec.model) return;
+  /** Sets the role's model; returns the session's config options as they are after it. */
+  private async selectModel(configOptions: unknown): Promise<any[]> {
     const opts = Array.isArray(configOptions) ? (configOptions as any[]) : [];
+    if (!this.spec.model) return opts;
     const model = opts.find(o => o?.category === 'model' || o?.id === 'model');
     if (!model) throw new Error(`${this.opts.id} has no model setting over ACP, so it can't run ${this.spec.model}; leave the role's model empty to use its default`);
-    if (model.currentValue === this.spec.model) return;
+    if (model.currentValue === this.spec.model) return opts;
     try {
-      await this.request('session/set_config_option', { sessionId: this.nativeId, configId: model.id, value: this.spec.model });
+      const r = await this.request('session/set_config_option', { sessionId: this.nativeId, configId: model.id, value: this.spec.model });
+      // Another model can offer other thinking levels.
+      return Array.isArray(r?.configOptions) ? r.configOptions : opts;
     } catch (e) {
       const values = flattenValues(model.options).slice(0, 15);
       throw new Error(`${this.opts.id} won't use model ${this.spec.model}: ${(e as Error).message}${values.length ? `. It offers: ${values.join(', ')}` : ''}`);
     }
+  }
+
+  /** The role's effort, through the agent's thinking-level option when it has one; without one the agent thinks as it does. */
+  private async selectEffort(opts: any[]): Promise<void> {
+    if (!this.spec.effort) return;
+    const level = opts.find(o => o?.category === 'thought_level' || /^(thought_level|reasoning|effort|reasoning_effort)$/.test(String(o?.id)));
+    const value = level && nearestEffort(this.spec.effort, flattenValues(level.options));
+    if (!value || level.currentValue === value) return;
+    await this.request('session/set_config_option', { sessionId: this.nativeId, configId: level.id, value }).catch(() => {});
   }
 }
 

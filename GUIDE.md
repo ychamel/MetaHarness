@@ -95,7 +95,8 @@ personal folder. `mh doctor` lists the models too. Roles are plain files, so you
 ---
 harness: codex
 model: gpt-6.1-sol
-fallback: claude-code/sonnet, antigravity/gemini-4-argon-medium
+effort: medium
+fallback: claude-code/sonnet, antigravity/gemini-4-argon@high
 good_at: implementing well-specified changes quickly and cheaply
 ---
 You implement a clearly scoped piece of work.
@@ -106,7 +107,8 @@ If the spec is unclear or seems wrong, message whoever gave it to you rather tha
 |---|---|
 | `harness` | `claude-code`, `codex`, `antigravity`, `opencode`, or a profile of yours (section 8) |
 | `model` | The model on that harness, as `mh doctor` names it |
-| `fallback` | Backups, best first: `harness/model`, or just `model` on the same harness. Used when the primary can't run here, or its subscription is at its limit |
+| `effort` | How hard it thinks: `low`, `medium`, `high`, `xhigh`, `max` (Codex also has `ultra`). Each harness takes the nearest level it has; empty means the harness's default. It's apart from the model, so one price per model covers every effort. Antigravity's `-low`/`-medium`/`-high` model names still work, and the role editor shows them as a model and an effort |
+| `fallback` | Backups, best first: `harness/model`, or just `model` on the same harness. Used when the primary can't run here, or its subscription is at its limit. They run at the role's effort; `codex/gpt-6-sol@high` gives one its own |
 | `good_at` | One line the lead reads when choosing whom to spawn |
 | `helper: true` | A quick helper (like `scout`): answers one question and returns, inside its caller's turn |
 | `allow` | Commands it may run without asking, Claude Code style: `Bash(npm test*), Bash(git commit*)` |
@@ -200,7 +202,12 @@ You review the result in your checkout like any other change, and push it yourse
     - **Files:** the shared folder: designs, reviews and reports, rendered, with every version
       and who wrote it.
     - **Graph**, **Sequence**, **Timeline:** who talks to whom, messages in order, who was
-      busy when. Drag the graph's cards to arrange them; the layout is kept for that goal.
+      busy when. The graph is live: each card shows the step its agent is on and for how long,
+      messages it hasn't received yet, and approvals waiting on you; a dot runs along a line as
+      a message is sent, and a dashed line goes from an agent in `wait` to whoever it waits on.
+      The panel beside it follows the team's messages (or everything it does); click a line
+      for the whole conversation between those two, briefs and results included. Drag the
+      cards to arrange them; the layout is kept for that goal.
     - **Costs:** where the money went, by agent, role or model, split into input, cache
       reads, cache writes and output.
     - **Log:** every event, as `mh tail` shows it.
@@ -208,7 +215,19 @@ You review the result in your checkout like any other change, and push it yourse
     its conversation (its words, messages, and its tool calls folded into groups), its brief,
     and its setup (prompt, folder, worktree, session).
 
-Long texts show their first lines with **Show more**.
+Long texts show their first lines with **Show more**. Drag the edge between two panes (the
+columns, the graph's panel, the file list, the setup lists, the assistant) to resize it; the
+width is kept in this browser, and a double-click puts it back.
+
+**Old goals:** the **Goals** page lists every goal, from any folder, with its cost and what it
+keeps on disk. Open one to read its story, files and costs again, open its shared folder in
+your file manager, or delete it (one or several at once): its shared files and their history,
+agents' folders and its log go, and so do worktrees and branches whose work is merged. A goal
+whose worktrees hold unsaved work asks again before that is lost; one still at work must be
+ended first. Commits on your branches always stay.
+
+Agents that finished keep their process for 10 minutes in case a message comes, then let it
+go; a later message resumes their session where it was.
 
 **Talking to an agent:** select it and type in the message box. The message reaches it while it
 works, without stopping it. Tick **Urgent** to pause its turn between steps (never in the middle
@@ -298,7 +317,11 @@ restarting the daemon. The pages write the same files described below.
 
 - **Workflows** are plain guides the lead follows: `.metaharness/workflows/<name>.md`, with a
   `good_at:` line at the top. A workflow can stop for your decision, and hand on to another
-  workflow. Copy one of the shipped ones to start.
+  workflow. Copy one of the shipped ones to start. A `roles:` line (`roles: architect,
+  godot-implementer, reviewer`) names the roles it uses: the lead and the team can then start
+  only those, plus quick helpers, so a growing list of roles doesn't confuse them. A workflow
+  it hands on to brings its own roles; one without the line keeps every role. You can still
+  start any role yourself.
 - **Agent instructions.** `methodology.md` is what every agent reads about working on a team;
   `helper-methodology.md` is for quick helpers. Edit them in either config folder.
 - **Rules** are short notes MetaHarness hands an agent at a moment it can see: at the start,

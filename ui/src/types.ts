@@ -8,6 +8,7 @@ export interface Agent {
   role: string;
   harness: string;
   model: string;
+  effort: string | null;
   parent: string;
   state: AgentState;
   pausing: boolean;
@@ -24,6 +25,8 @@ export interface Agent {
   nativeSession: string | null;
   limitedUntil: number | null;
   doneNote: string | null;
+  /** Who it's held up by while it waits: the human (an approval, a question, a decision), teammates it started, or whoever it last dealt with. */
+  waitingOn: { who: string[]; why: 'approval' | 'question' | 'decision' | 'helpers' | 'partner' } | null;
   tokens: Tokens | null;
   costSplit: CostSplit | null;
   /** harness: reported by the harness; prices: estimated from the settings' prices. */
@@ -148,6 +151,8 @@ export interface RoleDef {
   overrides?: Scope;
   harness: string;
   model: string;
+  /** Empty: the harness's default. */
+  effort: string;
   fallback: string[];
   goodAt: string;
   instructions: string;
@@ -172,6 +177,8 @@ export interface WorkflowDef {
   file: string;
   overrides?: Scope | 'built-in';
   goodAt: string;
+  /** The roles it uses; empty: every role. */
+  roles: string[];
   body: string;
 }
 

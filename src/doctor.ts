@@ -1,6 +1,7 @@
 import { relative } from 'node:path';
 import type { HarnessReport } from './harnesses.ts';
 import type { Role } from './types.ts';
+import { foldEfforts, splitEffort } from './effort.ts';
 
 /**
  * `mh doctor` (design §16): which harnesses are here, signed in, and offering which models, and
@@ -23,7 +24,8 @@ export function checkRoute(harness: string, model: string, reports: Map<string, 
   if (!r.transport) return res(false, `MetaHarness can't drive ${r.title} yet`);
   if (r.login?.signedIn === false) return res(false, `${r.title} isn't signed in${r.loginCommand ? `: run ${r.loginCommand}` : ''}`);
   if (!model) return res(true, `${r.title}'s default model`);
-  if (r.models.length && !r.models.includes(model)) {
+  // A model listed once per effort (gemini-3.8-flash-high) can be named without one.
+  if (r.models.length && !r.models.includes(model) && !foldEfforts(r.models).efforts[model]) {
     const some = r.models.slice(0, 6).join(', ') + (r.models.length > 6 ? ', …' : '');
     return res(false, `${r.title} doesn't offer ${model} (it offers ${some})`);
   }
@@ -52,7 +54,8 @@ export function doctorLines(reports: HarnessReport[], roles: Role[], mcpDefs: Ma
   if (roles.length) {
     lines.push('', 'Roles', '');
     for (const role of roles) {
-      const routes = [{ harness: role.harness, model: role.model }, ...role.fallback.map(f => {
+      const routes = [{ harness: role.harness, model: role.model }, ...role.fallback.map(text => {
+        const f = splitEffort(text).model;
         const i = f.indexOf('/');
         return i > 0 ? { harness: f.slice(0, i), model: f.slice(i + 1) } : { harness: role.harness, model: f };
       })];

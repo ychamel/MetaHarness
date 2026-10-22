@@ -16,6 +16,7 @@ let nextId = 1000;
 const waiting = new Map();
 let cancelled = false;
 let model = 'free/default';
+let thought = 'medium';
 
 const send = m => process.stdout.write(JSON.stringify(m) + '\n');
 const request = (method, params) => {
@@ -26,7 +27,10 @@ const request = (method, params) => {
 const update = (sessionId, u) => send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: u } });
 const say = (sessionId, text) => update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const configOptions = () => [{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: model, options: MODELS.map(value => ({ value, name: value })) }];
+const configOptions = () => [
+  { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: model, options: MODELS.map(value => ({ value, name: value })) },
+  { id: 'thought', name: 'Thinking', category: 'thought_level', type: 'select', currentValue: thought, options: ['low', 'medium', 'high'].map(value => ({ value, name: value })) },
+];
 
 async function prompt(p) {
   const s = p.sessionId;
@@ -81,6 +85,10 @@ async function handle(m) {
     case 'session/resume':
       return { configOptions: configOptions() };
     case 'session/set_config_option':
+      if (p.configId === 'thought') {
+        thought = p.value;
+        return { configOptions: configOptions() };
+      }
       if (!MODELS.includes(p.value)) throw new Error(`unknown model ${p.value}`);
       model = p.value;
       return { configOptions: configOptions() };

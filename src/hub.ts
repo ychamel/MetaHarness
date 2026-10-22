@@ -126,7 +126,7 @@ export class Hub {
 
       case 'spawn': {
         const role = str(pick(a, 'role', 'agent', 'type', 'kind', 'as'));
-        if (!role) return `spawn needs a role. Roles you can spawn: ${d.teamRoles().map(r => r.name).join(', ')}.`;
+        if (!role) return `spawn needs a role. Roles you can spawn: ${d.rolesFor(rec).roles.map(r => r.name).join(', ')}.`;
         const brief = str(pick(a, 'brief', 'task', 'prompt', 'text', 'message', 'instructions', 'description'))
           ?? '(No brief was given. Ask whoever spawned you what they need.)';
         const name = str(pick(a, 'name', 'id'));
@@ -174,7 +174,9 @@ export class Hub {
         const r = resolveName(want, names);
         if (!r.match) return `There's no workflow called "${want}". Workflows:\n${list()}`;
         const w = d.config.workflows.get(r.match)!;
-        return `${r.guessed ? `(Took "${want}" to mean ${w.name}.)\n` : ''}# Workflow: ${w.name}\n\n${w.body}`;
+        d.workflowRead(rec, w.name);
+        const roles = w.roles.length ? `\n\nRoles it uses: ${w.roles.join(', ')}.` : '';
+        return `${r.guessed ? `(Took "${want}" to mean ${w.name}.)\n` : ''}# Workflow: ${w.name}\n\n${w.body}${roles}`;
       }
 
       case 'skill': {
@@ -216,8 +218,9 @@ export class Hub {
       const you = a.name === rec.name ? '  ← you' : '';
       lines.push(`- ${a.name} (${a.role.name} · ${a.harness} · ${a.model}), spawned by ${by}, ${a.state}${what}${you}`);
     }
-    lines.push('', 'Roles you can spawn:');
-    for (const r of this.d.teamRoles()) lines.push(`- ${r.name}${r.helper ? ' (quick helper)' : ''}: ${r.goodAt || '—'}`);
+    const { roles, workflows } = this.d.rolesFor(rec);
+    lines.push('', workflows.length ? `Roles you can spawn (the ones ${workflows.join(' and ')} ${workflows.length > 1 ? 'use' : 'uses'}, and quick helpers):` : 'Roles you can spawn:');
+    for (const r of roles) lines.push(`- ${r.name}${r.helper ? ' (quick helper)' : ''}: ${r.goodAt || '—'}`);
     return lines.join('\n');
   }
 }

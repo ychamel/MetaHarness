@@ -3,6 +3,7 @@ import { api } from '../api.ts';
 import { ago, who } from '../format.ts';
 import type { Goal, MhEvent, SharedFileView } from '../types.ts';
 import { CopyText, Markdown } from '../components/common.tsx';
+import { Splitter } from '../components/Splitter.tsx';
 
 interface FileInfo {
   path: string;
@@ -57,6 +58,7 @@ export function Files({ goal, events, selected, onSelect, onSelectAgent }: { goa
         ))}
         {!files.length && <div className="empty">Nobody has written to the shared folder yet. Designs, reviews and reports land here.</div>}
       </div>
+      <Splitter pane="files" grow="right" min={160} max={700} label="File list" />
       <div className="file-view">{current ? <Viewer key={current.path} goal={goal} file={current} onSelectAgent={onSelectAgent} /> : <div className="empty">Pick a file.</div>}</div>
     </div>
   );

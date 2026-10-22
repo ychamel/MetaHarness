@@ -2,6 +2,12 @@ import type { AgentState, MhEvent } from './types.ts';
 
 export const money = (v: number | null | undefined) => (v == null ? '—' : v < 0.01 && v > 0 ? `$${v.toFixed(3)}` : `$${v.toFixed(2)}`);
 
+/** A size on disk: 12 KB, 3.4 MB. */
+export const bytes = (n: number) => (n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${Math.round(n / 1024)} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(2)} GB`);
+
+/** A model with the effort it runs at, e.g. "opus (high)"; the harness's default when there's no model. */
+export const modelLabel = (x: { model?: string; effort?: string | null }) => `${x.model || 'default model'}${x.effort ? ` (${x.effort})` : ''}`;
+
 /** How the feed says what the gatekeeper decided. */
 export const GATE: Record<string, string> = { allow: 'gatekeeper allowed', deny: 'gatekeeper refused', ask: 'gatekeeper asked you about' };
 
@@ -44,7 +50,7 @@ export function eventText(e: MhEvent): string {
     case 'goal.resumed': return 'Goal resumed';
     case 'goal.recovered': return `Picked up after a daemon restart${d.resumed?.length ? `: ${d.resumed.join(', ')} continue` : ''}`;
     case 'goal.cleaned': return `Cleaned up: ${d.removed.length} worktree(s) removed, ${d.deleted.length} branch(es) deleted${d.kept.length ? `, ${d.kept.length} kept` : ''}`;
-    case 'agent.spawned': return `Spawned by ${e.parent === 'human' ? 'you' : e.parent} as ${d.role} (${d.harness} · ${d.model})${d.quick ? ', quick helper' : ''}${d.branch ? ` on ${d.branch}` : ''}`;
+    case 'agent.spawned': return `Spawned by ${e.parent === 'human' ? 'you' : e.parent} as ${d.role} (${d.harness} · ${modelLabel(d)})${d.quick ? ', quick helper' : ''}${d.branch ? ` on ${d.branch}` : ''}`;
     case 'agent.state': return `is ${STATE_LABEL[d.state as AgentState] ?? d.state}`;
     case 'agent.status': return `status: ${oneLine(d.text)}`;
     case 'agent.text': return oneLine(d.text, 400);
@@ -56,7 +62,7 @@ export function eventText(e: MhEvent): string {
     case 'agent.paused': return `paused by ${d.by === 'human' ? 'you' : d.by}`;
     case 'agent.resumed': return `resumed by ${d.by === 'human' ? 'you' : d.by}`;
     case 'agent.paused_between_steps': return `turn paused between steps${d.cut ? ' (a command ran too long and was cut)' : ''}`;
-    case 'agent.moved': return `moved to ${d.to.harness} · ${d.to.model}: ${oneLine(d.reason)}`;
+    case 'agent.moved': return `moved to ${d.to.harness} · ${modelLabel(d.to)}: ${oneLine(d.reason)}`;
     case 'agent.context_full': return `context ${d.pct}% full${d.notesAsked ? ': asked to write notes before a fresh session' : ': a fresh session starts with its next message'}`;
     case 'agent.context_handoff': return `continues in a fresh session from a handoff (context was ${d.pct}% full)`;
     case 'goal.stalled': return `⚠ Stuck waiting: ${(d.agents as { name: string; minutes: number; why?: string }[]).map(a => `${a.name} (${a.minutes} min${a.why ? `, ${a.why}` : ''})`).join('; ')}. Told ${d.told === 'human' ? 'you' : 'the lead'}`;

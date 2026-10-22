@@ -21,6 +21,7 @@ export interface AgentReplay {
   role: string;
   harness: string;
   model: string;
+  effort?: string;
   parent: string;
   brief: string;
   quick: boolean;
@@ -117,7 +118,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
         const deps = Array.isArray(x.deps) ? x.deps.map(String) : undefined;
         const wt = str(x.worktree) ? { path: str(x.worktree), branch: str(x.branch), base: str(x.base), ...(deps ? { deps } : {}) } : undefined;
         g.agents.set(e.agent!, {
-          name: e.agent!, role, harness: str(x.harness), model: str(x.model), parent: e.parent ?? 'human',
+          name: e.agent!, role, harness: str(x.harness), model: str(x.model), effort: str(x.effort) || undefined, parent: e.parent ?? 'human',
           brief: str(x.brief), quick: x.quick === true, cwd: str(x.cwd) || g.dir, worktree: wt,
           startedFrom: str(x.startedFrom) || undefined, state: 'starting', status: '', lastText: '', undelivered: [],
         });
@@ -139,9 +140,10 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
         break;
       case 'agent.moved': {
         if (!a) break;
-        const to = x.to as { harness?: string; model?: string } | undefined;
+        const to = x.to as { harness?: string; model?: string; effort?: string } | undefined;
         a.harness = to?.harness ?? a.harness;
         a.model = to?.model ?? a.model;
+        a.effort = to?.effort;
         // The new harness can't resume the old one's session.
         a.nativeSession = undefined;
         break;

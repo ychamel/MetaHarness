@@ -1,10 +1,12 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { endTree, spawnTree } from '../procs.ts';
+import { foldEfforts, nearestEffort } from '../effort.ts';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseFrontMatter } from '../config.ts';
 import { MCP_SERVER_NAME } from '../mcp.ts';
-import { run } from '../harnesses.ts';
+import { modelsFromLines, run } from '../harnesses.ts';
 import { nativeSkillNames } from '../skills.ts';
 import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest } from './types.ts';
 
@@ -46,6 +48,8 @@ export class AgyAdapter implements HarnessAdapter {
   private quotaRunning?: Promise<void>;
   private quotaTimer?: NodeJS.Timeout;
   private hookScript: string;
+  /** `agy models`, folded into models and their efforts (asked once). */
+  private models?: Promise<ReturnType<typeof foldEfforts> | undefined>;
 
   constructor(opts: { bin?: string; id?: string; hookScript?: string } = {}) {
     this.bin = opts.bin ?? 'agy';
@@ -68,6 +72,7 @@ export class AgyAdapter implements HarnessAdapter {
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
     if (!spec.mcpUrl || !spec.hookUrl) throw new Error('the daemon has no address for MCP and hooks yet (is the server running?)');
     writeAgentConfig(spec, this.hookScript);
+    spec = { ...spec, model: await this.modelFor(spec.model, spec.effort) };
     const s = new AgySession(this.bin, spec, events, opts.resume, () => this.refreshQuota(true));
     this.sessions.add(s);
     s.closed.then(() => this.sessions.delete(s));
@@ -75,6 +80,21 @@ export class AgyAdapter implements HarnessAdapter {
     this.refreshQuota();
     this.quotaTimer ??= setInterval(() => this.sessions.size && this.refreshQuota(), 5 * 60_000).unref();
     return s;
+  }
+
+  /**
+   * Antigravity names a model once per effort (gemini-3.8-flash-high) and takes no --effort with
+   * a bare name (tried: it hangs). A name with its effort is used as written; a bare one gets the
+   * listed variant nearest the effort asked for, medium when none is.
+   */
+  async modelFor(model: string, effort?: string): Promise<string> {
+    if (!model) return model;
+    this.models ??= run(this.bin, ['models'], process.env, 30_000).then(r => (r.code === 0 ? foldEfforts(modelsFromLines(r.out)) : undefined));
+    const list = await this.models.catch(() => undefined);
+    if (list?.variants[model]) return model;
+    const efforts = list?.efforts[model];
+    if (efforts) return `${model}-${nearestEffort(effort ?? 'medium', efforts) ?? efforts[0]}`;
+    return effort && !list ? `${model}-${effort}` : model;
   }
 
   /** Reads the quota (at most once a minute unless forced) and tells every session where its pool stands. */
@@ -298,7 +318,7 @@ class AgySession implements Session {
     this.model = spec.model;
     this.onError = onError;
     if (resume) this.nativeId = resume;
-    this.proc = spawn(bin, agyArgs(spec, resume), {
+    this.proc = spawnTree(bin, agyArgs(spec, resume), {
       cwd: spec.cwd,
       env: { ...process.env, ...spec.env, MH_HOOK_URL: spec.hookUrl },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -349,9 +369,7 @@ class AgySession implements Session {
     if (this.stopped) return;
     this.stopped = true;
     this.running = false;
-    this.proc.stdin.end();
-    const kill = setTimeout(() => this.proc.kill('SIGTERM'), 3000);
-    this.proc.once('exit', () => clearTimeout(kill));
+    endTree(this.proc);
     this.ev.exited('stopped');
   }
 

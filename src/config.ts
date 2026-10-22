@@ -75,7 +75,7 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string
   if (builtIn) {
     for (const file of markdownFiles(join(BUILTIN_DIR, 'workflows'))) {
       const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
-      cfg.workflows.set(basename(file, '.md'), { name: basename(file, '.md'), goodAt: meta.good_at ?? '', body, file, builtIn: true });
+      cfg.workflows.set(basename(file, '.md'), { name: basename(file, '.md'), goodAt: meta.good_at ?? '', roles: list(meta.roles), body, file, builtIn: true });
     }
   }
   for (const dir of dirs) {
@@ -88,6 +88,7 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string
         name,
         harness: meta.harness ?? 'claude-code',
         model: meta.model ?? '',
+        ...(meta.effort ? { effort: meta.effort.toLowerCase() } : {}),
         fallback: list(meta.fallback ?? meta.fallbacks),
         goodAt: meta.good_at ?? '',
         instructions: body,
@@ -107,7 +108,7 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string
     for (const file of [...markdownFiles(join(dir, 'playbooks')), ...markdownFiles(join(dir, 'workflows'))]) {
       const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
       const name = basename(file, '.md');
-      cfg.workflows.set(name, { name, goodAt: meta.good_at ?? '', body, file });
+      cfg.workflows.set(name, { name, goodAt: meta.good_at ?? '', roles: list(meta.roles), body, file });
     }
   }
   // Approvals need a judge, and the app an assistant, even when nobody wrote one.

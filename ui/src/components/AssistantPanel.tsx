@@ -3,6 +3,7 @@ import { api, followEvents } from '../api.ts';
 import { money } from '../format.ts';
 import type { MhEvent } from '../types.ts';
 import { Markdown } from './common.tsx';
+import { Splitter } from './Splitter.tsx';
 
 interface State {
   conv: string;
@@ -88,6 +89,7 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
   const where = route ?? state?.route;
   return (
     <aside className="assistant" aria-label="Assistant">
+      <Splitter pane="assistant" grow="left" min={320} max={1100} inside label="Assistant panel" />
       <div className="assistant-head">
         <div>
           <b>Assistant</b>

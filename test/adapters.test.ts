@@ -74,6 +74,11 @@ test('rate-limit reports from Claude Code and Codex become one shape', () => {
   const over = codexRateLimit({ primary: { usedPercent: 100, windowDurationMins: 300 }, credits: { hasCredits: true, unlimited: false, balance: '12.50' } });
   assert.equal(over?.status, 'warning');
   assert.match(over?.note ?? '', /running on credits \(balance 12\.50\)/);
+  // A full read flags the window as reached even when credits cover it (seen live).
+  const read = codexRateLimit({ primary: { usedPercent: 100, windowDurationMins: 300 }, credits: { hasCredits: true, unlimited: false, balance: '73941.69' }, rateLimitReachedType: 'rate_limit_reached' });
+  assert.equal(read?.status, 'warning');
+  assert.match(read?.note ?? '', /running on credits/);
+  assert.equal(codexRateLimit({ primary: { usedPercent: 100 }, credits: { hasCredits: true }, spendControlReached: true })?.status, 'limited');
 });
 
 test("Claude Code's /usage text becomes windows with reset times", () => {

@@ -14,9 +14,10 @@ interface Props {
   onStart: (b: Record<string, unknown>) => Promise<boolean>;
   onCommand: (b: Record<string, unknown>) => Promise<unknown>;
   onSetup: () => void;
+  onAllGoals: () => void;
 }
 
-export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetup }: Props) {
+export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetup, onAllGoals }: Props) {
   const overview = useOverview();
   const [query, setQuery] = useState('');
   const [showAll, setShowAll] = useState(false);
@@ -99,6 +100,11 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
             </label>
           )}
           {(past.length > 3 || query) && <input type="search" className="search" placeholder="Search goals and outcomes" value={query} onChange={e => setQuery(e.target.value)} />}
+          {goals.length > 0 && (
+            <button className="btn ghost small" onClick={onAllGoals} title="Every goal, with its size on disk; delete the ones you’re done with">
+              All goals…
+            </button>
+          )}
         </div>
         <div className="goal-rows">
           {shown.map(g => (

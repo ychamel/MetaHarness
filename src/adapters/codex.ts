@@ -1,4 +1,6 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { endTree, spawnTree } from '../procs.ts';
+import { nearestEffort } from '../effort.ts';
 import { promisify } from 'node:util';
 import { MCP_SERVER_NAME } from '../mcp.ts';
 import { codexAsk } from '../harnesses.ts';
@@ -57,8 +59,9 @@ type Window = { usedPercent?: number; resetsAt?: number | null; windowDurationMi
 /**
  * A Codex rate-limit snapshot: a primary and a secondary window, each with the percent used and
  * a reset time in seconds. Updates can be sparse, so only what's present is reported.
- * Only rateLimitReachedType means refused: past 100% of the plan's window, Codex carries on with
- * the account's credits (seen live: agents kept working 35 minutes after a 100% snapshot).
+ * Past 100% of the plan's window, Codex carries on with the account's credits (seen live: agents
+ * kept working 35 minutes after a 100% snapshot). account/rateLimits/read still sets
+ * rateLimitReachedType then, so it means refused only when no credits cover it, or at a spend cap.
  */
 export function codexRateLimit(r: any): RateLimitInfo | undefined {
   if (!r || typeof r !== 'object') return undefined;
@@ -67,8 +70,9 @@ export function codexRateLimit(r: any): RateLimitInfo | undefined {
   if (!top && !r.rateLimitReachedType) return undefined;
   const over = (top?.usedPercent ?? 0) >= 100;
   const credits = r.credits && typeof r.credits === 'object' ? (r.credits as { hasCredits?: boolean; unlimited?: boolean; balance?: string | null }) : undefined;
-  const note = r.rateLimitReachedType
-    ? `refused: ${String(r.rateLimitReachedType).replace(/_/g, ' ')}`
+  const refused = r.spendControlReached === true ? 'spend control reached' : r.rateLimitReachedType && !credits?.hasCredits && !credits?.unlimited ? String(r.rateLimitReachedType) : undefined;
+  const note = refused
+    ? `refused: ${refused.replace(/_/g, ' ')}`
     : over
       ? credits?.unlimited
         ? "past the plan's limit; credits are unlimited"
@@ -77,7 +81,7 @@ export function codexRateLimit(r: any): RateLimitInfo | undefined {
           : "past the plan's limit"
       : undefined;
   return {
-    status: r.rateLimitReachedType ? 'limited' : over ? 'warning' : 'ok',
+    status: refused ? 'limited' : over ? 'warning' : 'ok',
     ...(note ? { note } : {}),
     usedPct: top?.usedPercent,
     resetsAt: top?.resetsAt ? top.resetsAt * 1000 : undefined,
@@ -117,6 +121,8 @@ export class CodexAdapter implements HarnessAdapter {
   private bin: string;
   private server?: Promise<AppServer>;
   private userServers?: Promise<string[]>;
+  /** The efforts each model takes, from model/list ("" is the default model). */
+  private efforts?: Promise<Record<string, string[]>>;
 
   constructor(opts: { bin?: string } = {}) {
     this.bin = opts.bin ?? 'codex';
@@ -125,7 +131,7 @@ export class CodexAdapter implements HarnessAdapter {
   /** account/rateLimits/read: from the running app-server, or a short-lived one when no agent runs. */
   async readLimits(): Promise<Record<string, RateLimitInfo>> {
     const server = this.server && (await this.server.catch(() => undefined));
-    const r = server ? await server.request('account/rateLimits/read', null) : await codexAsk(this.bin, process.env, 'account/rateLimits/read', null, 30_000);
+    const r = server && !server.closed ? await server.request('account/rateLimits/read', null) : await codexAsk(this.bin, process.env, 'account/rateLimits/read', null, 30_000);
     const info = codexRateLimit(r?.rateLimits);
     return info ? { [this.manifest.harness]: info } : {};
   }
@@ -134,16 +140,39 @@ export class CodexAdapter implements HarnessAdapter {
     return `${this.bin} resume ${sessionId}`;
   }
 
+  /** The nearest effort the model takes (each model lists its own); as asked when Codex doesn't say. */
+  private async effortFor(server: AppServer, model: string, want: string): Promise<string> {
+    this.efforts ??= server.request('model/list', {}).then(
+      r => {
+        const out: Record<string, string[]> = {};
+        for (const m of (r?.data ?? []) as { id?: string; model?: string; isDefault?: boolean; supportedReasoningEfforts?: { reasoningEffort: string }[] }[]) {
+          const efforts = (m.supportedReasoningEfforts ?? []).map(e => e.reasoningEffort);
+          for (const id of [m.id, m.model, m.isDefault ? '' : undefined]) if (id !== undefined) out[id] = efforts;
+        }
+        return out;
+      },
+      () => ({}),
+    );
+    const supported = (await this.efforts)[model] ?? [];
+    return nearestEffort(want, supported) ?? want;
+  }
+
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
     if (!spec.mcpUrl) throw new Error('the daemon has no MCP address yet (is the server running?)');
-    if (!this.server) {
+    // A server left with no threads shuts down (so nothing it started lingers); start another.
+    if (!this.server || (await this.server.catch(() => undefined))?.closed) {
       this.server = AppServer.start(this.bin);
       this.server.catch(() => (this.server = undefined));
     }
     const server = await this.server;
     this.userServers ??= listUserMcpServers(this.bin);
     const skills = await hiddenSkills(server, spec.cwd, spec.role.nativeSkills);
-    const config = { ...isolationConfig(await this.userServers, spec.mcpServers.map(s => s.name), skills), ...mcpServerConfig(spec.mcpServers) };
+    const effort = spec.effort && (await this.effortFor(server, spec.model, spec.effort));
+    const config = {
+      ...isolationConfig(await this.userServers, spec.mcpServers.map(s => s.name), skills),
+      ...mcpServerConfig(spec.mcpServers),
+      ...(effort ? { model_reasoning_effort: effort } : {}),
+    };
     const session = new CodexSession(server, spec, events, config);
     await session.init(opts.resume);
     return session;
@@ -151,6 +180,9 @@ export class CodexAdapter implements HarnessAdapter {
 }
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
+
+/** How long an app-server with no threads stays up, for the next agent. */
+const IDLE_MS = 60_000;
 
 class AppServer {
   private proc: ChildProcessWithoutNullStreams;
@@ -167,8 +199,12 @@ class AppServer {
     return s;
   }
 
+  /** Shut down: it had no threads for IDLE_MS. */
+  closed = false;
+  private idle?: NodeJS.Timeout;
+
   private constructor(bin: string) {
-    this.proc = spawn(bin, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.proc = spawnTree(bin, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] });
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (c: string) => this.onData(c));
     this.proc.stderr.setEncoding('utf8');
@@ -180,6 +216,25 @@ class AppServer {
     };
     this.proc.on('error', e => fail(e.message));
     this.proc.on('exit', code => fail(`codex app-server exited with code ${code}. ${this.stderrTail.trim()}`.trim()));
+  }
+
+  /** A thread is ours from now on: its notifications and requests go to it. */
+  claim(threadId: string, session: CodexSession): void {
+    clearTimeout(this.idle);
+    this.threads.set(threadId, session);
+  }
+
+  /** A thread is done with. The last one out shuts the server down, after a while in case another agent starts. */
+  release(threadId: string): void {
+    this.threads.delete(threadId);
+    if (this.threads.size || this.closed) return;
+    clearTimeout(this.idle);
+    this.idle = setTimeout(() => {
+      if (this.threads.size) return;
+      this.closed = true;
+      endTree(this.proc);
+    }, IDLE_MS);
+    this.idle.unref();
   }
 
   request(method: string, params: unknown): Promise<any> {
@@ -276,7 +331,7 @@ class CodexSession implements Session {
       },
     });
     this.nativeId = r.thread.id;
-    this.server.threads.set(this.nativeId, this);
+    this.server.claim(this.nativeId, this);
     // Started right away, so the session is already busy when the daemon first delivers messages:
     // they then join this turn instead of starting a turn ahead of the brief.
     if (this.spec.brief) void this.send(this.spec.brief, 'new_turn');
@@ -326,7 +381,9 @@ class CodexSession implements Session {
     await this.interrupt();
     this.stopped = true;
     this.running = false;
-    this.server.threads.delete(this.nativeId);
+    // Unloading the thread ends the commands it still runs (background terminals and the like).
+    await Promise.race([this.server.request('thread/unsubscribe', { threadId: this.nativeId }).catch(() => {}), new Promise(res => setTimeout(res, 5000).unref())]);
+    this.server.release(this.nativeId);
     this.ev.exited('stopped');
   }
 

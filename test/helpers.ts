@@ -45,10 +45,12 @@ export const settle = () => new Promise(r => setTimeout(r, 30));
  * A daemon with its own roles and adapters, no harness override: roles run where their files
  * say, so backups and accounts behave as they would for real. `roles` maps a role name to its file.
  */
-export function makeTeam(o: { roles: Record<string, string>; adapters: Record<string, HarnessAdapter>; limits?: Partial<LimitPolicy>; pause?: Partial<PausePolicy>; settings?: Partial<Settings>; gatekeeperLimits?: GatekeeperLimits; contextNotesMs?: number }) {
+export function makeTeam(o: { roles: Record<string, string>; workflows?: Record<string, string>; adapters: Record<string, HarnessAdapter>; limits?: Partial<LimitPolicy>; pause?: Partial<PausePolicy>; settings?: Partial<Settings>; gatekeeperLimits?: GatekeeperLimits; contextNotesMs?: number; releaseMs?: number }) {
   const configDir = mkdtempSync(join(tmpdir(), 'mh-config-'));
   mkdirSync(join(configDir, 'roles'));
   for (const [name, text] of Object.entries(o.roles)) writeFileSync(join(configDir, 'roles', `${name}.md`), text);
+  if (o.workflows) mkdirSync(join(configDir, 'workflows'));
+  for (const [name, text] of Object.entries(o.workflows ?? {})) writeFileSync(join(configDir, 'workflows', `${name}.md`), text);
   return new Daemon({
     home: mkdtempSync(join(tmpdir(), 'mh-test-')),
     repo: makeRepo(),
@@ -61,5 +63,6 @@ export function makeTeam(o: { roles: Record<string, string>; adapters: Record<st
     settings: o.settings ?? { approvals: 'ask' },
     gatekeeperLimits: o.gatekeeperLimits,
     contextNotesMs: o.contextNotesMs,
+    releaseMs: o.releaseMs,
   });
 }

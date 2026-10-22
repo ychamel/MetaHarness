@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join, normalize, sep } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventStore } from './store.ts';
@@ -6,7 +7,7 @@ import { loadConfig, type Config } from './config.ts';
 import { resolveName } from './fuzzy.ts';
 import { Hub } from './hub.ts';
 import * as git from './git.ts';
-import type { AgentState, MhEvent, NewEvent, Role } from './types.ts';
+import type { AgentState, MhEvent, NewEvent, Role, Workflow } from './types.ts';
 import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, LimitWindow, RateLimitInfo, Session, SessionEvents, ToolRequest, Usage } from './adapters/types.ts';
 import { addSplit, addTokens, priceSplit, splitTotal, tokenCount, tokensOf, type Tokens } from './costs.ts';
 import { modelSettings, readSettingsFile, writeSettingsFile } from './settings.ts';
@@ -22,6 +23,8 @@ import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
 import { deniedCommandPrefixes, guardEnv, installGuard, refusedGitCommand } from './guard.ts';
 import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
+import { settle } from './procs.ts';
+import { foldEfforts, splitEffort, type EffortVariant } from './effort.ts';
 import { onCommit, onDone, onToolCall, rulesPrompt, RuleState, type Rule, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
 import { claimedSkills, skillsFor, skillsPrompt, withSkills, type Skill } from './skills.ts';
 
@@ -56,6 +59,8 @@ export interface AgentRec {
   role: Role;
   harness: string;
   model: string;
+  /** How hard its model thinks, as the role (or the backup it runs on) says; the adapter takes the nearest its harness has. */
+  effort?: string;
   parent: string;
   brief: string;
   quick: boolean;
@@ -118,6 +123,8 @@ export interface AgentRec {
   pendingApprovals: number;
   /** Shared-folder changes by others since the agent last heard, by path. They don't wake it. */
   fileNotes: Map<string, FileNote>;
+  /** When it last became done or idle: after a quiet spell its process is let go (releaseIdle). */
+  settledAt?: number;
   /** When it last did something besides waiting: a tool call, a spawn, a message sent or received (for stall reports). */
   progressAt: number;
   /** The teammate it last spawned, was spawned by, or messaged with: who it's most likely waiting on. */
@@ -156,6 +163,8 @@ export interface GoalRec {
   sharedTouches: { agent: string; at: number; summary: string }[];
   /** The workflow the lead was given, if any. */
   workflow?: string;
+  /** Workflows the lead read since, as one hands on to the next: their roles count too. */
+  chained: string[];
   status: 'running' | 'ended';
   agents: Map<string, AgentRec>;
   counters: Map<string, number>;
@@ -208,6 +217,10 @@ export interface DaemonOptions {
   gatekeeperLimits?: GatekeeperLimits;
   /** How long an agent whose context is nearly full gets to write its notes before its fresh session starts anyway. */
   contextNotesMs?: number;
+  /** How long a finished agent keeps its process before it's let go (its session resumes when messaged). Default 10 minutes; 0 never. */
+  releaseMs?: number;
+  /** How long close() waits for the harnesses' processes to exit before they're killed. */
+  closeGraceMs?: number;
 }
 
 /**
@@ -251,9 +264,21 @@ export interface AccountRec {
   warned: Set<string>;
 }
 
+/** What the role editor offers for a harness: its models, the efforts of each, and names that fold a model and an effort together. */
+export interface ModelChoices {
+  harness: string;
+  models: string[];
+  efforts: Record<string, string[]>;
+  variants: Record<string, EffortVariant>;
+  /** Efforts any model takes, typed by hand or not listed (Claude Code's). */
+  anyEffort?: string[];
+  error: string | null;
+}
+
 interface Route {
   harness: string;
   model: string;
+  effort?: string;
 }
 
 type SpawnResult =
@@ -310,7 +335,7 @@ export class Daemon {
   /** Where the config comes from, later ones overriding earlier ones: personal, then the repository's. */
   readonly configDirs: string[];
   /** Model lists asked of each harness's CLI, for the role editor. */
-  private modelLists = new Map<string, { at: number; models: string[]; error?: string }>();
+  private modelLists = new Map<string, { at: number; choices: ModelChoices }>();
   /** Base URL of the running server, e.g. http://127.0.0.1:7777. Real harnesses reach /mcp/<token> under it. */
   mcpBase?: string;
   private adapters: Record<string, HarnessAdapter>;
@@ -330,6 +355,8 @@ export class Daemon {
   private autoClean: boolean;
   readonly gatekeeperLimits?: GatekeeperLimits;
   readonly contextNotesMs: number;
+  private releaseMs: number;
+  private closeGraceMs: number;
   /** The app's assistant: answers the human's questions, reads only. */
   readonly assistant: Assistant;
 
@@ -351,6 +378,8 @@ export class Daemon {
     this.autoClean = o.autoClean ?? true;
     this.gatekeeperLimits = o.gatekeeperLimits;
     this.contextNotesMs = o.contextNotesMs ?? 120_000;
+    this.releaseMs = o.releaseMs ?? 10 * 60_000;
+    this.closeGraceMs = o.closeGraceMs ?? 3000;
     let assistantRoute = { harness: '', model: '' };
     let assistantSpent = 0;
     this.assistant = new Assistant({
@@ -407,7 +436,7 @@ export class Daemon {
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const g: GoalRec = {
       id, request: o.request, dir: o.dir ?? this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
-      refs: new Map(), seenOn: new Map(), workflow, conflicts: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
+      refs: new Map(), seenOn: new Map(), workflow, chained: [], conflicts: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
       status: 'running', agents: new Map(), counters: new Map(), gatekeeperCost: new Map(), leadDone, resolveLeadDone,
     };
     const gs = git.setupGoal(g.dir, id);
@@ -453,9 +482,16 @@ export class Daemon {
   ): SpawnResult {
     const g = this.goals.get(goalId);
     if (!g) return { ok: false, error: `There's no goal ${goalId}.` };
-    const roleNames = this.teamRoles().map(r => r.name);
+    // The human may start any role; an agent, the ones its workflows use.
+    const spawner = g.agents.get(o.parent);
+    const scope = this.rolesFor(spawner);
+    const roleNames = scope.roles.map(r => r.name);
     const res = o.roleDef ? { match: o.roleDef.name, guessed: false, suggestions: [] } : resolveName(o.role, roleNames);
-    if (!o.roleDef && !roleNames.length) return { ok: false, error: 'No roles are defined yet. Add one as .metaharness/roles/<name>.md.' };
+    if (!o.roleDef && !this.teamRoles().length) return { ok: false, error: 'No roles are defined yet. Add one as .metaharness/roles/<name>.md.' };
+    if (!o.roleDef && scope.workflows.length && this.teamRoles().some(r => r.name === o.role && !roleNames.includes(r.name))) {
+      const which = scope.workflows.length > 1 ? `the ${scope.workflows.join(' and ')} workflows use` : `the ${scope.workflows[0]} workflow uses`;
+      return { ok: false, error: `${o.role} isn't one of the roles ${which}. Roles you can spawn: ${roleNames.join(', ')}.` };
+    }
     if (!res.match) {
       const hint = res.suggestions.length ? ` Did you mean ${res.suggestions[0]}?` : '';
       return { ok: false, error: `There's no role called "${o.role}".${hint} Roles you can spawn: ${roleNames.join(', ')}.` };
@@ -463,7 +499,7 @@ export class Daemon {
     const role = o.roleDef ?? this.config.roles.get(res.match)!;
     const picked = this.pickRoute(role);
     if ('error' in picked) return { ok: false, error: picked.error };
-    const { harness, model } = picked.route;
+    const { harness, model, effort } = picked.route;
     const adapter = this.adapters[harness];
 
     const n = (g.counters.get(role.name) ?? 0) + 1;
@@ -503,7 +539,7 @@ export class Daemon {
     const token = randomBytes(16).toString('hex');
     this.tokens.set(token, { goal: goalId, agent: name });
     const rec: AgentRec = {
-      goal: goalId, name, role, harness, model, parent: o.parent, brief: o.brief,
+      goal: goalId, name, role, harness, model, ...(effort ? { effort } : {}), parent: o.parent, brief: o.brief,
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
       adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
       toolsRunning: 0, lastToolEnd: 0, progressAt: Date.now(), rules: new RuleState(), ruleNotes: [],
@@ -515,7 +551,7 @@ export class Daemon {
     this.emit({
       goal: goalId, agent: name, parent: o.parent, type: 'agent.spawned',
       data: {
-        role: role.name, harness, model, brief: o.brief, quick: !!o.quick, cwd,
+        role: role.name, harness, model, ...(effort ? { effort } : {}), brief: o.brief, quick: !!o.quick, cwd,
         worktree: worktree?.path ?? null, branch: worktree?.branch ?? null, base: worktree?.base ?? null,
         ...(startedFrom ? { startedFrom } : {}), ...(deps.length ? { deps } : {}), ...(note ? { note } : {}),
       },
@@ -545,7 +581,7 @@ export class Daemon {
     rec.adapter
       .start(
         {
-          goal: rec.goal, agent: rec.name, role: rec.role, model: rec.model, systemPrompt: rec.systemPrompt, brief,
+          goal: rec.goal, agent: rec.name, role: rec.role, model: rec.model, effort: rec.effort, systemPrompt: rec.systemPrompt, brief,
           cwd: rec.cwd, sharedDir: g.sharedDir, mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${rec.token}` : '',
           hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${rec.token}` : '', agentDir: this.agentDir(rec),
           mcpServers: rec.role.mcp.map(name => ({ name, def: this.config.mcp.get(name) })),
@@ -565,7 +601,7 @@ export class Daemon {
         rec.session = session;
         this.emit({
           goal: rec.goal, agent: rec.name, type: 'agent.session',
-          data: { nativeSession: session.nativeId, harness: rec.harness, model: rec.model, ...(resume ? { resumed: true } : {}) },
+          data: { nativeSession: session.nativeId, harness: rec.harness, model: rec.model, ...(rec.effort ? { effort: rec.effort } : {}), ...(resume ? { resumed: true } : {}) },
         });
         this.pump(rec);
       })
@@ -580,13 +616,15 @@ export class Daemon {
 
   /** A role's primary harness and model, then its backups, as written in the role. */
   routes(role: Role): Route[] {
-    const out: Route[] = [{ harness: role.harness, model: role.model }];
+    const out: Route[] = [{ harness: role.harness, model: role.model, ...(role.effort ? { effort: role.effort } : {}) }];
     for (const f of role.fallback) {
-      const slash = f.indexOf('/');
-      out.push(slash > 0 ? { harness: f.slice(0, slash), model: f.slice(slash + 1) } : { harness: role.harness, model: f });
+      // harness/model@effort: a backup without an effort of its own thinks as hard as the role says.
+      const { model, effort = role.effort } = splitEffort(f);
+      const slash = model.indexOf('/');
+      out.push({ ...(slash > 0 ? { harness: model.slice(0, slash), model: model.slice(slash + 1) } : { harness: role.harness, model }), ...(effort ? { effort } : {}) });
     }
     if (this.harnessOverride) for (const r of out) r.harness = this.harnessOverride;
-    return out.filter((r, i) => out.findIndex(x => x.harness === r.harness && x.model === r.model) === i);
+    return out.filter((r, i) => out.findIndex(x => x.harness === r.harness && x.model === r.model && x.effort === r.effort) === i);
   }
 
   /** The first route that can run now; else the first that can run at all (it waits for its reset). */
@@ -630,7 +668,8 @@ export class Daemon {
     // The lead runs the goal's workflow; any role can have one of its own.
     for (const name of [rec.isLead ? workflow : undefined, rec.role.workflow]) {
       const w = name ? this.config.workflows.get(resolveName(name, [...this.config.workflows.keys()]).match ?? '') : undefined;
-      if (w) parts.push(`## Workflow: ${w.name}\n\nFollow this guide, adapting it to the task. When it says to continue with another workflow, read that one with the \`workflow\` tool.\n\n${w.body}`);
+      const roles = w?.roles.length ? `\n\nThe roles it uses, the ones you can spawn besides quick helpers: ${w.roles.join(', ')}.` : '';
+      if (w) parts.push(`## Workflow: ${w.name}\n\nFollow this guide, adapting it to the task. When it says to continue with another workflow, read that one with the \`workflow\` tool.\n\n${w.body}${roles}`);
     }
     if (rec.isLead && !workflow && this.config.workflows.size) {
       const list = [...this.config.workflows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
@@ -878,6 +917,31 @@ export class Daemon {
     return [...this.config.roles.values()].filter(r => r.name !== gatekeeper && r.name !== assistant);
   }
 
+  /**
+   * The roles an agent may start. A workflow can name the roles it uses, so a lead with many
+   * roles to choose from sees only the right ones: those of the workflows in play (the goal's,
+   * and those the lead chained to; an agent whose role has a workflow of its own, that one's),
+   * plus quick helpers. Every role when no workflow in play names any.
+   */
+  rolesFor(rec?: AgentRec): { roles: Role[]; workflows: string[] } {
+    const all = this.teamRoles();
+    const g = rec && this.goals.get(rec.goal);
+    if (!rec || !g) return { roles: all, workflows: [] };
+    const names = rec.role.workflow && !rec.isLead ? [rec.role.workflow] : [g.workflow, ...g.chained].filter((w): w is string => !!w);
+    const flows = names.map(n => this.config.workflows.get(resolveName(n, [...this.config.workflows.keys()]).match ?? '')).filter((w): w is Workflow => !!w);
+    if (!flows.length || flows.some(w => !w.roles.length)) return { roles: all, workflows: [] };
+    const allowed = new Set(flows.flatMap(w => w.roles));
+    return { roles: all.filter(r => r.helper || allowed.has(r.name)), workflows: flows.map(w => w.name) };
+  }
+
+  /** The lead read a workflow: when it's the next in a chain, its roles become startable. */
+  workflowRead(rec: AgentRec, name: string): void {
+    const g = this.goals.get(rec.goal);
+    if (!g || !rec.isLead || g.workflow === name || g.chained.includes(name)) return;
+    g.chained.push(name);
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'workflow.read', data: { workflow: name } });
+  }
+
   /** Logs to the assistant's conversation, which the app follows as its own event stream. */
   assistantLog(type: string, data: Record<string, unknown>): void {
     const e = this.emit({ goal: ASSISTANT_STREAM, agent: ASSISTANT, type, data: { conv: this.assistant.conv, ...data } });
@@ -1009,6 +1073,7 @@ export class Daemon {
   setState(rec: AgentRec, state: AgentState): void {
     if (rec.state === state) return;
     rec.state = state;
+    if (state === 'done' || state === 'idle') rec.settledAt = Date.now();
     this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.state', data: { state } });
     if (['done', 'idle', 'ended', 'crashed'].includes(state)) this.cleanUpIfIdle(this.goals.get(rec.goal)!);
   }
@@ -1130,7 +1195,30 @@ export class Daemon {
       this.refreshShared();
       this.checkCaches();
       this.checkStalls();
+      this.releaseIdle();
     }, this.pollMs).unref();
+  }
+
+  /**
+   * Agents that finished and have been quiet for releaseMs let their process go: a CLI waiting
+   * for a message that may never come still holds memory, MCP servers and whatever its commands
+   * left running. Their native session resumes when a message comes, as after a restart.
+   */
+  releaseIdle(now = Date.now()): void {
+    if (this.releaseMs <= 0) return;
+    for (const g of this.goals.values())
+      for (const rec of g.agents.values()) {
+        const s = rec.session;
+        if (!s || s.busy() || !s.nativeId || !rec.adapter.manifest.resume || !['done', 'idle'].includes(rec.state)) continue;
+        if (rec.inbox.length || rec.waiters.length || rec.pendingApprovals || rec.pause || rec.held || rec.refresh) continue;
+        if (now - (rec.settledAt ?? now) < this.releaseMs) continue;
+        rec.gen++;
+        rec.session = undefined;
+        rec.resumeId = s.nativeId;
+        this.carryOver(rec);
+        void s.stop().catch(() => {});
+        this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.released', data: { idleMs: now - (rec.settledAt ?? now) } });
+      }
   }
 
   /**
@@ -1963,7 +2051,7 @@ export class Daemon {
 
   /** Moves an agent to another harness or model: a new session, started from a handoff. */
   private move(rec: AgentRec, to: Route, reason: string): void {
-    const from = { harness: rec.harness, model: rec.model };
+    const from = { harness: rec.harness, model: rec.model, ...(rec.effort ? { effort: rec.effort } : {}) };
     const brief = rec.pendingBrief ?? this.handoff(rec, from, reason);
     this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.moved', data: { from, to, reason } });
     this.replaceSession(rec, to, brief);
@@ -2000,6 +2088,7 @@ export class Daemon {
     void old?.stop().catch(() => {});
     rec.harness = to.harness;
     rec.model = to.model;
+    rec.effort = to.effort;
     rec.adapter = this.adapters[to.harness];
     this.setState(rec, 'starting');
     this.startSession(rec, brief);
@@ -2316,7 +2405,8 @@ export class Daemon {
     const leadDone = new Promise<string>(res => (resolveLeadDone = res));
     const g: GoalRec = {
       id: r.id, request: r.request, dir: r.dir, lead: r.lead, createdAt: r.createdAt, sharedDir: r.sharedDir,
-      refs: r.refs, seenOn: r.seenOn, workflow: r.workflow, status: 'running', agents: new Map(), counters: r.counters,
+      refs: r.refs, seenOn: r.seenOn, workflow: r.workflow, status: 'running',
+      chained: [...new Set(this.store.ofType('workflow.read').filter(e => e.goal === r.id).map(e => String(e.data.workflow)))], agents: new Map(), counters: r.counters,
       conflicts: r.conflicts, shared: new SharedFolder(r.sharedDir), sharedTouches: [], leadDone, resolveLeadDone,
       // Spent before the restart; sessions from now on are counted from 0.
       gatekeeperCost: new Map(r.gatekeeperCost ? [[-1, r.gatekeeperCost]] : []),
@@ -2368,7 +2458,7 @@ export class Daemon {
     const token = randomBytes(16).toString('hex');
     this.tokens.set(token, { goal: g.id, agent: a.name });
     const rec: AgentRec = {
-      goal: g.id, name: a.name, role, harness: a.harness, model: a.model, parent: a.parent, brief: a.brief,
+      goal: g.id, name: a.name, role, harness: a.harness, model: a.model, ...(a.effort ? { effort: a.effort } : {}), parent: a.parent, brief: a.brief,
       quick: a.quick, isLead: a.name === g.lead, cwd: a.cwd, worktree, state: a.state, status: a.status,
       cost: a.cost, costBefore: a.costBefore, costSource: a.costSource, tokens: a.tokens, tokensBefore: a.tokensBefore, costSplit: a.costSplit, splitBefore: a.splitBefore,
       lastCallAt: a.lastCallAt, cacheMinutes: a.cacheMinutes, contextPct: a.contextPct, lastText: a.lastText,
@@ -2529,6 +2619,77 @@ export class Daemon {
     return { results, refused };
   }
 
+  /**
+   * Deletes goals for good: the worktrees and merged branches go as in a clean, then the goal's
+   * folder (shared files and their history, agents' folders) and its events. Commits on the
+   * human's branches stay. A goal still at work must be ended first; one whose worktrees or
+   * branches hold unsaved work is left alone unless `force`, which removes that work too. A
+   * folder whose goal the log no longer has just goes.
+   */
+  deleteGoals(ids: string[], force = false): { deleted: string[]; kept: { goal: string; items: string[] }[]; refused: string[] } {
+    const out = { deleted: [] as string[], kept: [] as { goal: string; items: string[] }[], refused: [] as string[] };
+    const known = new Set(this.store.ofType('goal.started').map(e => e.goal));
+    for (const id of ids) {
+      if (!/^[0-9a-f-]+$/i.test(id) || id === ASSISTANT_STREAM) {
+        out.refused.push(`There's no goal ${id}.`);
+        continue;
+      }
+      const dir = join(this.home, 'goals', id);
+      if (!known.has(id)) {
+        if (existsSync(dir)) {
+          rmSync(dir, { recursive: true, force: true });
+          out.deleted.push(id);
+        } else out.refused.push(`There's no goal ${id}.`);
+        continue;
+      }
+      const live = this.goals.get(id);
+      const busy = live && live.status !== 'ended' ? this.busyAgents(live) : [];
+      if (busy.length) {
+        out.refused.push(`Goal ${id} is still at work (${busy.join(', ')}). End it first.`);
+        continue;
+      }
+      const r = replayGoal(this.store.since(id));
+      const res = live ? this.runCleanup(live, force) : r ? cleanGoal(this.home, r, force) : undefined;
+      if (res?.kept.length && !force) {
+        out.kept.push({ goal: id, items: res.kept });
+        continue;
+      }
+      if (live) {
+        if (live.status !== 'ended') this.endGoal(id, 'the human, deleting it');
+        for (const a of live.agents.values()) this.tokens.delete(a.token);
+        this.goals.delete(id);
+      }
+      for (let i = this.humanInbox.length - 1; i >= 0; i--) if (this.humanInbox[i].goal === id) this.humanInbox.splice(i, 1);
+      this.store.deleteGoal(id);
+      rmSync(dir, { recursive: true, force: true });
+      out.deleted.push(id);
+    }
+    return out;
+  }
+
+  /**
+   * How much each goal keeps on disk (its folder: shared files with their history, agents'
+   * folders, worktrees), counting hard-linked files once. Folders the log no longer has a goal
+   * for are listed too, so they can go.
+   */
+  goalSizes(): { id: string; bytes: number; known: boolean }[] {
+    const root = join(this.home, 'goals');
+    if (!existsSync(root)) return [];
+    const known = new Set(this.store.ofType('goal.started').map(e => e.goal));
+    return readdirSync(root).map(id => ({ id, bytes: folderBytes(join(root, id)), known: known.has(id) }));
+  }
+
+  /** Opens a goal's shared folder (or the folder it ran in) in the file manager, on the machine the daemon runs on. */
+  openGoalFolder(id: string, which: 'shared' | 'dir'): string {
+    const start = this.store.ofType('goal.started').find(e => e.goal === id);
+    if (!start) throw new Error(`There's no goal ${id}.`);
+    const path = which === 'dir' ? String(start.data.dir ?? '') : this.goals.get(id)?.sharedDir ?? join(this.home, 'goals', id, 'shared');
+    if (!path || !existsSync(path)) throw new Error(`${path || 'That folder'} isn't there any more.`);
+    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+    spawn(opener, [path], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+    return path;
+  }
+
   /* ---------------- client API ---------------- */
 
   /**
@@ -2590,6 +2751,7 @@ export class Daemon {
         role: a.role.name,
         harness: a.harness,
         model: a.model,
+        effort: a.effort ?? null,
         parent: a.parent,
         state: a.state,
         /** The human asked for a pause that waits for the current step to finish. */
@@ -2607,10 +2769,27 @@ export class Daemon {
         nativeSession: a.session?.nativeId ?? a.resumeId ?? null,
         limitedUntil: a.limitedUntil ?? null,
         doneNote: a.doneNote ?? null,
+        waitingOn: this.waitingOn(g, a),
         ...this.spendView(a),
       })),
       gatekeeperCost: g.gatekeeperCost.size ? this.gatekeeperCost(g) : null,
     };
+  }
+
+  /**
+   * Who an agent is held up by, for the graph: the human (an approval, a question or decision
+   * it sent), the teammates or helpers it started that still work, or else whoever it last dealt
+   * with. Only while it waits (or has an approval open).
+   */
+  private waitingOn(g: GoalRec, a: AgentRec): { who: string[]; why: 'approval' | 'question' | 'decision' | 'helpers' | 'partner' } | null {
+    if (a.pendingApprovals) return { who: ['human'], why: 'approval' };
+    if (a.state !== 'waiting') return null;
+    const asked = this.humanInbox.find(i => i.goal === g.id && i.agent === a.name && (i.kind === 'question' || i.kind === 'decision'));
+    if (asked) return { who: ['human'], why: asked.kind as 'question' | 'decision' };
+    const kids = [...g.agents.values()].filter(c => c.parent === a.name && !FINISHED.includes(c.state) && c.doneNote === undefined).map(c => c.name);
+    if (kids.length) return { who: kids, why: 'helpers' };
+    const p = a.lastPartner?.name;
+    return p && (p === 'human' || g.agents.has(p)) ? { who: [p], why: 'partner' } : null;
   }
 
   /** What an agent spent, by kind of token, and how long its prompt cache stays warm. */
@@ -2664,10 +2843,10 @@ export class Daemon {
       cost: costs.length ? costs.reduce((x, y) => x + y, 0) : null,
       agents: agents.map(a => ({
         // One that called done may not have ended its turn before the log stopped.
-        name: a.name, role: a.role, harness: a.harness, model: a.model, parent: a.parent, pausing: false,
+        name: a.name, role: a.role, harness: a.harness, model: a.model, effort: a.effort ?? null, parent: a.parent, pausing: false,
         state: a.doneNote !== undefined && INTERRUPTED.includes(a.state) ? 'done' : a.state,
         status: a.status, brief: a.brief, quick: a.quick, branch: a.worktree?.branch ?? null, worktree: a.worktree?.path ?? null,
-        cwd: a.cwd, cost: this.priced(a).cost ?? null, contextPct: a.contextPct ?? null, unread: a.undelivered.length, awaitingApproval: 0,
+        cwd: a.cwd, cost: this.priced(a).cost ?? null, contextPct: a.contextPct ?? null, unread: a.undelivered.length, awaitingApproval: 0, waitingOn: null,
         nativeSession: a.nativeSession ?? null, limitedUntil: null, doneNote: a.doneNote ?? null,
         ...this.spendView(a),
       })),
@@ -2777,6 +2956,15 @@ export class Daemon {
       }
       case 'goal.clean':
         return this.cleanGoals(s('goal'), b.force === true);
+      case 'goal.delete': {
+        const ids = Array.isArray(b.goals) ? b.goals.map(String) : s('goal') ? [s('goal')!] : [];
+        if (!ids.length) throw new Error('goal.delete needs "goals": the goals to delete.');
+        return this.deleteGoals(ids, b.force === true);
+      }
+      case 'goal.sizes':
+        return { sizes: this.goalSizes() };
+      case 'goal.open_folder':
+        return { path: this.openGoalFolder(s('goal') ?? '', s('which') === 'dir' ? 'dir' : 'shared') };
       case 'limits.check': {
         const harness = s('harness');
         if (harness && !this.adapters[harness]?.readLimits) throw new Error(`MetaHarness can't read ${harness}'s limits here.`);
@@ -2879,10 +3067,10 @@ export class Daemon {
       case 'harness.models': {
         const harness = s('harness');
         if (!harness) throw new Error('harness.models needs "harness".');
-        return await this.harnessModels(harness, b.refresh === true);
+        return { ...(await this.harnessModels(harness, b.refresh === true)) };
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, rule.save, rule.delete, guide.save, mcp.save.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, goal.delete, goal.sizes, goal.open_folder, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, rule.save, rule.delete, guide.save, mcp.save.`);
     }
   }
 
@@ -2918,24 +3106,38 @@ export class Daemon {
   }
 
   /** The models a harness offers: those its profile knows, plus what its CLI lists (asked once every ten minutes). */
-  async harnessModels(id: string, refresh = false): Promise<{ harness: string; models: string[]; error: string | null }> {
+  /**
+   * A harness's models for the role editor, each with the efforts it takes. Models listed once
+   * per effort (Antigravity's) are folded into one; `variants` maps each such name to its parts.
+   */
+  async harnessModels(id: string, refresh = false): Promise<ModelChoices> {
     const p = loadProfiles(this.configDirs).get(id);
-    if (!p) return { harness: id, models: [], error: `There's no harness profile called ${id}.` };
+    if (!p) return { harness: id, models: [], efforts: {}, variants: {}, error: `There's no harness profile called ${id}.` };
     const cached = this.modelLists.get(id);
-    if (cached && !refresh && Date.now() - cached.at < 600_000) return { harness: id, models: cached.models, error: cached.error ?? null };
-    const { findBin } = await import('./harnesses.ts');
+    if (cached && !refresh && Date.now() - cached.at < 600_000) return cached.choices;
+    const { findBin, asModelList } = await import('./harnesses.ts');
     const bin = findBin(p.bin);
     let models = [...(p.models ?? [])];
+    let listed: Record<string, string[]> = {};
     let error: string | undefined;
     if (bin && p.listModels) {
       try {
-        models = [...new Set([...models, ...(await p.listModels(bin, { ...process.env, ...p.env }))])];
+        const r = asModelList(await p.listModels(bin, { ...process.env, ...p.env }));
+        models = [...new Set([...models, ...r.models])];
+        listed = r.efforts;
       } catch (e) {
         error = (e as Error).message;
       }
     } else if (!bin) error = `${p.bin} isn't installed here.`;
-    this.modelLists.set(id, { at: Date.now(), models, error });
-    return { harness: id, models, error: error ?? null };
+    const folded = foldEfforts(models);
+    const efforts: Record<string, string[]> = {};
+    for (const m of folded.models) {
+      const e = listed[m] ?? folded.efforts[m] ?? p.efforts;
+      if (e?.length) efforts[m] = e;
+    }
+    const choices = { harness: id, models: folded.models, efforts, variants: folded.variants, ...(p.efforts ? { anyEffort: p.efforts } : {}), error: error ?? null };
+    this.modelLists.set(id, { at: Date.now(), choices });
+    return choices;
   }
 
   /**
@@ -2974,9 +3176,9 @@ export class Daemon {
   async close(): Promise<void> {
     clearInterval(this.pollTimer);
     clearInterval(this.limitTimer);
-    await this.assistant.stop();
+    const stopping: Promise<unknown>[] = [this.assistant.stop()];
     for (const g of this.goals.values()) {
-      await g.gatekeeper?.stop();
+      if (g.gatekeeper) stopping.push(g.gatekeeper.stop());
       for (const a of g.agents.values()) {
         for (const w of a.waiters) clearTimeout(w.timer);
         clearTimeout(a.limitTimer);
@@ -2985,9 +3187,12 @@ export class Daemon {
         // What the stopping sessions report isn't the agents' doing: the log keeps their state,
         // so the next daemon can resume them (recover).
         a.gen++;
-        if (a.session && !FINISHED.includes(a.state)) await a.session.stop().catch(() => {});
+        if (a.session && !FINISHED.includes(a.state)) stopping.push(a.session.stop().catch(() => {}));
       }
     }
+    await Promise.all(stopping.map(p => p.catch(() => {})));
+    // A few seconds for the CLIs to save and exit; what's left is killed as the process exits.
+    await settle(this.closeGraceMs);
     this.store.close();
   }
 }
@@ -3027,6 +3232,33 @@ function depsLines(copied: string[]): string[] {
     `- ${copied.join(', ')} ${copied.length > 1 ? 'are copies' : 'is a copy'} of the checkout's, made with hard links, so you can run things straight away. ` +
       `Reinstalling is fine, but don't edit files inside ${copied.length > 1 ? 'them' : 'it'} in place: the human's copy shares them.`,
   ];
+}
+
+/** Bytes under a folder, not following links, each hard-linked file once. */
+function folderBytes(dir: string, seen = new Set<string>()): number {
+  let total = 0;
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) total += folderBytes(p, seen);
+    else if (e.isFile()) {
+      try {
+        const st = statSync(p);
+        const key = `${st.dev}:${st.ino}`;
+        if (st.nlink > 1 && seen.has(key)) continue;
+        seen.add(key);
+        total += st.size;
+      } catch {
+        // Gone meanwhile.
+      }
+    }
+  }
+  return total;
 }
 
 /** How long ago, for messages: "just now", "3 min ago". */

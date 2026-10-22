@@ -125,7 +125,8 @@ section { margin-bottom: 22px; }
 .goal-page { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
 .main {
   display: grid;
-  grid-template-columns: minmax(240px, 290px) minmax(0, 1fr) minmax(340px, 430px);
+  /* The splitters sit in the zero-width columns. Widths the human dragged come in as --pane-*. */
+  grid-template-columns: clamp(200px, var(--pane-team, 290px), 38vw) 0 minmax(0, 1fr) 0 clamp(300px, var(--pane-agent, 430px), 55vw);
   min-height: 0;
 }
 .col { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); position: relative; }
@@ -159,8 +160,9 @@ section { margin-bottom: 22px; }
 .spacer { flex: 1; }
 
 @media (max-width: 1180px) {
-  .main { grid-template-columns: minmax(220px, 260px) minmax(0, 1fr); }
+  .main { grid-template-columns: clamp(200px, var(--pane-team, 260px), 45vw) 0 minmax(0, 1fr); }
   .main > .col:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); height: 70vh; }
+  .main > .splitter:nth-of-type(2) { display: none; }
   .goal-page { overflow: auto; }
   .main { min-height: auto; grid-auto-rows: minmax(70vh, auto); }
 }
@@ -174,6 +176,7 @@ section { margin-bottom: 22px; }
   .goal-row-title { white-space: normal; flex-basis: 100%; order: 2; }
   .page { padding: 16px; }
   .main { grid-template-columns: 1fr; }
+  .splitter { display: none; }
   .col { border-right: 0; border-bottom: 1px solid var(--line); }
   .col > .scroll, .inbox > .scroll { flex: none; max-height: 50vh; }
   .col.center { height: 80vh; }
@@ -376,12 +379,42 @@ label.check { display: inline-flex; gap: 6px; align-items: center; font-size: 13
 .card-node .name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-node .meta { color: var(--text-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-node .foot { display: flex; gap: 8px; align-items: center; color: var(--text-3); font-size: 11.5px; margin-top: 2px; }
+.card-node .top .badge { font-size: 10.5px; padding: 0 5px; }
+.card-node .now { font-size: 11.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 3px 0 1px; padding: 2px 6px; border-radius: 5px; background: var(--panel-2); }
+.card-node .now.step { background: color-mix(in srgb, var(--working) 12%, var(--panel)); color: var(--text); }
+.card-node .now b { font-family: var(--mono); font-weight: 600; font-size: 11px; }
+.card-node.busy { border-color: color-mix(in srgb, var(--working) 55%, var(--line-strong)); }
+.card-node .foot .ctx { width: 34px; }
+.pulse-dot { pointer-events: none; }
+.react-flow__edge.selectable { cursor: pointer; }
+
+/* The graph and its messages panel side by side; the panel's width is the human's (--pane-graph-side). */
+.graph-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 0 clamp(220px, var(--pane-graph-side, 320px), 55%); }
+.graph-body > .view { min-width: 0; }
+.talk { min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--panel); }
+.talk-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.talk-body { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+.said { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 6px 9px; font-size: 12.5px; background: var(--bg); }
+.said.you { border-left-color: var(--you); }
+.said.brief { border-left-color: var(--line-strong); }
+.said.done { border-left-color: var(--done); }
+.said-head { display: flex; gap: 5px; align-items: center; font-size: 12px; min-width: 0; }
+.said-head .pill { font-size: 10.5px; padding: 0 6px; }
+.said-text { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
+.did { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 6px; align-items: baseline; font-size: 12px; padding: 1px 2px; }
+@media (max-width: 900px) {
+  .graph-body { grid-template-columns: 1fr; grid-template-rows: minmax(320px, 1fr) auto; }
+  .graph-body > .splitter { display: none; }
+  .talk { border-left: 0; border-top: 1px solid var(--line); max-height: 40vh; }
+}
 .card-node .helpers { margin-left: auto; padding: 0 6px; border-radius: 99px; background: var(--panel-2); color: var(--text-2); border: 0; cursor: pointer; font-size: 11px; }
 .card-node.human { background: color-mix(in srgb, var(--you) 10%, var(--panel)); border-color: color-mix(in srgb, var(--you) 40%, var(--line)); min-width: 90px; text-align: center; }
 .file-node { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 9px; border-radius: 6px; border: 1px dashed var(--line-strong); background: var(--panel-2); font-family: var(--mono); font-size: 11.5px; color: var(--text-2); }
 .file-node.faded { opacity: 0.28; }
 .react-flow__attribution { display: none; }
 .react-flow__handle { opacity: 0; pointer-events: none; }
+/* React Flow's sheet loads after this one (with the graph), so its colors are set through its own variables. */
+.react-flow { --xy-edge-label-background-color: var(--panel); --xy-edge-label-color: var(--text-2); --xy-controls-button-background-color: var(--panel); --xy-controls-button-background-color-hover: var(--panel-2); --xy-controls-button-color: var(--text-2); --xy-controls-button-border-color: var(--line); }
 .react-flow__edge-textbg { fill: var(--panel); }
 .react-flow__edge-text { fill: var(--text-2); font-size: 11px; }
 .react-flow__controls button { background: var(--panel); border-color: var(--line); fill: var(--text-2); }
@@ -427,6 +460,7 @@ svg.lanes rect.bar { rx: 2; }
 .line.center { color: var(--text-3); justify-content: center; font-size: 12.5px; }
 .line code { font-size: 12px; }
 .pill.decision { color: var(--accent); background: var(--accent-soft); }
+.pill.warn { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 14%, transparent); }
 .pill.urgent { color: var(--limited); background: color-mix(in srgb, var(--limited) 13%, transparent); }
 .pill.waiting { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 13%, transparent); }
 .name-link { border: 0; background: none; padding: 0; font-weight: 620; color: var(--text); cursor: pointer; }
@@ -450,7 +484,7 @@ b.you { color: var(--you); font-weight: 620; }
 
 /* ---------- files ---------- */
 
-.files { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); }
+.files { flex: 1; min-height: 0; display: grid; grid-template-columns: clamp(160px, var(--pane-files, 260px), 60%) 0 minmax(0, 1fr); }
 .file-list { border-right: 1px solid var(--line); overflow: auto; background: var(--panel); }
 .file-list-head { display: flex; justify-content: space-between; padding: 10px 12px 6px; font-size: 12px; font-family: var(--mono); }
 .file-row { display: grid; gap: 1px; width: 100%; padding: 7px 12px; border: 0; background: none; text-align: left; cursor: pointer; }
@@ -466,7 +500,7 @@ b.you { color: var(--you); font-weight: 620; }
 .file-head select { width: auto; padding: 3px 8px; font-size: 12.5px; }
 .file-body { padding: 16px 22px 30px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; }
 .md.doc { max-width: 780px; font-size: 14px; }
-@media (max-width: 720px) { .files { grid-template-columns: 1fr; grid-auto-rows: auto minmax(60vh, 1fr); } .file-list { max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); } }
+@media (max-width: 720px) { .files > .splitter { display: none; } .files { grid-template-columns: 1fr; grid-auto-rows: auto minmax(60vh, 1fr); } .file-list { max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); } }
 
 /* ---------- markdown and long text ---------- */
 
@@ -585,7 +619,8 @@ button.tag:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ---------- setup ---------- */
 
-.setup-body { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.setup-body { display: grid; grid-template-columns: clamp(180px, var(--pane-setup, 300px), 50%) 18px minmax(0, 1fr); align-items: start; }
+.setup-body > .splitter { align-self: stretch; justify-self: center; }
 .setup-list { display: grid; gap: 4px; position: sticky; top: 0; max-height: calc(100vh - 140px); overflow: auto; padding-right: 4px; }
 .list-group { font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-3); padding: 8px 4px 2px; }
 .list-item { display: grid; gap: 3px; width: 100%; text-align: left; padding: 9px 11px; border: 1px solid transparent; border-radius: 9px; background: none; cursor: pointer; }
@@ -613,7 +648,7 @@ details.advanced > summary { cursor: pointer; font-size: 12.5px; color: var(--te
 .guide-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .guide-head h2 { margin: 0 0 2px; }
 @media (max-width: 860px) {
-  .setup-body { grid-template-columns: 1fr; }
+  .setup-body { grid-template-columns: 1fr; gap: 18px; }
   .setup-list { position: static; max-height: 34vh; }
   .editor { max-height: none; }
 }
@@ -682,7 +717,7 @@ details.advanced > summary { cursor: pointer; font-size: 12.5px; color: var(--te
 /* ---------- assistant ---------- */
 
 .assistant {
-  position: fixed; z-index: 40; top: 0; right: 0; bottom: 0; width: min(460px, 100vw); display: flex; flex-direction: column;
+  position: fixed; z-index: 40; top: 0; right: 0; bottom: 0; width: min(var(--pane-assistant, 460px), 100vw); display: flex; flex-direction: column;
   background: var(--panel); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow);
 }
 .assistant-head { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
@@ -701,3 +736,37 @@ details.advanced > summary { cursor: pointer; font-size: 12.5px; color: var(--te
 .assistant-input { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px; border-top: 1px solid var(--line); }
 .assistant-input textarea { flex: 1; resize: none; }
 @media (max-width: 720px) { .assistant { bottom: 56px; } }
+
+/* ---------- resizable panes ---------- */
+
+/* A zero-width grid item between two panes; its handle reaches a few pixels to each side. */
+.splitter { position: relative; z-index: 6; width: 0; cursor: col-resize; touch-action: none; outline: none; }
+.splitter::before { content: ''; position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; }
+.splitter::after { content: ''; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: transparent; transition: background 0.12s; }
+.splitter:hover::after, .splitter:focus-visible::after, .resizing .splitter::after { background: var(--accent); }
+.splitter.inside { position: absolute; top: 0; bottom: 0; }
+.splitter.inside.at-left { left: 0; }
+.splitter.inside.at-right { right: 0; }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing iframe, body.resizing .react-flow { pointer-events: none; }
+.row-gap { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+
+/* ---------- goals page ---------- */
+
+.goals-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.goals-toolbar .search { min-width: 240px; width: auto; }
+.goals-toolbar select { width: auto; }
+.goals-table { display: grid; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 18px; }
+.goals-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) 90px 60px 70px 80px 190px; gap: 10px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 13px; }
+.goals-row:first-child { border-top: 0; }
+.goals-row.head { font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); background: var(--panel-2); }
+.goals-row.on { background: var(--accent-soft); }
+.goals-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+.goals-title { display: grid; gap: 2px; min-width: 0; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
+.goals-title:hover .ellipsis { text-decoration: underline; }
+.goals-title-top { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.goals-actions { display: flex; gap: 4px; justify-content: flex-end; }
+@media (max-width: 860px) {
+  .goals-row { grid-template-columns: 28px minmax(0, 1fr) 170px; }
+  .goals-row > :nth-child(3), .goals-row > :nth-child(4), .goals-row > :nth-child(5), .goals-row > :nth-child(6) { display: none; }
+}

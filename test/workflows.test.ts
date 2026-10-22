@@ -126,3 +126,40 @@ test('mh doctor says which MCP names resolve on this machine', () => {
   assert.match(lines, /✓ mcp local\s+from mcp\.json/);
   assert.match(lines, /✗ mcp figma\s+not configured here/);
 });
+
+test("a workflow's roles are the ones its lead can start; chaining to another adds that one's", async () => {
+  const role = (helper = false) => `---\nharness: fake\nmodel: m\ngood_at: x${helper ? '\nhelper: true' : ''}\n---\nx\n`;
+  const said: Record<string, string> = {};
+  const { d } = team(
+    {
+      'roles/architect.md': role(), 'roles/implementer.md': role(), 'roles/godot-implementer.md': role(), 'roles/reviewer.md': role(), 'roles/scout.md': role(true),
+      'workflows/build.md': '---\ngood_at: building\nroles: architect, implementer\n---\nPlan, then implement. Then continue with review.\n',
+      'workflows/review.md': '---\ngood_at: reviewing\nroles: reviewer\n---\nReview it.\n',
+    },
+    {
+      architect: async ctx => {
+        said.team = await ctx.tool('team', {});
+        said.wrong = await ctx.tool('spawn', { role: 'godot-implementer', brief: 'b' });
+        said.reviewerEarly = await ctx.tool('spawn', { role: 'reviewer', brief: 'b' });
+        said.helper = await ctx.tool('spawn', { role: 'scout', brief: 'b' });
+        said.right = await ctx.tool('spawn', { role: 'implementer', brief: 'b' });
+        said.workflow = await ctx.tool('workflow', { name: 'review' });
+        said.reviewer = await ctx.tool('spawn', { role: 'reviewer', brief: 'b' });
+        await ctx.tool('done', { note: 'ok' });
+      },
+    },
+  );
+  const goal = d.startGoal({ request: 'r', workflow: 'build' });
+  await withTimeout((async () => { while (!said.reviewer) await settle(); })(), 3000, 'the lead to finish');
+  assert.match(said.team, /Roles you can spawn \(the ones build uses, and quick helpers\):\n- architect: x\n- implementer: x\n- scout \(quick helper\): x$/);
+  assert.match(said.wrong, /godot-implementer isn't one of the roles the build workflow uses\. Roles you can spawn: architect, implementer, scout\./);
+  assert.match(said.reviewerEarly, /isn't one of the roles/);
+  assert.match(said.helper, /^Started scout-1/);
+  assert.match(said.right, /^Started implementer-1/);
+  assert.match(said.workflow, /Roles it uses: reviewer\.$/);
+  assert.match(said.reviewer, /^Started reviewer-1/, 'the chained workflow brings its roles');
+  assert.match(d.agent(goal, 'architect')!.systemPrompt, /The roles it uses, the ones you can spawn besides quick helpers: architect, implementer\./);
+  // The human can still start anyone.
+  assert.equal(d.spawnAgent(goal, { role: 'godot-implementer', brief: 'b', parent: 'human' }).ok, true);
+  await d.close();
+});

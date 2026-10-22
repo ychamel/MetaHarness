@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ConfigView, Goal } from '../types.ts';
 import { Dialog, Field, Toggle } from './common.tsx';
+import { modelLabel } from '../format.ts';
 
 /** What a goal starts from: the request, who leads, and (optionally) the workflow the lead follows. */
 export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', autoFocus }: { config?: ConfigView; onStart: (b: Record<string, unknown>) => Promise<boolean>; onCancel?: () => void; initialWorkflow?: string; autoFocus?: boolean }) {
@@ -31,7 +32,7 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', a
         aria-label="What should the team do?"
       />
       <div className="new-goal-opts">
-        <Field label="Lead" hint={leadDef ? `${leadDef.harness} · ${leadDef.model}${leadDef.goodAt ? ` — ${leadDef.goodAt}` : ''}` : undefined}>
+        <Field label="Lead" hint={leadDef ? `${leadDef.harness} · ${modelLabel(leadDef)}${leadDef.goodAt ? ` — ${leadDef.goodAt}` : ''}` : undefined}>
           <select value={leadName} onChange={e => setLead(e.target.value)}>
             {leads.map(r => (
               <option key={r.name} value={r.name}>
@@ -40,7 +41,7 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', a
             ))}
           </select>
         </Field>
-        <Field label="Workflow" hint={wf ? wf.goodAt || 'No description.' : 'The lead reads the workflows and picks one.'}>
+        <Field label="Workflow" hint={wf ? `${wf.goodAt || 'No description.'}${wf.roles.length ? ` Roles: ${wf.roles.join(', ')}.` : ''}` : 'The lead reads the workflows and picks one.'}>
           <select value={workflow} onChange={e => setWorkflow(e.target.value)}>
             <option value="">Let the lead choose</option>
             {config?.workflows.map(w => (
@@ -85,7 +86,7 @@ export function SpawnDialog({ config, goal, parent, onClose, onSpawn }: { config
   const live = goal.agents.filter(a => !['ended', 'crashed'].includes(a.state) && !a.quick);
   return (
     <Dialog title="Start an agent" onClose={onClose} wide>
-      <Field label="Role" hint={def ? `${def.harness} · ${def.model}${def.goodAt ? ` — ${def.goodAt}` : ''}` : undefined}>
+      <Field label="Role" hint={def ? `${def.harness} · ${modelLabel(def)}${def.goodAt ? ` — ${def.goodAt}` : ''}` : undefined}>
         <select value={role} onChange={e => setRole(e.target.value)}>
           {roles.map(r => (
             <option key={r.name} value={r.name}>

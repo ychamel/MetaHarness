@@ -27,7 +27,9 @@ export interface Role {
   name: string;
   harness: string;
   model: string;
-  /** Backups, best first, for when the model is unavailable or its account is at its limit: "harness/model", or just "model" on the same harness. */
+  /** How hard the model thinks (low, medium, high…), apart from the model; each harness takes the nearest level it has. */
+  effort?: string;
+  /** Backups, best first, for when the model is unavailable or its account is at its limit: "harness/model", or just "model" on the same harness, with "@effort" for an effort of its own. */
   fallback: string[];
   goodAt: string;
   instructions: string;
@@ -58,6 +60,8 @@ export interface Role {
 export interface Workflow {
   name: string;
   goodAt: string;
+  /** The roles it uses; the agents running it can start only these (and quick helpers). Empty: every role. */
+  roles: string[];
   body: string;
   file: string;
   /** Ships with MetaHarness (defaults/workflows/); a folder's file of the same name replaces it. */

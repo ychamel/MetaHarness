@@ -122,9 +122,9 @@ export function buildAssistantServer(d: Daemon): McpServer {
     const c = d.configView();
     return {
       folders: c.scopes,
-      roles: c.roles.map(r => ({ name: r.name, savedIn: r.scope, harness: r.harness, model: r.model, fallback: r.fallback, goodAt: r.goodAt, helper: r.helper, approvals: r.approvals || 'as in settings', allow: r.allow })),
+      roles: c.roles.map(r => ({ name: r.name, savedIn: r.scope, harness: r.harness, model: r.model, effort: r.effort || 'harness default', fallback: r.fallback, goodAt: r.goodAt, helper: r.helper, approvals: r.approvals || 'as in settings', allow: r.allow })),
       builtInRoles: [d.config.settings.gatekeeper, d.config.settings.assistant].filter(n => !c.roles.some(r => r.name === n)),
-      workflows: c.workflows.map(w => ({ name: w.name, savedIn: w.scope, goodAt: w.goodAt })),
+      workflows: c.workflows.map(w => ({ name: w.name, savedIn: w.scope, goodAt: w.goodAt, roles: w.roles.length ? w.roles : 'every role' })),
       rules: c.rules.map(r => ({ name: r.name, savedIn: r.scope, on: r.on, when: r.when, roles: r.roles, paths: r.paths, description: r.description, body: r.body })),
       skills: c.skills.map(k => ({ name: k.name, folder: k.dir, from: k.source, on: k.on, carriedBy: k.carriedBy.length ? k.carriedBy : 'every role', pointedBy: k.pointedBy, harness: k.harness, description: k.description })),
       settings: c.settings.effective,
@@ -144,7 +144,7 @@ export function buildAssistantServer(d: Daemon): McpServer {
   tool(
     'propose',
     `Suggest a setup change; the human sees it in the app and applies it with one click. command is one of: ${PROPOSABLE.join(', ')}. ` +
-      'role.update: { name, changes: { model?, harness?, fallback?: [..], goodAt?, approvals?, allow?: [..], skills?: [..], instructions? } }. ' +
+      'role.update: { name, changes: { model?, effort? (low, medium, high, xhigh, max), harness?, fallback?: [..] ("harness/model@effort" for a backup\'s own effort), goodAt?, approvals?, allow?: [..], skills?: [..], instructions? } }. ' +
       'settings.save: { scope: "personal" | "repo", patch: { approvals?, models?: { "harness/model": { prices?: { input, output, cacheRead?, cacheWrite? }, cacheMinutes? } } } } (prices in dollars per million tokens). ' +
       'workflow.save: { scope, name, goodAt, body }. ' +
       'rule.save: { scope, name, when: start|path|new-file|commit|done, description, body, roles?: [..], paths?: [..], sections?, include?, requires?, missing?, changes?: [..], unlessChanged?, edited?, skill? (a skill the note points at; then body may be empty) }; ' +

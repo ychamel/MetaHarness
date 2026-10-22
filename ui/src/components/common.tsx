@@ -1,5 +1,42 @@
-import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Component, createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { Agent } from '../types.ts';
+import { modelLabel } from '../format.ts';
+
+/**
+ * Keeps a view that throws from blanking the whole app: it says what broke and offers to try
+ * again. A chunk that no longer exists (the app was rebuilt while open) needs a reload.
+ */
+export class ErrorBoundary extends Component<{ children: ReactNode; resetKey?: string }, { error?: Error; key?: string }> {
+  state: { error?: Error; key?: string } = {};
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  static getDerivedStateFromProps(p: { resetKey?: string }, s: { error?: Error; key?: string }) {
+    // Another tab or goal: start clean.
+    return p.resetKey !== s.key ? { error: undefined, key: p.resetKey } : null;
+  }
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    const stale = /dynamically imported module|Importing a module script failed|error loading dynamically/i.test(error.message);
+    return (
+      <div className="empty big">
+        <div>{stale ? 'The app was rebuilt since this page loaded.' : 'This view ran into a problem.'}</div>
+        <div className="muted small mono">{error.message}</div>
+        <div className="row-gap">
+          {!stale && (
+            <button className="btn" onClick={() => this.setState({ error: undefined })}>
+              Try again
+            </button>
+          )}
+          <button className="btn primary" onClick={() => location.reload()}>
+            Reload
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
 
 export function Dot({ state }: { state: string }) {
   return <span className={`dot ${state}`} title={state} />;
@@ -81,7 +118,7 @@ export function CopyText({ text }: { text: string }) {
 }
 
 /** A short line of where an agent runs: role · harness · model. */
-export const where = (a: Pick<Agent, 'role' | 'harness' | 'model'>) => `${a.role} · ${a.harness} · ${a.model}`;
+export const where = (a: Pick<Agent, 'role' | 'harness' | 'model' | 'effort'>) => `${a.role} · ${a.harness} · ${modelLabel(a)}`;
 
 /** Messages from the app's own actions: what the daemon answered, or what went wrong. */
 export function useToast() {

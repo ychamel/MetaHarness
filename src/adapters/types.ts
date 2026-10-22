@@ -77,6 +77,8 @@ export interface SessionSpec {
   agent: string;
   role: Role;
   model: string;
+  /** How hard the model should think (low, medium, high…); the adapter passes the nearest level its harness has. */
+  effort?: string;
   systemPrompt: string;
   /** The first user message: the brief written by whoever spawned this agent. */
   brief: string;

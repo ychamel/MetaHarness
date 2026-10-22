@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.ts';
-import { BUSY, clock, isOwnTool, money, oneLine, ruleLine, skillLine, STATE_LABEL, GATE } from '../format.ts';
+import { BUSY, clock, modelLabel, isOwnTool, money, oneLine, ruleLine, skillLine, STATE_LABEL, GATE } from '../format.ts';
 import type { Agent, AgentDetail as Detail, Goal, Manifest, MhEvent } from '../types.ts';
 import { CopyText, Ctx, Dialog, Dot, Markdown, More, useConfirm, CacheClock } from './common.tsx';
 
@@ -97,7 +97,7 @@ function noteText(e: MhEvent): string {
     case 'agent.resumed': return `resumed by ${d.by === 'human' ? 'you' : d.by}`;
     case 'agent.paused_between_steps': return `turn paused between steps${d.cut ? ' (a command ran too long and was cut)' : ''}`;
     case 'agent.interrupted': return 'interrupted';
-    case 'agent.moved': return `moved to ${d.to.harness} · ${d.to.model}: ${d.reason}`;
+    case 'agent.moved': return `moved to ${d.to.harness} · ${modelLabel(d.to)}: ${d.reason}`;
     case 'agent.limited': return `rate limited until ${clock(d.until)}`;
     case 'agent.context_full': return `context ${d.pct}% full${d.notesAsked ? ': asked to write notes, then continue in a fresh session' : ': its next message starts a fresh session'}`;
     case 'agent.context_handoff': return `continues in a fresh session from a handoff (context was ${d.pct}% full)`;
@@ -191,7 +191,7 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
           <span className={`pill state-${agent.state}`}>{agent.pausing ? 'pausing…' : STATE_LABEL[agent.state]}</span>
         </h2>
         <div className="sub">
-          {agent.role} · {agent.harness} · {agent.model} · {agent.parent !== 'human' ? `started by ${agent.parent}` : 'started by you'}
+          {agent.role} · {agent.harness} · {modelLabel(agent)} · {agent.parent !== 'human' ? `started by ${agent.parent}` : 'started by you'}
         </div>
 
         <Now agent={agent} problem={lastProblem} />
@@ -290,7 +290,7 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
               </dd>
               <dt>Runs on</dt>
               <dd>
-                {agent.harness} · {agent.model}
+                {agent.harness} · {modelLabel(agent)}
               </dd>
               <dt>Folder</dt>
               <dd className="mono">{agent.cwd}</dd>

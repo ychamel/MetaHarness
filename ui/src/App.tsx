@@ -3,7 +3,7 @@ import { api, ApiError, loadToken, setToken } from './api.ts';
 import { useGoal } from './useGoal.ts';
 import type { ConfigView, GoalSummary } from './types.ts';
 import { SpawnDialog, StartGoalDialog } from './components/Dialogs.tsx';
-import { ConfirmProvider, useToast } from './components/common.tsx';
+import { ConfirmProvider, ErrorBoundary, useToast } from './components/common.tsx';
 import { Home } from './pages/Home.tsx';
 import { GoalPage, type GoalTab } from './pages/GoalPage.tsx';
 import { Harnesses } from './pages/Harnesses.tsx';
@@ -14,8 +14,9 @@ import { Workflows } from './pages/Workflows.tsx';
 import { Guidelines } from './pages/Guidelines.tsx';
 import { Rules } from './pages/Rules.tsx';
 import { Tools } from './pages/Tools.tsx';
+import { Goals } from './pages/Goals.tsx';
 
-type Page = 'home' | 'goal' | 'roles' | 'workflows' | 'rules' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
+type Page = 'home' | 'goal' | 'goals' | 'roles' | 'workflows' | 'rules' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
 
 /** Where you are, kept in the address so a reload or a shared link comes back to it. */
 interface Place {
@@ -96,7 +97,9 @@ function Shell() {
   }, [token, loadGoals, loadConfig]);
 
   // The goal page opens on the running goal, or the latest one.
-  const goalId = place.goal ?? (goals.find(g => g.status === 'running') ?? goals[0])?.id;
+  // A goal that was deleted falls back to those.
+  const known = place.goal && (!loaded || goals.some(g => g.id === place.goal)) ? place.goal : undefined;
+  const goalId = known ?? (goals.find(g => g.status === 'running') ?? goals[0])?.id;
   const onGoalPage = place.page === 'goal';
   const { snapshot, events, connected, error, refresh } = useGoal(token && !authFailed && onGoalPage ? goalId : undefined);
   const goal = snapshot?.goals.find(g => g.id === goalId);
@@ -199,6 +202,7 @@ function Shell() {
         </div>
         <RailButton icon={ICONS.home} label="Home" on={place.page === 'home'} badge={needs} onClick={() => go({ page: 'home', item: undefined })} />
         <RailButton icon={ICONS.goal} label="Goal" on={onGoalPage} dot={current?.status === 'running'} disabled={!goals.length} onClick={() => go({ page: 'goal', goal: goalId, item: undefined })} />
+        <RailButton icon={ICONS.goals} label="Goals" on={place.page === 'goals'} disabled={!goals.length} onClick={() => go({ page: 'goals', item: undefined })} />
         <RailButton icon={ICONS.plus} label="New goal" onClick={() => setDialog({ kind: 'goal' })} />
         <RailButton icon={ICONS.ask} label="Ask" on={asking} onClick={() => setAsking(a => !a)} />
         <div className="rail-sep" />
@@ -213,9 +217,20 @@ function Shell() {
       </nav>
 
       <main className="content">
+        <ErrorBoundary resetKey={place.page}>
         {error && onGoalPage && <div className="error-bar">{error}</div>}
         {place.page === 'home' && (
-          <Home goals={goals} loaded={loaded} config={config} onOpen={(g, agent) => go({ page: 'goal', goal: g, agent, tab: place.tab ?? 'story', file: undefined })} onStart={startGoal} onCommand={command} onSetup={() => go({ page: 'roles', item: 'new' })} />
+          <Home goals={goals} loaded={loaded} config={config} onOpen={(g, agent) => go({ page: 'goal', goal: g, agent, tab: place.tab ?? 'story', file: undefined })} onStart={startGoal} onCommand={command} onSetup={() => go({ page: 'roles', item: 'new' })} onAllGoals={() => go({ page: 'goals', item: undefined })} />
+        )}
+        {place.page === 'goals' && (
+          <Goals
+            goals={goals}
+            loaded={loaded}
+            config={config}
+            onOpen={(g, tab) => go({ page: 'goal', goal: g, agent: undefined, tab: tab ?? 'story', file: undefined })}
+            onCommand={command}
+            onChanged={() => void loadGoals()}
+          />
         )}
         {onGoalPage && (
           <GoalPage
@@ -260,6 +275,7 @@ function Shell() {
             }}
           />
         )}
+        </ErrorBoundary>
       </main>
 
       {dialog?.kind === 'goal' && <StartGoalDialog key={dialog.workflow} config={config} initialWorkflow={dialog.workflow} onClose={() => setDialog(undefined)} onStart={startGoal} />}
@@ -325,6 +341,7 @@ const ICONS = {
     </>,
   ),
   plus: svg(<path d="M12 5v14M5 12h14" />),
+  goals: svg(<path d="M4 7h16M4 7v11a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V7M4 7l2-3h12l2 3M10 11h4" />),
   ask: svg(<path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9 10h.01M12 10h.01M15 10h.01" />),
   roles: svg(
     <>

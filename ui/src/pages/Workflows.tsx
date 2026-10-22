@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { ConfigView, WorkflowDef } from '../types.ts';
-import { Field, Markdown, useConfirm } from '../components/common.tsx';
+import { ChipList, Field, Markdown, useConfirm } from '../components/common.tsx';
 import { EditorFooter, keyOf, ListItem, ScopePicker, Section, SetupLayout, useDraft, useLeaveGuard, type SetupProps } from './setup.tsx';
 
 const blank = (config?: ConfigView): WorkflowDef => ({
@@ -8,6 +8,7 @@ const blank = (config?: ConfigView): WorkflowDef => ({
   scope: config?.scopes.some(s => s.scope === 'repo') ? 'repo' : 'personal',
   file: '',
   goodAt: '',
+  roles: [],
   body: '1. \n2. \n3. ',
 });
 
@@ -55,7 +56,14 @@ export function Workflows({ config, selected, onSelect, onSave, onStartWith }: S
       list={
         <>
           {workflows.map(w => (
-            <ListItem key={keyOf(w)} on={!isNew && current ? keyOf(current) === keyOf(w) : false} title={w.name} scope={w.scope} onClick={() => void go(keyOf(w))} sub={w.goodAt && <span className="clamp-2">{w.goodAt}</span>} />
+            <ListItem key={keyOf(w)} on={!isNew && current ? keyOf(current) === keyOf(w) : false} title={w.name} scope={w.scope} onClick={() => void go(keyOf(w))} sub={
+                (w.goodAt || w.roles.length > 0) && (
+                  <>
+                    {w.goodAt && <span className="clamp-2">{w.goodAt}</span>}
+                    {w.roles.length > 0 && <span className="mono">{w.roles.join(', ')}</span>}
+                  </>
+                )
+              } />
           ))}
           {!workflows.length && <div className="empty">No workflows yet. Leads then plan on their own.</div>}
         </>
@@ -87,6 +95,13 @@ export function Workflows({ config, selected, onSelect, onSave, onStartWith }: S
                 <Field label="Good at" hint="One line. The lead reads it when it picks a workflow.">
                   <textarea rows={2} value={draft.goodAt} onChange={e => set('goodAt', e.target.value.replace(/\n/g, ' '))} placeholder="e.g. a bug with a clear reproduction: find the cause, fix it, add a test" />
                 </Field>
+                <Field
+                  label="Roles it uses"
+                  hint={draft.roles.length ? 'Its lead (and the team) can start only these, plus quick helpers. A workflow it hands on to brings its own.' : 'None named: every role. Name some so the lead picks from the right ones as your roles grow.'}
+                >
+                  <ChipList values={draft.roles} onChange={v => set('roles', v)} placeholder="role name, e.g. implementer" suggestions={(config?.roles ?? []).filter(r => !r.helper).map(r => r.name)} />
+                </Field>
+                {draft.roles.some(n => !config?.roles.some(r => r.name === n)) && <div className="hint warn-text">No role here is called {draft.roles.filter(n => !config?.roles.some(r => r.name === n)).join(', ')}.</div>}
               </Section>
               <Section
                 title="Steps"

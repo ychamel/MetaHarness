@@ -1,7 +1,7 @@
 # Tracker
 
 Where MetaHarness stands against the plan in [DESIGN.md §19](DESIGN.md). Update this file when a
-step lands. Last updated 2026-10-19.
+step lands. Last updated 2026-10-23.
 
 ## Milestone 0: a small team works ✅
 
@@ -304,6 +304,38 @@ Findings from the run:
       `src/shellview.ts` takes off the wrapper (for the Inbox too) and replaces quoted
       here-document bodies with their length, the prompt names the shared folder and says when a
       command is cut. Replayed live on haiku: all 6 ALLOW, the `git rm` of a tracked shader ASK
+- [x] **Fixes and features from use** (2026-10-23):
+  - Graph flicker and blank graph: the graph handed React Flow new nodes without their
+    measured sizes on every drag step, event and 5 s tick, so React Flow hid every card and
+    dropped every line until it measured them again (seen in headless Chrome: all 5 cards
+    hidden and 0 of 6 lines on each drag frame), and framing the view meanwhile could land on
+    empty space. Sizes now go back in, and the view is framed once new cards are measured. An
+    error boundary keeps a failing view (or a chunk gone after `ui:build`) from blanking the app.
+  - Panes resize: the goal page's columns, the graph's panel, the file list, the setup lists
+    and the assistant, by dragging their edge (kept per browser, double-click resets).
+  - Leftover processes: each harness CLI runs in a process group of its own; stopping an agent
+    closes its stdin, then SIGTERMs and SIGKILLs its group and descendants that left it
+    (`src/procs.ts`); what a CLI leaves behind when it exits goes too, and the daemon kills
+    what's left as it exits. Codex threads are unloaded (`thread/unsubscribe`) and the shared
+    app-server shuts down after a minute with none. Finished agents let their process go after
+    10 quiet minutes (`agent.released`); a message resumes their session.
+  - **Effort apart from the model**: a role's `effort:` (low … max, Codex's ultra), a backup's
+    own with `@high`; Claude Code `--effort`, Codex `model_reasoning_effort` (checked live:
+    a thread reports the effort it got), Antigravity the listed `-low/-medium/-high` variant
+    (a bare name with `--effort` hangs `agy`), ACP the `thought_level` option; each takes the
+    nearest level it has. The role editor folds Antigravity's variants into model + effort, so
+    one price per model covers every effort.
+  - **Workflows name their roles** (`roles:`): agents running one can start only those, plus
+    quick helpers; a chained workflow adds its own; the human can start anyone.
+  - **Live graph**: the step each agent is on and for how long, unread messages, approvals; a
+    pulse along a line per message; dashed lines to whoever an agent waits on (`waitingOn` in
+    the snapshot: the human, the agents it started, or its last partner); a messages panel
+    (or everything) beside it, and a pair's whole conversation on clicking its line.
+  - **Goals page**: every goal from any folder, with its size on disk; open it or its files,
+    open its shared folder, delete one or many (`goal.delete`: git cleanup as before, then the
+    goal's folder and events; unsaved work asks again; a goal at work is refused), and folders
+    the log no longer has a goal for.
+  Checked in headless Chrome against scripted teams; not yet in a real run.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,
@@ -327,7 +359,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 88 tests, about half a minute, no model calls
+npm install && npm test        # 108 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

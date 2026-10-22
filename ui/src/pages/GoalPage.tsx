@@ -4,9 +4,10 @@ import type { Goal, GoalSummary, MhEvent, Snapshot } from '../types.ts';
 import { TeamTree } from '../components/TeamTree.tsx';
 import { ACTIONABLE, NeedsYou, Updates } from '../components/Inbox.tsx';
 import { AgentDetail } from '../components/AgentDetail.tsx';
-import { Markdown, More, useConfirm } from '../components/common.tsx';
+import { ErrorBoundary, Markdown, More, useConfirm } from '../components/common.tsx';
 import { MessageDialog } from '../components/Dialogs.tsx';
 import { AccountChips, harnessOf } from '../components/Accounts.tsx';
+import { Splitter } from '../components/Splitter.tsx';
 import { Story } from '../views/Story.tsx';
 import { Files } from '../views/Files.tsx';
 import { Activity } from '../views/Activity.tsx';
@@ -90,6 +91,7 @@ export function GoalPage(p: Props) {
           </div>
           <Updates items={updates} onResolve={resolve} onSelectAgent={n => p.onAgent(n)} />
         </aside>
+        <Splitter pane="team" grow="right" min={200} max={560} label="Team column" />
 
         <section className="col center">
           <NeedsYou items={needs} onResolve={resolve} onSelectAgent={n => p.onAgent(n)} />
@@ -100,6 +102,7 @@ export function GoalPage(p: Props) {
               </button>
             ))}
           </nav>
+          <ErrorBoundary resetKey={`${goal.id}/${p.tab}`}>
           <Suspense fallback={<div className="empty">Loading…</div>}>
             {p.tab === 'story' && (
               <Story
@@ -119,7 +122,9 @@ export function GoalPage(p: Props) {
             {p.tab === 'costs' && <Costs goal={goal} onSelect={p.onAgent} onSetup={p.onHarnesses} />}
             {p.tab === 'log' && <Activity events={events} agents={goal.agents.map(a => a.name)} onSelectAgent={p.onAgent} />}
           </Suspense>
+          </ErrorBoundary>
         </section>
+        <Splitter pane="agent" grow="left" min={300} max={1000} label="Agent column" />
 
         <aside className="col">
           {agent ? (

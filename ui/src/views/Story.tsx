@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { clock, eventKind, eventText, importance, oneLine, who } from '../format.ts';
+import { clock, eventKind, modelLabel, eventText, importance, oneLine, who } from '../format.ts';
 import type { Goal, MhEvent } from '../types.ts';
 import { Markdown, More } from '../components/common.tsx';
 
@@ -162,7 +162,7 @@ function Card({ e, name, onOpenFile }: { e: MhEvent; name: (n?: string) => React
           <div className="card-head">
             {name(e.parent)} <span className="verb">started</span> {name(e.agent)}
             <span className="meta">
-              {d.role} · {d.harness} · {d.model}
+              {d.role} · {d.harness} · {modelLabel(d as { model: string; effort?: string })}
               {d.quick ? ' · quick helper' : ''}
               {d.branch ? ` · ${d.branch}` : ''}
             </span>

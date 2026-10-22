@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { ConfigView, Scope } from '../types.ts';
 import { ScopeBadge, useConfirm } from '../components/common.tsx';
+import { Splitter } from '../components/Splitter.tsx';
 
 /** What every Setup page gets from the app. */
 export interface SetupProps {
@@ -56,6 +57,7 @@ export function SetupLayout({ title, intro, list, editor, action }: { title: str
       </div>
       <div className="setup-body">
         <div className="setup-list">{list}</div>
+        <Splitter pane="setup" grow="right" min={180} max={640} label="List" />
         <div className="setup-editor">{editor}</div>
       </div>
     </div>

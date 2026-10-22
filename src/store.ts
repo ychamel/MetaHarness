@@ -67,6 +67,11 @@ export class EventStore {
     });
   }
 
+  /** Forgets a goal: every event it had. The one thing that isn't append-only, at the human's request. */
+  deleteGoal(goal: string): number {
+    return Number(this.db.prepare('DELETE FROM events WHERE goal = ?').run(goal).changes);
+  }
+
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);

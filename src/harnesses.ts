@@ -1,8 +1,10 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { endTree, spawnTree } from './procs.ts';
 import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, delimiter, join } from 'node:path';
 import { parseFrontMatter } from './config.ts';
 import { claudeMcpNames } from './mcpservers.ts';
+import { CLAUDE_EFFORTS } from './effort.ts';
 
 /**
  * Harness profiles (design §16): one harness on one transport. Transports are code (the
@@ -37,9 +39,12 @@ export interface HarnessProfile {
   login?: string;
   versionArgs?: string[];
   loginStatus?: (bin: string, env: NodeJS.ProcessEnv) => Promise<LoginStatus>;
-  listModels?: (bin: string, env: NodeJS.ProcessEnv) => Promise<string[]>;
+  /** The models, and the efforts each takes when the harness says (Codex does). */
+  listModels?: (bin: string, env: NodeJS.ProcessEnv) => Promise<string[] | ModelList>;
   /** Models known without asking the harness, such as Claude Code's aliases. */
   models?: string[];
+  /** Efforts every model takes, when the harness has one set for all (Claude Code's --effort). */
+  efforts?: string[];
   /** A cheap model for `mh test`. */
   probeModel?: string;
   /** The MCP servers the harness itself has configured, by name (for roles' `mcp:` names). */
@@ -47,6 +52,14 @@ export interface HarnessProfile {
   /** The profile file, for user profiles. */
   file?: string;
 }
+
+export interface ModelList {
+  models: string[];
+  efforts: Record<string, string[]>;
+}
+
+/** A model list as the profile gave it, with the efforts of each when known. */
+export const asModelList = (r: string[] | ModelList): ModelList => (Array.isArray(r) ? { models: r, efforts: {} } : r);
 
 /** Runs a CLI with nothing on its stdin (some, like `agy -p`, wait for it to close). */
 export function run(bin: string, args: string[], env: NodeJS.ProcessEnv, timeout = 20_000, cwd?: string): Promise<{ code: number; out: string; stdout: string }> {
@@ -60,7 +73,7 @@ export function run(bin: string, args: string[], env: NodeJS.ProcessEnv, timeout
 }
 
 /** The first word of each line that looks like a model ID, e.g. from `agy models`. */
-function modelsFromLines(out: string): string[] {
+export function modelsFromLines(out: string): string[] {
   return out
     .split('\n')
     .map(l => l.trim().split(/\s+/)[0])
@@ -70,12 +83,12 @@ function modelsFromLines(out: string): string[] {
 /** Starts a `codex app-server`, makes one request, then shuts it down. */
 export function codexAsk(bin: string, env: NodeJS.ProcessEnv, method: string, params: unknown, timeout = 20_000): Promise<any> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(bin, ['app-server'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+    const proc = spawnTree(bin, ['app-server'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
     const timer = setTimeout(() => finish(new Error(`codex app-server did not answer ${method} in ${timeout / 1000}s`)), timeout);
     let buf = '';
     const finish = (err: Error | null, result?: unknown) => {
       clearTimeout(timer);
-      proc.kill();
+      endTree(proc, 0);
       if (err) reject(err);
       else resolve(result);
     };
@@ -107,10 +120,17 @@ export function codexAsk(bin: string, env: NodeJS.ProcessEnv, method: string, pa
   });
 }
 
-/** Codex's model list, from a short-lived app-server. */
-async function codexModels(bin: string, env: NodeJS.ProcessEnv): Promise<string[]> {
-  const data = ((await codexAsk(bin, env, 'model/list', {}))?.data ?? []) as { id?: string; model?: string; hidden?: boolean }[];
-  return data.filter(x => !x.hidden).map(x => x.id ?? x.model ?? '').filter(Boolean);
+/** Codex's model list and each model's efforts, from a short-lived app-server. */
+async function codexModels(bin: string, env: NodeJS.ProcessEnv): Promise<ModelList> {
+  const data = ((await codexAsk(bin, env, 'model/list', {}))?.data ?? []) as { id?: string; model?: string; hidden?: boolean; supportedReasoningEfforts?: { reasoningEffort: string }[] }[];
+  const out: ModelList = { models: [], efforts: {} };
+  for (const x of data.filter(x => !x.hidden)) {
+    const id = x.id ?? x.model ?? '';
+    if (!id) continue;
+    out.models.push(id);
+    if (x.supportedReasoningEfforts?.length) out.efforts[id] = x.supportedReasoningEfforts.map(e => e.reasoningEffort);
+  }
+  return out;
 }
 
 /** The harnesses MetaHarness knows. Ones without a transport are found and reported, not driven. */
@@ -134,6 +154,7 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
     probeModel: 'haiku',
     listMcp: async () => claudeMcpNames(process.cwd()),
     models: ['opus', 'sonnet', 'haiku', 'fable', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
+    efforts: CLAUDE_EFFORTS,
   },
   {
     id: 'codex',
@@ -317,7 +338,7 @@ export async function inspect(p: HarnessProfile): Promise<HarnessReport> {
   rep.mcpNames = mcp ?? [];
   if (version.code === 0) rep.version = /\d+\.\d+[\w.+-]*/.exec(version.out)?.[0] ?? version.out.split('\n')[0].trim();
   rep.login = login;
-  if (models && 'm' in models) rep.models = [...new Set([...rep.models, ...models.m])];
+  if (models && 'm' in models) rep.models = [...new Set([...rep.models, ...asModelList(models.m).models])];
   else if (models) rep.modelsError = models.e;
   // A harness with no status command is signed in if its model list loads.
   if (!rep.login && p.listModels) rep.login = models && 'm' in models ? { signedIn: true, detail: 'its model list loads' } : { signedIn: undefined, detail: 'its model list did not load' };

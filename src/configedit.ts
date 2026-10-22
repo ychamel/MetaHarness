@@ -50,6 +50,8 @@ export interface RoleView {
   overrides?: Scope;
   harness: string;
   model: string;
+  /** Empty: the harness's default. */
+  effort: string;
   fallback: string[];
   goodAt: string;
   instructions: string;
@@ -73,6 +75,7 @@ export interface WorkflowView {
   file: string;
   overrides?: Scope | 'built-in';
   goodAt: string;
+  roles: string[];
   body: string;
 }
 
@@ -129,7 +132,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
   const builtIn = loadConfig([]);
   const roles = new Map<string, RoleView>();
   const workflows = new Map<string, WorkflowView>();
-  for (const w of builtIn.workflows.values()) workflows.set(w.name, { name: w.name, scope: 'built-in', file: w.file, goodAt: w.goodAt, body: w.body });
+  for (const w of builtIn.workflows.values()) workflows.set(w.name, { name: w.name, scope: 'built-in', file: w.file, goodAt: w.goodAt, roles: w.roles, body: w.body });
   const mcp = new Map<string, { name: string; scope: Scope; def: McpServerDef }>();
   const guide = (file: string, def: string): GuideView => {
     const g: GuideView = { text: def, from: 'built-in', builtIn: def, files: {} };
@@ -149,14 +152,14 @@ export function configView(scopes: ScopeDir[]): ConfigView {
       if (r.file === '(built in)') continue;
       const before = roles.get(r.name);
       roles.set(r.name, {
-        name: r.name, scope, file: r.file, overrides: before?.scope, harness: r.harness, model: r.model, fallback: r.fallback, goodAt: r.goodAt,
+        name: r.name, scope, file: r.file, overrides: before?.scope, harness: r.harness, model: r.model, effort: r.effort ?? '', fallback: r.fallback, goodAt: r.goodAt,
         instructions: r.instructions, helper: r.helper, worktree: r.worktree, workflow: r.workflow ?? '', mcp: r.mcp, skills: r.skills ?? [], autoApprove: r.autoApprove, approvals: r.approvals ?? '',
         permissionMode: r.permissionMode ?? '', allow: r.allow, nativeSkills: !!r.nativeSkills,
       });
     }
     for (const w of c.workflows.values()) {
       const before = workflows.get(w.name);
-      workflows.set(w.name, { name: w.name, scope, file: w.file, overrides: before?.scope, goodAt: w.goodAt, body: w.body });
+      workflows.set(w.name, { name: w.name, scope, file: w.file, overrides: before?.scope, goodAt: w.goodAt, roles: w.roles, body: w.body });
     }
     for (const [name, def] of c.mcp) mcp.set(name, { name, scope, def });
   }
@@ -246,7 +249,7 @@ function writeDoc(file: string, meta: [string, string][], body: string, keep = '
 }
 
 /** Keys the app writes for a role; anything else already in the file is kept as it was. */
-const ROLE_KEYS = ['harness', 'model', 'fallback', 'fallbacks', 'good_at', 'helper', 'worktree', 'workflow', 'mcp', 'auto_approve', 'approvals', 'permission_mode', 'allow', 'native_skills', 'skills'];
+const ROLE_KEYS = ['harness', 'model', 'effort', 'fallback', 'fallbacks', 'good_at', 'helper', 'worktree', 'workflow', 'mcp', 'auto_approve', 'approvals', 'permission_mode', 'allow', 'native_skills', 'skills'];
 
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : []).map(x => String(x).trim()).filter(Boolean);
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
@@ -278,6 +281,7 @@ export function saveRole(scopes: ScopeDir[], b: Record<string, unknown>): string
     [
       ['harness', harness],
       ['model', str(b.model)],
+      ['effort', str(b.effort).toLowerCase()],
       ['fallback', strList(b.fallback).join(', ')],
       ['good_at', str(b.goodAt)],
       ['helper', b.helper === true ? 'true' : ''],
@@ -312,8 +316,8 @@ export function saveWorkflow(scopes: ScopeDir[], b: Record<string, unknown>): st
   if (!prevFiles.includes(file) && existsSync(file)) throw new Error(`There's already a workflow called ${name} in the ${String(b.scope)} folder.`);
   const oldFile = prevFiles.find(existsSync);
   const old = oldFile ? readFileSync(oldFile, 'utf8') : '';
-  const extra = Object.entries(parseFrontMatter(old).meta).filter(([k]) => k !== 'good_at');
-  writeDoc(file, [['good_at', str(b.goodAt)], ...extra], body, leadingComments(old));
+  const extra = Object.entries(parseFrontMatter(old).meta).filter(([k]) => k !== 'good_at' && k !== 'roles');
+  writeDoc(file, [['good_at', str(b.goodAt)], ['roles', strList(b.roles).join(', ')], ...extra], body, leadingComments(old));
   for (const f of prevFiles) if (f !== file) rmSync(f, { force: true });
   return file;
 }
