@@ -199,6 +199,8 @@ function RoleForm({ config, draft, set, isNew, original, footer }: { config?: Co
     if (variant && !draft.effort) set('effort', variant.effort);
   };
   const backups = harnesses.flatMap(x => modelsOf(x.id).map(m => `${x.id}/${m}`));
+  // The assistant and the gatekeeper run alone, on their model and instructions: the rest of a role is for teammates.
+  const job = !original ? undefined : config?.settings.effective.assistant === original.name ? 'assistant' : config?.settings.effective.gatekeeper === original.name ? 'gatekeeper' : undefined;
 
   return (
     <div className="editor">
@@ -207,19 +209,26 @@ function RoleForm({ config, draft, set, isNew, original, footer }: { config?: Co
           <h2>{isNew ? 'New role' : draft.name || 'Role'}</h2>
           {original?.overrides && <span className="hint">A {original.overrides} role with this name exists; this one is used here.</span>}
         </div>
+        {job && (
+          <p className="hint">
+            {job === 'assistant' ? 'The app’s assistant.' : 'The gatekeeper, which answers approvals.'} It runs alone, so only its model, effort, backups and instructions apply.
+          </p>
+        )}
 
         <Section title="Who it is">
           <div className="grid-2">
-            <Field label="Name" hint="Agents are named after it: implementer-1, implementer-2…">
+            <Field label="Name" hint={job ? `Settings names the ${job} by this name.` : 'Agents are named after it: implementer-1, implementer-2…'}>
               <input type="text" value={draft.name} onChange={e => set('name', e.target.value.replace(/\s+/g, '-'))} placeholder="e.g. tester" />
             </Field>
             <Field label="Saved in">
               <ScopePicker config={config} value={draft.scope === 'built-in' ? 'repo' : draft.scope} onChange={(s: Scope) => set('scope', s)} />
             </Field>
           </div>
-          <Field label="Good at" hint="One line. Leads read it when they choose whom to start.">
-            <textarea rows={2} value={draft.goodAt} onChange={e => set('goodAt', e.target.value.replace(/\n/g, ' '))} placeholder="e.g. writing focused tests for a change and finding edge cases" />
-          </Field>
+          {!job && (
+            <Field label="Good at" hint="One line. Leads read it when they choose whom to start.">
+              <textarea rows={2} value={draft.goodAt} onChange={e => set('goodAt', e.target.value.replace(/\n/g, ' '))} placeholder="e.g. writing focused tests for a change and finding edge cases" />
+            </Field>
+          )}
         </Section>
 
         <Section title="Runs on">
@@ -306,61 +315,65 @@ function RoleForm({ config, draft, set, isNew, original, footer }: { config?: Co
           </Field>
         </Section>
 
-        <Section title="Instructions" hint="Added to the team guidelines in its prompt.">
+        <Section title="Instructions" hint={job ? 'Its whole prompt: the team guidelines aren’t part of it.' : 'Added to the team guidelines in its prompt.'}>
           <textarea className="instructions" rows={10} value={draft.instructions} onChange={e => set('instructions', e.target.value)} placeholder={'You review someone else\'s work. Read the design in the shared folder first.\nReport findings with file and line, how serious each one is, and a suggested fix.'} />
         </Section>
 
-        <Section title="How it works">
-          <Toggle checked={draft.helper} onChange={v => set('helper', v)} label="Quick helper" hint="Answers one question and hands the answer straight back (spawn with quick: true). Gets the short helper guidelines." />
-          <Toggle checked={draft.worktree} onChange={v => set('worktree', v)} label="Its own worktree by default" hint="A git worktree and branch of its own, for work in parallel. Otherwise it works in your checkout with the team." />
-          <Field label="Workflow it follows" hint="Goes into its prompt. A goal's lead gets the goal's workflow instead.">
-            <select value={draft.workflow} onChange={e => set('workflow', e.target.value)}>
-              <option value="">None</option>
-              {config?.workflows.map(w => (
-                <option key={w.name} value={w.name}>
-                  {w.name}
-                </option>
-              ))}
-              {draft.workflow && !config?.workflows.some(w => w.name === draft.workflow) && <option value={draft.workflow}>{draft.workflow} (missing)</option>}
-            </select>
-          </Field>
-        </Section>
+        {!job && (
+          <>
+            <Section title="How it works">
+              <Toggle checked={draft.helper} onChange={v => set('helper', v)} label="Quick helper" hint="Answers one question and hands the answer straight back (spawn with quick: true). Gets the short helper guidelines." />
+              <Toggle checked={draft.worktree} onChange={v => set('worktree', v)} label="Its own worktree by default" hint="A git worktree and branch of its own, for work in parallel. Otherwise it works in your checkout with the team." />
+              <Field label="Workflow it follows" hint="Goes into its prompt. A goal's lead gets the goal's workflow instead.">
+                <select value={draft.workflow} onChange={e => set('workflow', e.target.value)}>
+                  <option value="">None</option>
+                  {config?.workflows.map(w => (
+                    <option key={w.name} value={w.name}>
+                      {w.name}
+                    </option>
+                  ))}
+                  {draft.workflow && !config?.workflows.some(w => w.name === draft.workflow) && <option value={draft.workflow}>{draft.workflow} (missing)</option>}
+                </select>
+              </Field>
+            </Section>
 
-        <Section title="Permissions">
-          <Toggle checked={draft.autoApprove === 'read-only'} onChange={v => set('autoApprove', v ? 'read-only' : 'none')} label="Run read-only shell commands without asking" hint="ls, cat, git log, grep and the like. Anything that writes still waits for you." />
-          <Field label="Who approves the rest" hint={`The settings say: ${config?.settings.effective.approvals ?? 'gatekeeper'}.`}>
-            <select value={draft.approvals} onChange={e => set('approvals', e.target.value)}>
-              <option value="">As in Settings</option>
-              <option value="ask">Ask me</option>
-              <option value="gatekeeper">The gatekeeper, then me</option>
-              <option value="harness">The harness’s own, then the gatekeeper</option>
-            </select>
-          </Field>
-          <Field label="Also allowed without asking" hint="Claude Code style patterns, e.g. Bash(npm test*). Press Enter after each.">
-            <ChipList values={draft.allow} onChange={v => set('allow', v)} placeholder="Bash(npm test*)" suggestions={['Bash(npm test*)', 'Bash(node --test*)', 'Bash(git add*)', 'Bash(git commit*)', 'Bash(git merge*)', 'Bash(git diff*)']} />
-          </Field>
-          <details className="advanced">
-            <summary>Advanced</summary>
-            <Field label="Harness permission mode" hint="Passed to the harness as is, e.g. acceptEdits for Claude Code. Leave empty for its default.">
-              <input type="text" value={draft.permissionMode} onChange={e => set('permissionMode', e.target.value)} />
-            </Field>
-          </details>
-        </Section>
+            <Section title="Permissions">
+              <Toggle checked={draft.autoApprove === 'read-only'} onChange={v => set('autoApprove', v ? 'read-only' : 'none')} label="Run read-only shell commands without asking" hint="ls, cat, git log, grep and the like. Anything that writes still waits for you." />
+              <Field label="Who approves the rest" hint={`The settings say: ${config?.settings.effective.approvals ?? 'gatekeeper'}.`}>
+                <select value={draft.approvals} onChange={e => set('approvals', e.target.value)}>
+                  <option value="">As in Settings</option>
+                  <option value="ask">Ask me</option>
+                  <option value="gatekeeper">The gatekeeper, then me</option>
+                  <option value="harness">The harness’s own, then the gatekeeper</option>
+                </select>
+              </Field>
+              <Field label="Also allowed without asking" hint="Claude Code style patterns, e.g. Bash(npm test*). Press Enter after each.">
+                <ChipList values={draft.allow} onChange={v => set('allow', v)} placeholder="Bash(npm test*)" suggestions={['Bash(npm test*)', 'Bash(node --test*)', 'Bash(git add*)', 'Bash(git commit*)', 'Bash(git merge*)', 'Bash(git diff*)']} />
+              </Field>
+              <details className="advanced">
+                <summary>Advanced</summary>
+                <Field label="Harness permission mode" hint="Passed to the harness as is, e.g. acceptEdits for Claude Code. Leave empty for its default.">
+                  <input type="text" value={draft.permissionMode} onChange={e => set('permissionMode', e.target.value)} />
+                </Field>
+              </details>
+            </Section>
 
-        <Section title="Tools" hint="MCP servers it can use besides MetaHarness's own, by name.">
-          <ChipList values={draft.mcp} onChange={v => set('mcp', v)} placeholder="server name, e.g. blender" suggestions={config?.mcp.map(m => m.name) ?? []} />
-          {draft.mcp.some(n => !config?.mcp.some(m => m.name === n)) && (
-            <div className="hint">Names not defined under Tools are looked up in the harness's own MCP settings on each machine.</div>
-          )}
-        </Section>
+            <Section title="Tools" hint="MCP servers it can use besides MetaHarness's own, by name.">
+              <ChipList values={draft.mcp} onChange={v => set('mcp', v)} placeholder="server name, e.g. blender" suggestions={config?.mcp.map(m => m.name) ?? []} />
+              {draft.mcp.some(n => !config?.mcp.some(m => m.name === n)) && (
+                <div className="hint">Names not defined under Tools are looked up in the harness's own MCP settings on each machine.</div>
+              )}
+            </Section>
 
-        <Section title="Skills" hint="Guides it carries and reads when they fit, by name. A skill no role names goes to every role.">
-          <ChipList values={draft.skills ?? []} onChange={v => set('skills', v)} placeholder="skill name, e.g. pdf-forms" suggestions={config?.skills.map(k => k.name) ?? []} />
-          {(draft.skills ?? []).some(n => !config?.skills.some(k => k.name === n)) && (
-            <div className="hint">Some of these names aren’t skills here: {(draft.skills ?? []).filter(n => !config?.skills.some(k => k.name === n)).join(', ')}.</div>
-          )}
-          <Toggle checked={!!draft.nativeSkills} onChange={v => set('nativeSkills', v)} label="Keep the harness’s own skills" hint="Your personal skills for this harness, and the repository’s in its own folder, as the harness loads them. Off: hidden, so every harness on the team has the same skills." />
-        </Section>
+            <Section title="Skills" hint="Guides it carries and reads when they fit, by name. A skill no role names goes to every role.">
+              <ChipList values={draft.skills ?? []} onChange={v => set('skills', v)} placeholder="skill name, e.g. pdf-forms" suggestions={config?.skills.map(k => k.name) ?? []} />
+              {(draft.skills ?? []).some(n => !config?.skills.some(k => k.name === n)) && (
+                <div className="hint">Some of these names aren’t skills here: {(draft.skills ?? []).filter(n => !config?.skills.some(k => k.name === n)).join(', ')}.</div>
+              )}
+              <Toggle checked={!!draft.nativeSkills} onChange={v => set('nativeSkills', v)} label="Keep the harness’s own skills" hint="Your personal skills for this harness, and the repository’s in its own folder, as the harness loads them. Off: hidden, so every harness on the team has the same skills." />
+            </Section>
+          </>
+        )}
         {!isNew && original && <div className="muted small mono file-path">{original.file}</div>}
       </div>
       {footer}

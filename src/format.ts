@@ -42,6 +42,8 @@ export function eventLine(e: MhEvent): string {
       return `${t}  ${who}done: ${oneLine(d.note)}`;
     case 'agent.idle':
       return `${t}  ${who}stopped without calling done`;
+    case 'agent.done_held':
+      return `${t}  ${who}called done while ${d.working.join(', ')} still work; told to deal with them first`;
     case 'agent.ended':
     case 'agent.crashed':
       return `${t}  ${who}${e.type.slice(6)}: ${oneLine(d.reason)}`;

@@ -378,6 +378,21 @@ Findings from the run:
   worktree implementers, the cartographer) on a small repository, light and dark. Not yet in a
   real run: whether a real cartographer keeps the map well, and how the Design view reads on a
   large repository.
+- [x] **Done waits for the team, and a more versatile assistant** (2026-10-23):
+  - An agent's `done` is held while teammates it spawned still work (or rest while their own
+    teammates work); quick helpers and woken roles (the cartographer) don't count. The reply
+    names them with their state and status, and the agent decides: wait, message them, or carry
+    on. `agent.done_held` in the log.
+  - The assistant's panel picks its model (any harness that runs here, or the role's), its
+    effort, and **Read only / Write**. A new model or effort takes over mid-conversation with a
+    transcript of it (so does a session after a crash); write mode holds from the next tool call
+    and is told to the model once; a new conversation goes back to read only. Side sessions
+    now get their route's effort (the gatekeeper's and assistant's role effort was dropped
+    before). `assistant.set`, `assistant.options`. **Make default** (`assistant.make_default`)
+    saves the pick to the role, writing the built-in one out first; backups named by model alone
+    keep their old harness, and the new model drops out of them. The role editor shows the
+    assistant and gatekeeper only model, effort, backups and instructions.
+  Checked with tests (2 new, 3 updated) and in headless Chrome on a fake daemon. Not yet live.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search
@@ -401,7 +416,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 122 tests, about half a minute, no model calls
+npm install && npm test        # 124 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

@@ -421,7 +421,7 @@ export class Daemon {
     this.assistant = new Assistant({
       start: (brief, events) => {
         assistantSpent = 0;
-        const role = this.config.roles.get(this.config.settings.assistant)!;
+        const role = this.assistantRole();
         const place = { id: ASSISTANT_STREAM, dir: this.repo, sharedDir: join(this.home, 'assistant', 'shared') };
         return this.startSideSession(ASSISTANT, role, place, brief, events, 'Use the MetaHarness tools.', r => {
           assistantRoute = r;
@@ -429,6 +429,10 @@ export class Daemon {
         });
       },
       log: (type, data) => this.assistantLog(type, data),
+      route: c => {
+        const r = this.pickRoute(this.assistantRole(c));
+        return 'error' in r ? r.error : `${r.route.harness}/${r.route.model}@${r.route.effort ?? ''}`;
+      },
       usage: u => {
         const cost = this.sideCost(assistantRoute, u);
         if (cost !== undefined && cost !== assistantSpent) this.assistantLog('assistant.usage', { costUsd: (assistantSpent = cost) });
@@ -1024,6 +1028,13 @@ export class Daemon {
     this.emit({ goal: rec.goal, agent: rec.name, type: 'workflow.read', data: { workflow: name } });
   }
 
+  /** The assistant's role, on the model and effort picked in its panel when there are. */
+  private assistantRole(choice = this.assistant.choice): Role {
+    const role = this.config.roles.get(this.config.settings.assistant)!;
+    const { harness, model, effort } = choice;
+    return { ...role, ...(harness && model ? { harness, model, fallback: [] } : {}), ...(effort ? { effort } : {}) };
+  }
+
   /** Logs to the assistant's conversation, which the app follows as its own event stream. */
   assistantLog(type: string, data: Record<string, unknown>): void {
     const e = this.emit({ goal: ASSISTANT_STREAM, agent: ASSISTANT, type, data: { conv: this.assistant.conv, ...data } });
@@ -1065,20 +1076,20 @@ export class Daemon {
    */
   private async startSideSession(
     name: string, role: Role, place: { id: string; dir: string; sharedDir: string }, brief: string, events: SessionEvents, noTools: string,
-    started: (route: { harness: string; model: string; note?: string }) => void,
+    started: (route: { harness: string; model: string; effort?: string; note?: string }) => void,
   ): Promise<Session> {
     const picked = this.pickRoute(role);
     if ('error' in picked) throw new Error(picked.error);
-    const { harness, model } = picked.route;
+    const { harness, model, effort } = picked.route;
     const token = randomBytes(16).toString('hex');
     this.tokens.set(token, { goal: place.id, agent: name });
-    started({ harness, model, ...(picked.note ? { note: picked.note } : {}) });
+    started({ harness, model, ...(effort ? { effort } : {}), ...(picked.note ? { note: picked.note } : {}) });
     const agentDir = join(this.home, place.id === ASSISTANT_STREAM ? 'assistant' : join('goals', place.id, 'agents', name));
     mkdirSync(agentDir, { recursive: true });
     mkdirSync(place.sharedDir, { recursive: true });
     return this.adapters[harness].start(
       {
-        goal: place.id, agent: name, role: { ...role, permissionMode: 'default', approvals: 'ask' }, model,
+        goal: place.id, agent: name, role: { ...role, permissionMode: 'default', approvals: 'ask' }, model, ...(effort ? { effort } : {}),
         systemPrompt: role.instructions, brief, cwd: place.dir, sharedDir: place.sharedDir, gitDirs: [],
         mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${token}` : '', hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${token}` : '',
         agentDir, mcpServers: [], sharedCheckout: true, deniedCommands: deniedCommandPrefixes(true),
@@ -1103,7 +1114,7 @@ export class Daemon {
   adapterFor(goal: string, agent: string): HarnessAdapter | undefined {
     const side = agent === GATEKEEPER ? this.config.settings.gatekeeper : agent === ASSISTANT ? this.config.settings.assistant : undefined;
     if (!side) return this.agent(goal, agent)?.adapter;
-    const role = this.config.roles.get(side);
+    const role = agent === ASSISTANT ? this.assistantRole() : this.config.roles.get(side);
     const r = role && this.pickRoute(role);
     return !r || 'error' in r ? undefined : this.adapters[r.route.harness];
   }
@@ -1111,7 +1122,7 @@ export class Daemon {
   /** What a tool call by a session that isn't a teammate (the gatekeeper) may do. */
   outsiderDecision(agent: string, t: ToolRequest): ApprovalDecision {
     if (agent === GATEKEEPER) return Gatekeeper.decide(t);
-    if (agent === ASSISTANT) return assistantDecision(t);
+    if (agent === ASSISTANT) return assistantDecision(t, this.assistant.choice.write);
     return { allow: false, message: 'MetaHarness does not know this agent.' };
   }
 
@@ -1162,6 +1173,29 @@ export class Daemon {
   }
 
   /* ---------------- tools (called through the hub) ---------------- */
+
+  /**
+   * Teammates an agent spawned whose results aren't in yet: at work, or resting while their own
+   * teammates work. Quick helpers answer inline, and roles woken by events (the cartographer) never finish.
+   */
+  workingChildren(rec: AgentRec): AgentRec[] {
+    const all = [...this.goals.get(rec.goal)!.agents.values()];
+    const working = (a: AgentRec): boolean =>
+      !a.quick && !a.role.wake?.length && a.doneNote === undefined && !FINISHED.includes(a.state) &&
+      (a.state !== 'idle' || a.inbox.length > 0 || all.some(c => c.parent === a.name && working(c)));
+    return all.filter(a => a.parent === rec.name && working(a));
+  }
+
+  /** The answer to a done called while teammates it spawned still work: it hears who, and decides what's next. */
+  doneHeld(rec: AgentRec, working: AgentRec[]): string {
+    this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.done_held', data: { working: working.map(a => a.name) } });
+    return [
+      "Not done yet: teammates you spawned are still working, and their results aren't in:",
+      ...working.map(a => `- ${a.name} (${a.role.name}): ${a.state}${a.status ? `, ${a.status.slice(0, 200)}` : ''}`),
+      '',
+      'Decide what comes next: wait for their results (wait), tell them what to do (send), for example to wrap up and call done, or carry on with your own part. Call done once they have reported back.',
+    ].join('\n');
+  }
 
   /** Records an agent's done. Returns a warning for the agent, or ''. */
   done(rec: AgentRec, note: string): string {
@@ -3372,7 +3406,7 @@ export class Daemon {
         const name = s('role') === 'assistant' ? this.config.settings.assistant : this.config.settings.gatekeeper;
         const r = this.config.roles.get(name)!;
         const file = saveRole(scopesOf(this.configDirs), {
-          scope: b.scope, name: r.name, harness: r.harness, model: r.model, fallback: r.fallback, goodAt: r.goodAt, instructions: r.instructions, helper: true,
+          scope: b.scope, name: r.name, harness: r.harness, model: r.model, ...(r.effort ? { effort: r.effort } : {}), fallback: r.fallback, goodAt: r.goodAt, instructions: r.instructions, helper: true,
         });
         this.reloadConfig();
         return { result: `Saved ${file}.`, file, config: this.configView() };
@@ -3395,12 +3429,54 @@ export class Daemon {
       }
       case 'assistant.reset':
         await this.assistant.reset();
-        return { conv: this.assistant.conv };
+        return { conv: this.assistant.conv, choice: this.assistant.choice };
       case 'assistant.state': {
-        const role = this.config.roles.get(this.config.settings.assistant);
+        const role = this.config.roles.get(this.config.settings.assistant) && this.assistantRole();
         const r = role && this.pickRoute(role);
         const from = this.assistantFrom?.conv === this.assistant.conv ? this.assistantFrom.seq : (this.store.since(ASSISTANT_STREAM).at(-1)?.seq ?? 0);
-        return { conv: this.assistant.conv, since: from, busy: this.assistant.busy(), role: role?.name ?? null, route: r && !('error' in r) ? r.route : null, error: r && 'error' in r ? r.error : null };
+        return {
+          conv: this.assistant.conv, since: from, busy: this.assistant.busy(), role: role?.name ?? null, route: r && !('error' in r) ? r.route : null, error: r && 'error' in r ? r.error : null,
+          choice: this.assistant.choice, dir: this.repo,
+        };
+      }
+      case 'assistant.set': {
+        // harness and model together pick its model ("" for the role's); effort alone; write: true or false.
+        const harness = s('harness');
+        if (harness && !this.adapters[harness] && !this.harnessOverride) throw new Error(`MetaHarness can't run ${harness} here.`);
+        this.assistant.set({ ...('model' in b ? { harness, model: s('model') } : {}), ...('effort' in b ? { effort: s('effort') } : {}), ...(typeof b.write === 'boolean' ? { write: b.write } : {}) });
+        return { choice: this.assistant.choice };
+      }
+      case 'assistant.make_default': {
+        // The model and effort picked in the panel become its role's own, so they outlast a restart.
+        const { harness, model, effort } = this.assistant.choice;
+        if (!model && !effort) throw new Error("The assistant already runs on its role's model and effort.");
+        const name = this.config.settings.assistant;
+        const cur = this.configView().roles.filter(r => r.name === name).at(-1);
+        // The built-in role is written out first, to your personal folder (else the repository's).
+        if (!cur || cur.scope === 'built-in') await this.command({ cmd: 'role.builtin', role: 'assistant', scope: scopesOf(this.configDirs)[0].scope });
+        const role = this.configView().roles.filter(x => x.name === name).at(-1)!;
+        // Backups named by model alone meant the old harness; the new model is no backup of itself.
+        const fallback = role.fallback.map(f => (splitEffort(f).model.includes('/') ? f : `${role.harness}/${f}`)).filter(f => splitEffort(f).model !== `${harness}/${model}`);
+        const r = await this.command({ cmd: 'role.update', name, changes: { ...(model ? { harness, model, fallback } : {}), ...(effort ? { effort } : {}) } });
+        // Its route is the same as before, so the session carries on.
+        this.assistant.adopt();
+        this.assistantLog('assistant.default_saved', { harness: harness ?? null, model: model ?? null, effort: effort ?? null, file: r.file ?? null });
+        return { result: r.result, file: r.file, config: this.configView(), choice: this.assistant.choice };
+      }
+      case 'assistant.options': {
+        // What the panel offers: the role's own route, and every harness that runs here with its models and efforts.
+        const role = this.config.roles.get(this.config.settings.assistant)!;
+        const views = this.configView().harnesses.filter(h => h.runnable);
+        const harnesses = await Promise.all(
+          views.map(async h => {
+            const m = await this.harnessModels(h.id);
+            // Listed by the harness, known to its profile, or used by a role; a name with its effort folded in shows as its model.
+            const used = [...this.config.roles.values()].filter(r => r.harness === h.id && r.model).map(r => r.model);
+            const models = [...new Set([...m.models, ...h.models, ...used])].filter(x => !m.variants[x]);
+            return { id: h.id, title: h.title, models, efforts: m.efforts, anyEffort: m.anyEffort ?? null };
+          }),
+        );
+        return { role: { harness: role.harness, model: role.model, effort: role.effort ?? null }, harnesses };
       }
       case 'assistant.apply':
       case 'assistant.dismiss': {
@@ -3429,7 +3505,7 @@ export class Daemon {
         return { ...(await this.harnessModels(harness, b.refresh === true)) };
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, goal.delete, goal.sizes, goal.open_folder, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, rule.save, rule.delete, guide.save, mcp.save.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, goal.delete, goal.sizes, goal.open_folder, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.set, assistant.make_default, assistant.options, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, rule.save, rule.delete, guide.save, mcp.save.`);
     }
   }
 

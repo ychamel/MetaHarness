@@ -77,6 +77,7 @@ function streamOf(events: MhEvent[], name: string): Item[] {
       case 'agent.crashed':
       case 'agent.ended':
       case 'agent.idle':
+      case 'agent.done_held':
       case 'agent.renamed':
       case 'git.commit':
       case 'git.merge':
@@ -106,6 +107,7 @@ function noteText(e: MhEvent): string {
     case 'agent.crashed': return `crashed: ${d.reason}`;
     case 'agent.ended': return `ended: ${d.reason}`;
     case 'agent.idle': return 'stopped without calling done';
+    case 'agent.done_held': return `called done while ${(d.working as string[]).join(', ')} still work: told to deal with them first`;
     case 'agent.renamed': return `${d.by === 'human' ? 'you' : d.by} respawned ${d.from}: this one, the crashed one, is kept as ${d.to}`;
     case 'git.commit': return `committed ${String(d.sha).slice(0, 7)} on ${d.branch}: ${d.summary}`;
     case 'git.merge': return `merged ${d.from} into ${d.into}`;
@@ -178,7 +180,7 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
   const paused = agent.state === 'paused' || agent.pausing;
   const busy = BUSY.includes(agent.state);
   const canMessage = goalLive && !gone;
-  const lastProblem = useMemo(() => [...events].reverse().find(e => e.agent === agent.name && ['agent.crashed', 'agent.ended', 'agent.idle'].includes(e.type)), [events, agent.name]);
+  const lastProblem = useMemo(() => [...events].reverse().find(e => e.agent === agent.name && ['agent.crashed', 'agent.ended'].includes(e.type)), [events, agent.name]);
 
   const send = async () => {
     if (!text.trim()) return;
@@ -393,11 +395,11 @@ function Now({ agent, problem }: { agent: Agent; problem?: MhEvent }) {
         </More>
       </div>
     );
-  if (agent.state === 'crashed' || agent.state === 'ended' || agent.state === 'idle') {
-    const why = problem?.type === 'agent.idle' ? 'It stopped without calling done. Message it to carry on.' : problem ? String(problem.data.reason ?? '') : '';
+  if (agent.state === 'crashed' || agent.state === 'ended') {
+    const why = problem ? String(problem.data.reason ?? '') : '';
     return (
       <div className={`now ${agent.state === 'crashed' ? 'bad' : 'quiet'}`}>
-        <div className="kicker">{agent.state === 'crashed' ? 'Crashed' : agent.state === 'idle' ? 'Stopped' : 'Ended'}</div>
+        <div className="kicker">{agent.state === 'crashed' ? 'Crashed' : 'Ended'}</div>
         {why && <div>{why}</div>}
         {agent.doneNote && (
           <More lines={3}>
@@ -409,6 +411,13 @@ function Now({ agent, problem }: { agent: Agent; problem?: MhEvent }) {
   }
   if (agent.state === 'limited') return <div className="now warn">Rate limited{agent.limitedUntil ? ` until ${clock(agent.limitedUntil)}` : ''}. It continues by itself, or moves to a backup.</div>;
   if (agent.state === 'paused' || agent.pausing) return <div className="now paused">{agent.pausing ? 'Pausing after its current step…' : 'Paused. Messages wait until you resume it.'}</div>;
+  if (agent.state === 'idle')
+    return (
+      <div className="now quiet">
+        <div className="kicker">Waiting for messages</div>
+        <div>Messages from you or a teammate will wake it automatically.</div>
+      </div>
+    );
   return (
     <div className="now">
       <div className="kicker">{agent.state === 'waiting' ? 'Waiting' : agent.state === 'starting' ? 'Starting' : 'Now'}</div>

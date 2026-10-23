@@ -163,7 +163,7 @@ test('spawns go to a backup when the primary is limited or not runnable here', a
       heard.push(await ctx.tool('spawn', { role: 'implementer', brief: 'x' }));
       heard.push(await ctx.tool('spawn', { role: 'reporter', brief: 'y' }));
       heard.push(await ctx.tool('spawn', { role: 'orphan', brief: 'z' }));
-      await ctx.tool('done', {});
+      while (/Not done yet/.test(await ctx.tool('done', {}))) await ctx.tool('wait', { timeout: 5 });
     },
   });
   const d = makeTeam({

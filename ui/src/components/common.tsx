@@ -39,7 +39,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; resetKey?: s
 }
 
 export function Dot({ state }: { state: string }) {
-  return <span className={`dot ${state}`} title={state} />;
+  return <span className={`dot ${state}`} title={state === 'idle' ? 'Waiting for messages. Wakes automatically when a message arrives.' : state} />;
 }
 
 /** Context fill, when the harness reports it. */

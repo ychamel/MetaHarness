@@ -41,7 +41,7 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
     params: { timeout: 'Seconds to wait (default 60)' },
   },
   status: { description: 'Post a one-line progress update for the human and your teammates.', params: { text: 'What you are doing now' } },
-  done: { description: "Say you're finished. The note goes to whoever spawned you.", params: { note: 'What you did and where it is' } },
+  done: { description: "Say you're finished. The note goes to whoever spawned you. Held while teammates you spawned still work: their results first.", params: { note: 'What you did and where it is' } },
   workflow: {
     description: 'Read a workflow: a guide for running a kind of task, e.g. the next one a workflow says to continue with. Without a name, lists them.',
     params: { name: 'Workflow name (optional)' },
@@ -216,6 +216,9 @@ export class Hub {
       case 'done': {
         const note = str(pick(a, 'note', 'summary', 'text', 'result', 'message', 'answer')) ?? (rec.lastText || '(no note)');
         const again = rec.doneNote !== undefined;
+        // Its result isn't whole while teammates it spawned still work: it decides what to do about them.
+        const working = d.workingChildren(rec);
+        if (working.length) return d.doneHeld(rec, working);
         // Done rules hold the first done back once, with what to check first.
         const held = again ? undefined : d.doneRules(rec);
         if (held) return held;

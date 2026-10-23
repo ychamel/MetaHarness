@@ -182,11 +182,16 @@ You review the result in your checkout like any other change, and push it yourse
 
 - **Home:** what needs you across every goal, a box to start a goal, the running goals, and
   past goals with what came of each (searchable).
-- **Ask** (in the left rail, from any page): a read-only assistant for questions about your
-  goals and setup. It looks things up in the logs, shared files, costs and config. When you ask
-  for a setup change, it suggests one with an **Apply** button; nothing changes until you
-  click. **New conversation** starts it fresh. Its model is a role (Settings → Assistant):
-  Codex's luna by default, with Claude and Antigravity backups.
+- **Ask** (in the left rail, from any page): an assistant for questions about your goals and
+  setup. It looks things up in the logs, shared files, costs and config. When you ask for a
+  setup change, it suggests one with an **Apply** button; nothing changes until you click.
+  **New conversation** starts it fresh. Its model is a role (Settings → Assistant): Codex's
+  luna by default, with Claude and Antigravity backups. Under its title you can pick another
+  model (from any harness that runs here) and effort for this conversation; the new model reads
+  what was said so far; **Make default** saves the pick to its role, so it starts on it after
+  a restart too. It reads only, unless you switch it to **Write**: then it may edit files
+  and run any command in the repository, for a task you give it. A new conversation starts in
+  read only again.
 - **Goal:** the request, status, time, cost and branch at the top, with the lead's final note
   as **Outcome** once it's done. Below that:
   - **Needs you** (center, highlighted): what an agent is waiting on.

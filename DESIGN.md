@@ -190,7 +190,7 @@ Eight tools. All of them accept loose input and answer in plain language.
 | `send(to, text, urgent?, decision?)` | `to` = an agent name, a role, `lead`, `all`, or `human`. To the human with `decision: true`, it asks for an approval (§17) |
 | `wait(timeout?)` | Pause until a message arrives or one of your spawned agents finishes, then return what happened |
 | `status(text)` | A one-line progress update, shown in the UI and in `team()` |
-| `done(note?)` | "I'm finished." The note goes to whoever spawned you. Your session stays resumable for follow-ups |
+| `done(note?)` | "I'm finished." The note goes to whoever spawned you. Your session stays resumable for follow-ups. Held while teammates you spawned still work (not quick helpers or woken roles): the reply names them and the agent decides — wait, message them, or carry on |
 | `workflow(name?)` | Read a workflow, e.g. the one the current one says to continue with; without a name, list them (§17) |
 | `skill(name?, part?)` | Read a skill: a summary (what it's for, its sections, its files), or with `part` one section or file; without a name, the skills for your role (§18) |
 
@@ -651,14 +651,22 @@ reply · open an agent's session in its native harness.
 An **Ask** panel, open from anywhere in the app, answers questions about goals and setup ("where
 did the money go?", "what did the reviewer find?", "how do I add a harness?"). It's a session
 of the **assistant role**: built in on Codex `gpt-6-luna` with Claude haiku and Antigravity
-backups, or a `roles/assistant.md` the Settings page writes out to change it. It reads only:
-its MetaHarness tools list goals, show a goal's team and outcome, search its events, read an
+backups, or a `roles/assistant.md` the Settings page writes out to change it. It reads only
+(unless the human turns on write mode, below): its MetaHarness tools list goals, show a goal's team and outcome, search its events, read an
 agent's brief and the shared files, give costs and the configuration, and search the user
 guide; its harness may read files and run read-only commands, nothing else. A setup change it
 suggests (`propose`: a role's fields, settings, a workflow, the guidelines, an MCP server) shows
 in the panel with Apply and Dismiss; nothing changes until the human applies it. It can't
-reach the team. Each conversation is a fresh session: "New conversation", or a daemon
-restart, starts over with nothing carried across. Each question carries what the human is
+reach the team. The panel picks its model and effort for the conversation (`assistant.set`;
+`assistant.options` lists each runnable harness's models): a new one takes over mid-conversation
+with a transcript of it; a pick that lands on the same route keeps the session. **Make default**
+(`assistant.make_default`) saves the pick to the role (writing the built-in one out to the
+personal folder first), so the role is what outlasts a restart, holds the backups and the
+instructions. The role editor shows the assistant and the gatekeeper only what applies to a
+session that runs alone: model, effort, backups, instructions. **Write mode** (off by default, and off again in each new
+conversation) lets its harness edit and run any command but delegate or ask, decided on each
+tool call, and the model is told when it turns on or off. Each conversation is a fresh session:
+"New conversation", or a daemon restart, starts over with nothing carried across. Each question carries what the human is
 looking at (the goal, agent and tab). Its conversation is its own event stream (`assistant`).
 Checked live on luna against the Evolution run's log: about 30 seconds for a question that
 took seven lookups.

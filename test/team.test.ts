@@ -54,7 +54,9 @@ test('tools forgive small mistakes and explain the rest', async () => {
       replies.typoTool = await ctx.tool('sned', { to: 'implementer-1', text: 'typo in the tool name' });
       replies.wait0 = await ctx.tool('wait', { timeout: 0 });
       replies.team = await ctx.tool('team', 'please');
-      await ctx.tool('done', {});
+      replies.held = await ctx.tool('done', {});
+      replies.waited = await ctx.tool('wait', { timeout: 5 });
+      replies.done = await ctx.tool('done', {});
     },
     implementer: async ctx => {
       await ctx.nextMessage(2000);
@@ -73,6 +75,13 @@ test('tools forgive small mistakes and explain the rest', async () => {
   assert.match(replies.typoTool, /Used send for "sned"/);
   assert.equal(replies.wait0, 'Nothing new.');
   assert.match(replies.team, /Roles you can spawn/);
+  // Its result isn't whole while a teammate it spawned still works: done is held, and it decides.
+  assert.match(replies.held, /Not done yet.*\n- implementer-1 \(implementer\): /);
+  assert.match(replies.held, /wait for their results/);
+  assert.match(replies.waited, /implementer-1.*ok/s);
+  await settle();
+  assert.match(replies.done, /^Done\. The human has your note/);
+  assert.equal(d.store.ofType('agent.done_held').length, 1);
   await d.close();
 });
 

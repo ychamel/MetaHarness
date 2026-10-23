@@ -5,12 +5,28 @@ import type { MhEvent } from '../types.ts';
 import { Markdown } from './common.tsx';
 import { Splitter } from './Splitter.tsx';
 
+interface Choice {
+  harness?: string;
+  model?: string;
+  effort?: string;
+  write: boolean;
+}
+
 interface State {
   conv: string;
   since: number;
   busy: boolean;
-  route: { harness: string; model: string } | null;
+  route: { harness: string; model: string; effort?: string } | null;
   error: string | null;
+  choice: Choice;
+  /** The folder it works in, which write mode lets it change. */
+  dir: string;
+}
+
+/** What the panel offers: the role's own route, and each harness that runs here with its models and efforts. */
+interface Options {
+  role: { harness: string; model: string; effort: string | null };
+  harnesses: { id: string; title: string; models: string[]; efforts: Record<string, string[]>; anyEffort: string[] | null }[];
 }
 
 const SUGGESTIONS = [
@@ -20,15 +36,19 @@ const SUGGESTIONS = [
   'How do I add another harness?',
 ];
 
+const label = (r: { harness: string; model: string; effort?: string | null }) => `${r.harness} · ${r.model}${r.effort ? ` · ${r.effort}` : ''}`;
+
 /**
- * The assistant: ask about your goals and setup. It reads only; a change it suggests shows here
- * with an Apply button. "New conversation" starts it fresh.
+ * The assistant: ask about your goals and setup. It reads only unless write mode is on; a change
+ * it suggests shows here with an Apply button. Its model and effort can change mid-conversation:
+ * the new one hears what was said. "New conversation" starts it fresh, back in read only.
  */
 export function AssistantPanel({ open, context, onClose, onApplied }: { open: boolean; context?: string; onClose: () => void; onApplied: () => void }) {
   const [state, setState] = useState<State>();
   const [events, setEvents] = useState<MhEvent[]>([]);
   const [text, setText] = useState('');
   const [failed, setFailed] = useState<string>();
+  const [options, setOptions] = useState<Options>();
   const scroller = useRef<HTMLDivElement>(null);
 
   const load = async () => {
@@ -41,6 +61,7 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
   };
   useEffect(() => {
     if (open && !state) void load();
+    if (open && !options) void api.command<Options>({ cmd: 'assistant.options' }).then(setOptions, () => {});
   }, [open]);
 
   // Its conversation, from where it starts.
@@ -51,12 +72,15 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
   }, [state?.conv, state?.since]);
 
   const conv = useMemo(() => events.filter(e => e.data.conv === state?.conv), [events, state?.conv]);
+  /** Where the human first asked: switches before it show only in the controls. */
+  const firstAsk = conv.find(e => e.type === 'assistant.asked')?.seq;
   const busy = useMemo(() => {
     const last = [...conv].reverse().find(e => e.type === 'assistant.state' || e.type === 'assistant.asked');
     return last ? last.type === 'assistant.asked' || last.data.busy === true : false;
   }, [conv]);
   const cost = [...conv].reverse().find(e => e.type === 'assistant.usage')?.data.costUsd as number | undefined;
-  const route = [...conv].reverse().find(e => e.type === 'assistant.started')?.data as { harness: string; model: string; note?: string } | undefined;
+  const route = [...conv].reverse().find(e => e.type === 'assistant.started' || (e.type === 'assistant.settings' && e.data.rerouted));
+  const started = route?.type === 'assistant.started' ? (route.data as { harness: string; model: string; effort?: string }) : undefined;
   const done = useMemo(() => new Map(conv.filter(e => e.type === 'assistant.proposal_done').map(e => [String(e.data.id), e.data])), [conv]);
 
   useEffect(() => {
@@ -73,8 +97,31 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
     }
   };
   const reset = async () => {
-    const r = await api.command<{ conv: string }>({ cmd: 'assistant.reset' });
-    setState(s => (s ? { ...s, conv: r.conv, since: Math.max(s.since, events.at(-1)?.seq ?? s.since) } : s));
+    const r = await api.command<{ conv: string; choice: Choice }>({ cmd: 'assistant.reset' });
+    setState(s => (s ? { ...s, conv: r.conv, choice: r.choice, since: Math.max(s.since, events.at(-1)?.seq ?? s.since) } : s));
+  };
+  /** Its model, effort or write mode; the route it'll run on comes back with the new state. */
+  const choose = async (change: Record<string, unknown>) => {
+    try {
+      await api.command({ cmd: 'assistant.set', ...change });
+      const next = await api.command<State>({ cmd: 'assistant.state' });
+      setState(s => (s ? { ...s, route: next.route, error: next.error, choice: next.choice } : next));
+      setFailed(undefined);
+    } catch (e) {
+      setFailed((e as Error).message);
+    }
+  };
+  /** The pick becomes its role's model and effort, kept across restarts. */
+  const makeDefault = async () => {
+    try {
+      await api.command({ cmd: 'assistant.make_default' });
+      const [next, opts] = await Promise.all([api.command<State>({ cmd: 'assistant.state' }), api.command<Options>({ cmd: 'assistant.options' })]);
+      setState(s => (s ? { ...s, route: next.route, error: next.error, choice: next.choice } : next));
+      setOptions(opts);
+      onApplied();
+    } catch (e) {
+      setFailed((e as Error).message);
+    }
   };
   const decide = async (id: string, cmd: 'assistant.apply' | 'assistant.dismiss') => {
     try {
@@ -86,7 +133,9 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
   };
 
   if (!open) return null;
-  const where = route ?? state?.route;
+  // The session's own route once it started on the current pick; before that, the one it would take.
+  const where = started ?? state?.route;
+  const choice = state?.choice ?? { write: false };
   return (
     <aside className="assistant" aria-label="Assistant">
       <Splitter pane="assistant" grow="left" min={320} max={1100} inside label="Assistant panel" />
@@ -94,12 +143,12 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
         <div>
           <b>Assistant</b>
           <div className="muted small">
-            {where ? `${where.harness} · ${where.model}` : state?.error ? 'can’t run here' : 'reads only'}
+            {where ? label(where) : state?.error ? 'can’t run here' : 'reads only'}
             {cost !== undefined ? ` · ${money(cost)}` : ''}
           </div>
         </div>
         <span className="spacer" />
-        <button className="btn ghost small" onClick={() => void reset()} disabled={!conv.length} title="Start over: it forgets this conversation">
+        <button className="btn ghost small" onClick={() => void reset()} disabled={firstAsk === undefined} title="Start over: it forgets this conversation">
           New conversation
         </button>
         <button className="btn ghost small" onClick={onClose} aria-label="Close the assistant">
@@ -107,8 +156,10 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
         </button>
       </div>
 
+      {state && <Controls choice={choice} options={options} busy={busy} dir={state.dir} onChoose={c => void choose(c)} onMakeDefault={() => void makeDefault()} />}
+
       <div className="assistant-body" ref={scroller}>
-        {!conv.length && (
+        {firstAsk === undefined && (
           <div className="assistant-empty">
             <p className="muted">Ask about your goals and setup: what happened, why, what it cost, how to set something up. It reads the logs, files and config; it can suggest setup changes, and you apply them.</p>
             {state?.error && <p className="warn-text">{state.error} Its role is in Settings.</p>}
@@ -167,6 +218,18 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
                 </div>
               );
             }
+            case 'assistant.settings':
+              return firstAsk === undefined || e.seq < firstAsk ? null : (
+                <div key={e.seq} className={`muted small switch-line${d.write && !d.rerouted ? ' warn-text' : ''}`}>
+                  {d.rerouted ? `Now on ${d.model ? label({ harness: String(d.harness), model: String(d.model), effort: d.effort as string | null }) : `the role's model${d.effort ? ` · ${d.effort}` : ''}`}. It keeps this conversation.` : d.write ? 'Write mode on: it can edit files and run commands.' : 'Back to read only.'}
+                </div>
+              );
+            case 'assistant.default_saved':
+              return firstAsk === undefined || e.seq < firstAsk ? null : (
+                <div key={e.seq} className="muted small switch-line">
+                  Saved as its default, in {String(d.file)}.
+                </div>
+              );
             case 'assistant.started':
               return d.note ? (
                 <div key={e.seq} className="muted small">
@@ -199,5 +262,69 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
         </button>
       </div>
     </aside>
+  );
+}
+
+/** Its model and effort for this conversation, and whether it may write. */
+function Controls({ choice, options, busy, dir, onChoose, onMakeDefault }: { choice: Choice; options?: Options; busy: boolean; dir: string; onChoose: (c: Record<string, unknown>) => void; onMakeDefault: () => void }) {
+  const harness = choice.model ? choice.harness! : options?.role.harness;
+  const model = choice.model ?? options?.role.model;
+  const h = options?.harnesses.find(x => x.id === harness);
+  const efforts = (model && h?.efforts[model]) || h?.anyEffort || ['low', 'medium', 'high'];
+  const picked = choice.model ? `${choice.harness}/${choice.model}` : '';
+  // A pick no harness lists any more still shows as itself.
+  const listed = !picked || options?.harnesses.some(x => x.id === choice.harness && x.models.includes(choice.model!));
+  const switching = busy ? 'It switches once this answer is in.' : undefined;
+  return (
+    <div className="assistant-controls">
+      <div className="row">
+        <select
+          aria-label="Model"
+          title={switching ?? 'Its model for this conversation. A new one hears what was said so far.'}
+          value={picked}
+          disabled={busy}
+          onChange={e => {
+            const v = e.target.value;
+            const slash = v.indexOf('/');
+            onChoose(v ? { harness: v.slice(0, slash), model: v.slice(slash + 1) } : { model: '' });
+          }}
+        >
+          <option value="">{options ? `Role's model (${label(options.role)})` : "Role's model"}</option>
+          {!listed && <option value={picked}>{picked}</option>}
+          {options?.harnesses.map(x => (
+            <optgroup key={x.id} label={x.title}>
+              {x.models.map(m => (
+                <option key={m} value={`${x.id}/${m}`}>
+                  {m}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <select aria-label="Effort" title={switching ?? 'How hard it thinks'} value={choice.effort ?? ''} disabled={busy} onChange={e => onChoose({ effort: e.target.value })}>
+          <option value="">{choice.model || !options?.role.effort ? 'Default effort' : `Role's effort (${options.role.effort})`}</option>
+          {choice.effort && !efforts.includes(choice.effort) && <option value={choice.effort}>{choice.effort}</option>}
+          {efforts.map(x => (
+            <option key={x} value={x}>
+              {x}
+            </option>
+          ))}
+        </select>
+        <div className="segmented small" role="group" aria-label="Permissions">
+          <button className={choice.write ? '' : 'on'} aria-pressed={!choice.write} onClick={() => choice.write && onChoose({ write: false })} title="It reads files and runs commands that only read">
+            Read only
+          </button>
+          <button className={choice.write ? 'on write' : ''} aria-pressed={choice.write} onClick={() => !choice.write && onChoose({ write: true })} title="It may edit files and run any command, for a task you give it">
+            Write
+          </button>
+        </div>
+        {(choice.model || choice.effort) && (
+          <button className="link" onClick={onMakeDefault} title="Save this model and effort to the assistant role, so it starts on them after a restart too">
+            Make default
+          </button>
+        )}
+      </div>
+      {choice.write && <div className="warn-text small">Write mode: it can edit files and run commands in {dir}. New conversations start in read only.</div>}
+    </div>
   );
 }

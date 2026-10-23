@@ -73,6 +73,8 @@ function AgentCard({ data }: NodeProps<Node<AgentData>>) {
           </>
         ) : data.waiting ? (
           <>waiting on {data.waiting}</>
+        ) : a.state === 'idle' ? (
+          'Waiting for messages'
         ) : a.status ? (
           oneLine(a.status, 80)
         ) : a.state === 'done' ? (

@@ -85,12 +85,13 @@ test('worktrees get copies of the dependencies; when the lead finishes, MetaHarn
 test('cleanup waits for teammates still working, and mh clean refuses a goal in progress', async () => {
   let release!: () => void;
   const hold = new Promise<void>(r => (release = r));
+  // A role woken by events never finishes, so the lead can be done while it works.
   const d = makeDaemon({
     architect: async ctx => {
-      await ctx.tool('spawn', { role: 'implementer', brief: 'b', worktree: true });
+      await ctx.tool('spawn', { role: 'cartographer', name: 'implementer-1', brief: 'b', worktree: true });
       await ctx.tool('done', { note: 'Handed off.' });
     },
-    implementer: async ctx => {
+    cartographer: async ctx => {
       await hold;
       await ctx.tool('done', { note: 'ok' });
     },
