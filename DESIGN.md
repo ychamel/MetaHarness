@@ -557,9 +557,12 @@ Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended
 | `goal.set_lead` | (not built: a human as lead changes how the team works; to be designed) |
 
 Read-only views, fetched when shown and never logged: `GET /git?goal` (branches, ahead and
-behind, uncommitted files, open conflicts), `GET /diff?goal&sha | from&to | whole=1 | agent`
-(one commit against its first parent, a range, everything since the goal started, or an
-agent's uncommitted work: its worktree, or the shared checkout, flagged as anyone's), `GET
+behind, uncommitted files, open conflicts, the latest snapshot's areas), `GET /diff?goal&sha |
+from&to[&path…] | whole=1 | agent` (one commit against its first parent, a range between
+commits or trees narrowed to paths, everything since the goal started, or an agent's
+uncommitted work: its worktree, or the shared checkout, flagged as anyone's), `GET
+/design/scope?goal&kind=goal[&branches=1] | commit&sha | branch&agent | range&from&to[&title]`
+(the design after the scope, what it changed, its report, and the timeline), `GET
 /design?goal&rev` (a snapshot and the timeline; `rev=now` reads the goal branch's tip) and `GET
 /design/compare?goal&from&to`.
 
@@ -616,8 +619,8 @@ VS Code panel works the same way.
 | **Agent detail** | Live stream (text, collapsible tool calls, edits as diffs), brief + role prompt, messages in/out, files touched, worktree diff, helpers, cost; chat box; *Open in native harness* | Opening any agent and stepping in |
 | **Inbox** | Approvals, questions, stuck agents, crashes; browser notifications | Stepping in |
 | **Shared folder** | Files, every version, who wrote it, diffs between versions | Tracing handoffs |
-| **Design** | The code as areas (the map's path sections, or folders), arrows for which area imports which, live activity coloured by agent, a timeline of snapshots with what changed between them, an area's files as a treemap with their classes and functions, pinned notes, and findings for next time | Following the architecture as it changes, without reading every diff |
-| **Git** | Branch per agent, every commit and merge with its author and size, diffs (a commit, a branch, the whole goal, uncommitted work), conflicts | Code integration |
+| **Design** | One screen: a scope (the whole goal, with or without unmerged branches; a landing; an agent's branch; a commit; a range) picked on a lane graph of the branches, and the code's areas in layers: what the scope changed, dependencies (new, lost, circular), declared flows, hotspots, live activity; an area's changed definitions with each one's diff, its files as a treemap, pinned notes; focus on one agent; findings for next time | Following the architecture as it changes, without reading every diff |
+| **Git** | Branch per agent, every commit and merge with its author, size and the areas it touched (opening Design there), diffs (a commit, a branch, the whole goal, uncommitted work), conflicts | Code integration; the Design view is meant to make it the raw view only |
 | **Costs** | By agent, role and model; spending rate | Spend |
 | **Replay** | Time scrubber over a finished goal; every view replays | Improving roles and workflows |
 | **Search** | Across streams, messages and shared files | Finding anything |
@@ -690,12 +693,44 @@ any language or degrades gracefully:
   areas are the arrows. Built in: Python, TypeScript/TSX, JavaScript, GDScript, Godot scenes;
   a folder's `languages/<name>/` adds or replaces one.
 
+**Flows** are the map's `## Flows` section: one line per flow, steps joined by arrows and named
+by an area's path or title, what moves after a dash (`- Checkout: src/api/ → src/orders/ →
+src/store/ — an order is placed and saved`). The cartographer keeps them; the view draws them
+and flags a step that names no area, or two steps with no import between them either way.
+Inferring flows from calls is left for later: calls in dynamic languages often can't be
+resolved.
+
 **Snapshots** (`src/design.ts`): one when the goal starts and one at each landing, stored as
 `goals/<goal>/design/<sha>.json` with an index; outlines are cached by blob, so a snapshot only
 parses the files that changed. Comparing two gives areas added, removed or described anew,
 arrows added or removed, files and definitions added, changed (their hash moved) or removed;
 the first lines of that are `design.changed`'s highlights. At most 5000 files are read, none
 over 256 KB. `"design": false` in the settings turns snapshots off.
+
+**Scopes**: the view shows the effect of a scope of work: the whole goal (its base against the
+goal branch now), one commit (against its first parent), an agent's branch (from where it
+meets the goal branch), or a range (a landing is the range between two snapshots). The whole
+goal can include the agents' unmerged branches: `git merge-tree --write-tree` merges each into
+the goal branch's tree in turn, without touching a branch, checkout or index, and conflicted
+files keep their markers and are named (the in-between commits get fixed dates, so the picture
+is the same each time and its snapshot is cached; the unreferenced objects are git's to clean
+up). Uncommitted work isn't parsed into scopes; the Activity layer shows it from tool calls.
+The screen is one page: a lane graph of the branches picks the scope, the map draws layers
+(change, dependencies, flows, hotspots, activity), and the inspector goes from an area to a
+definition's own lines of the diff (definitions keep their last line; the diff's hunks are cut
+to that range). Picking an agent fades what it didn't touch. Where the view is (scope, area,
+focus) outlasts switching tabs; the Git tab's commits name the areas they touched and open the
+view there.
+
+**Reports** (`designReport` in `src/design.ts`) are what a scope did, as JSON a later goal or a
+model can read: its commits with author and areas, each area's lines, files, commits, authors
+and definitions, files ranked by a hotspot score, circular dependencies (strongly connected
+areas, marked new when the scope made them), new and lost dependencies, each area's coupling,
+and the flows checked against the imports. The score ranks, it doesn't measure: lines changed
+commit by commit (so rewriting counts twice), raised for each extra commit and agent, for files
+that many import, and for large files. Each landing keeps two, `goals/<goal>/design/reports/
+<from>..<to>.json`: the landing, and the goal so far; any scope looked at is kept too. Nothing
+acts on them yet: analysing them and suggesting changes to the design is a goal of its own.
 
 **Insights** come from the log alone, so later retrospectives can total them across goals:
 files edited by several agents, merge conflicts, files changed in three commits or more, how

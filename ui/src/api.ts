@@ -1,4 +1,4 @@
-import type { AgentDetail, ConfigView, DesignChange, DesignView, DiffView, GitView, GoalSummary, MhEvent, SharedFileView, Snapshot } from './types.ts';
+import type { AgentDetail, ConfigView, DesignChange, DesignScopeView, DesignView, DiffView, GitView, GoalSummary, MhEvent, ScopeSel, SharedFileView, Snapshot } from './types.ts';
 
 /**
  * The daemon's API (design §13). `mh ui` opens the app with ?token=…; it's kept in this
@@ -57,10 +57,22 @@ export const api = {
   config: () => call<ConfigView>('/commands', { method: 'POST', body: JSON.stringify({ cmd: 'config.get' }) }),
   git: (goal: string) => call<GitView>(`/git?goal=${encodeURIComponent(goal)}`),
   /** One commit (sha), a range (from, to), the whole goal, or an agent's uncommitted work. */
-  diff: (goal: string, q: { sha?: string; from?: string; to?: string; agent?: string; whole?: boolean }) => {
+  diff: (goal: string, q: { sha?: string; from?: string; to?: string; agent?: string; whole?: boolean; paths?: string[] }) => {
     const p = new URLSearchParams({ goal });
-    for (const [k, v] of Object.entries(q)) if (v) p.set(k, v === true ? '1' : String(v));
+    for (const [k, v] of Object.entries(q)) {
+      if (Array.isArray(v)) for (const x of v) p.append('path', x);
+      else if (v) p.set(k, v === true ? '1' : String(v));
+    }
     return call<DiffView>(`/diff?${p}`);
+  },
+  /** The design after a scope of work, what it changed, its commits and its report. */
+  designScope: (goal: string, s: ScopeSel) => {
+    const p = new URLSearchParams({ goal, kind: s.kind });
+    if (s.kind === 'goal' && s.branches) p.set('branches', '1');
+    if (s.kind === 'commit') p.set('sha', s.sha);
+    if (s.kind === 'branch') p.set('agent', s.agent);
+    if (s.kind === 'range') for (const [k, v] of [['from', s.from], ['to', s.to], ['title', s.title]]) p.set(k, v);
+    return call<DesignScopeView>(`/design/scope?${p}`);
   },
   design: (goal: string, rev?: string) => call<DesignView>(`/design?goal=${encodeURIComponent(goal)}${rev ? `&rev=${encodeURIComponent(rev)}` : ''}`),
   designCompare: (goal: string, from: string, to: string) =>

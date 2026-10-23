@@ -36,10 +36,18 @@ export interface DesignFile {
   imports?: string[];
 }
 
+/** A path data or control takes through the code, as the map's Flows section declares it. */
+export interface Flow {
+  name: string;
+  /** Each step as written, with the area it names when it names one. */
+  steps: { label: string; area?: string }[];
+  text: string;
+}
+
 export interface DesignSnapshot {
   sha: string;
   at: string;
-  map: { file: string | null; overview: string; areas: Area[] };
+  map: { file: string | null; overview: string; areas: Area[]; flows?: Flow[] };
   files: DesignFile[];
   /** Imports between areas, counted by file. */
   edges: { from: string; to: string; n: number }[];
@@ -75,6 +83,91 @@ export function mapAreas(text: string, cwd: string): { overview: string; areas: 
     return { path: s.path, title: title || s.path.split('/').pop() || s.path, summary };
   });
   return { overview: doc.overview.replace(/^#[^\n]*\n/, '').trim().split(/\n\s*\n/)[0]?.replace(/\s+/g, ' ').slice(0, 600) ?? '', areas };
+}
+
+const FLOWS_HEADING = /^(#{1,6})\s+(data\s+)?flows?\b/i;
+
+/**
+ * The map's Flows section: one list item per flow, its steps joined by arrows, each step an area's
+ * path (or its title), an optional description after a dash:
+ *   - Checkout: `src/api/` → `src/orders/` → `src/store/` — a request becomes a saved order
+ */
+export function parseFlows(text: string, areas: Area[]): Flow[] {
+  const lines = text.split('\n');
+  const flows: Flow[] = [];
+  let level = 0;
+  let fence = false;
+  for (const line of lines) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    if (fence) continue;
+    const h = /^(#{1,6})\s/.exec(line);
+    if (h) {
+      if (FLOWS_HEADING.test(line)) level = h[1].length;
+      else if (level && h[1].length <= level) level = 0;
+      continue;
+    }
+    if (!level) continue;
+    const item = /^\s*(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if (!item || !/→|->|⟶|=>/.test(item[1])) continue;
+    let body = item[1];
+    let name = '';
+    const colon = /^([^:→]+?):\s+(.*)$/.exec(body);
+    if (colon && !/[`/]/.test(colon[1])) [name, body] = [colon[1], colon[2]];
+    const [chain, ...desc] = body.split(/\s+[—–]\s+|\s+--\s+|\s+-\s+(?=[^→>]*$)/);
+    const steps = chain.split(/\s*(?:→|->|⟶|=>)\s*/).map(st => {
+      const label = st.replace(/[*_]/g, '').trim();
+      return { label, ...stepArea(label, areas) };
+    }).filter(st => st.label);
+    if (steps.length < 2) continue;
+    flows.push({ name: name.replace(/[*_`]/g, '').trim() || steps.map(st => st.label).join(' → '), steps, text: desc.join(' — ').trim() });
+  }
+  return flows;
+}
+
+function stepArea(label: string, areas: Area[]): { area?: string } {
+  const code = /`([^`]+)`/.exec(label)?.[1] ?? label.split(/\s+/)[0];
+  const path = code.replace(/^\.?\//, '').replace(/\/+$/, '');
+  const byPath = path ? areaOf(areas.filter(a => a.path), path) : undefined;
+  if (byPath !== undefined && (path === byPath || path.startsWith(byPath + '/'))) return { area: byPath };
+  const plain = label.replace(/`/g, '').replace(/\(.*\)/, '').trim().toLowerCase();
+  const byTitle = areas.find(a => a.title.toLowerCase() === plain || a.path.split('/').pop()?.toLowerCase() === plain);
+  return byTitle ? { area: byTitle.path } : {};
+}
+
+/** Groups of areas that use each other in a circle (strongly connected, two or more areas). */
+export function cycles(edges: { from: string; to: string }[]): string[][] {
+  const next = new Map<string, string[]>();
+  for (const e of edges) if (e.from !== e.to) next.set(e.from, [...(next.get(e.from) ?? []), e.to]);
+  const index = new Map<string, number>();
+  const low = new Map<string, number>();
+  const stack: string[] = [];
+  const on = new Set<string>();
+  const out: string[][] = [];
+  let i = 0;
+  const visit = (v: string) => {
+    index.set(v, i);
+    low.set(v, i++);
+    stack.push(v);
+    on.add(v);
+    for (const w of next.get(v) ?? []) {
+      if (!index.has(w)) {
+        visit(w);
+        low.set(v, Math.min(low.get(v)!, low.get(w)!));
+      } else if (on.has(w)) low.set(v, Math.min(low.get(v)!, index.get(w)!));
+    }
+    if (low.get(v) === index.get(v)) {
+      const group: string[] = [];
+      let w: string;
+      do {
+        w = stack.pop()!;
+        on.delete(w);
+        group.push(w);
+      } while (w !== v);
+      if (group.length > 1) out.push(group.sort());
+    }
+  };
+  for (const v of next.keys()) if (!index.has(v)) visit(v);
+  return out;
 }
 
 /**
@@ -160,6 +253,24 @@ export class DesignTracker {
     return p;
   }
 
+  /** A snapshot already taken, if there is one on disk. */
+  cached(goal: string, sha: string): DesignSnapshot | undefined {
+    try {
+      return JSON.parse(readFileSync(join(this.dir(goal), `${sha}.json`), 'utf8')) as DesignSnapshot;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Keeps a scope's report as goals/<goal>/design/reports/<from>..<to>.json, for later goals and models to read. */
+  saveReport(report: DesignReport): string {
+    const dir = join(this.dir(report.goal), 'reports');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${report.scope.from}..${report.scope.to}.json`);
+    writeFileSync(file, JSON.stringify(report, null, 1));
+    return file;
+  }
+
   list(goal: string): SnapshotInfo[] {
     try {
       return JSON.parse(readFileSync(join(this.dir(goal), 'index.json'), 'utf8')) as SnapshotInfo[];
@@ -239,7 +350,7 @@ export class DesignTracker {
     return {
       sha,
       at: new Date().toISOString(),
-      map: { file: mapText ? MAP_FILE : null, overview: fromMap?.overview ?? '', areas },
+      map: { file: mapText ? MAP_FILE : null, overview: fromMap?.overview ?? '', areas, flows: mapText ? parseFlows(mapText, areas) : [] },
       files,
       edges: [...edges].map(([k, n]) => ({ from: k.split('\n')[0], to: k.split('\n')[1], n })),
       skipped: readable.length - toRead.length + files.filter(f => f.lang && f.size > MAX_BYTES).length,
@@ -256,6 +367,9 @@ export interface SymbolRef {
   name: string;
   parent?: string;
   area: string;
+  /** Where it is: in the newer snapshot, or the older one for a removed definition. */
+  line?: number;
+  end?: number;
 }
 
 export interface DesignChange {
@@ -303,7 +417,7 @@ export function compareDesigns(a: DesignSnapshot, b: DesignSnapshot): DesignChan
     symbols: { added: [], removed: [], changed: [] },
     overviewChanged: a.map.overview !== b.map.overview,
   };
-  const ref = (f: DesignFile, s: Symbol): SymbolRef => ({ file: f.path, kind: s.kind, name: s.name, ...(s.parent ? { parent: s.parent } : {}), area: f.area });
+  const ref = (f: DesignFile, s: Symbol): SymbolRef => ({ file: f.path, kind: s.kind, name: s.name, ...(s.parent ? { parent: s.parent } : {}), area: f.area, line: s.line, ...(s.end ? { end: s.end } : {}) });
   for (const path of new Set([...change.files.added, ...change.files.removed, ...change.files.changed])) {
     const before = new Map((aFiles.get(path)?.symbols ?? []).map(s => [symKey(s), s]));
     const after = new Map((bFiles.get(path)?.symbols ?? []).map(s => [symKey(s), s]));
@@ -341,3 +455,198 @@ export function summarize(c: DesignChange): ChangeSummary {
 }
 
 export type { LanguagePack };
+
+/* ---------------- a scope's report: what changed where, and what may need attention ---------------- */
+
+export interface ScopeCommit {
+  sha: string;
+  at: string;
+  summary: string;
+  agent?: string;
+  merge: boolean;
+  added: number;
+  removed: number;
+  files: number;
+  /** The areas its files are in. */
+  areas: string[];
+  paths: string[];
+}
+
+export interface AreaChange {
+  path: string;
+  /** Net lines added and removed over the scope, and files changed. */
+  added: number;
+  removed: number;
+  files: number;
+  commits: number;
+  /** Who committed here, with how many commits. */
+  agents: { name: string; commits: number }[];
+  symbols: { added: number; changed: number; removed: number };
+  /** The highest hotspot score among its files. */
+  hotspot: number;
+}
+
+export interface FileChange {
+  path: string;
+  area: string;
+  added: number;
+  removed: number;
+  /** Lines added and removed counted commit by commit, so code rewritten twice counts twice. */
+  churn: number;
+  commits: number;
+  agents: string[];
+  size: number;
+  /** How many files import it. */
+  usedBy: number;
+  score: number;
+  reasons: string[];
+}
+
+/**
+ * What a scope of work (a commit, a landing, an agent's branch, the whole goal) did to the
+ * design, kept as JSON beside the snapshots so a later goal, or a model, can read it: the
+ * commits, each area's share, files ranked by how much attention they may need (hotspots),
+ * circular dependencies, new and lost dependencies, coupling, and the declared flows.
+ */
+export interface DesignReport {
+  goal: string;
+  scope: { kind: string; title: string; from: string; to: string };
+  at: string;
+  totals: { commits: number; files: number; added: number; removed: number; agents: string[] };
+  commits: ScopeCommit[];
+  areas: AreaChange[];
+  files: FileChange[];
+  /** The files with the highest scores, at most 20. */
+  hotspots: string[];
+  cycles: { areas: string[]; new: boolean }[];
+  edges: DesignChange['edges'];
+  coupling: { area: string; uses: number; usedBy: number }[];
+  /** Flow steps that name no area, or that follow one another without an import either way. */
+  flows: { name: string; unknown: string[]; unbacked: [string, string][] }[];
+}
+
+export interface ReportInput {
+  goal: string;
+  scope: DesignReport['scope'];
+  before: DesignSnapshot;
+  after: DesignSnapshot;
+  change: DesignChange;
+  log: { sha: string; parents: string[]; at: string; summary: string; files: { path: string; added: number; removed: number }[] }[];
+  /** Net lines per file over the scope. */
+  net: Map<string, { added: number; removed: number }>;
+  /** Who made each commit, from the hooks. */
+  authors: Map<string, string>;
+  /** A merge's size against its first parent, from the log. */
+  mergeSizes?: Map<string, { added: number; removed: number; files: number }>;
+}
+
+const LARGE = 48 * 1024;
+
+export function designReport(r: ReportInput): DesignReport {
+  const areas = r.after.map.areas;
+  const oldAreas = r.before.map.areas;
+  const where = (p: string) => areaOf(areas, p) ?? areaOf(oldAreas, p) ?? '';
+  const commits: ScopeCommit[] = r.log.map(c => {
+    const merge = c.parents.length > 1;
+    const m = r.mergeSizes?.get(c.sha);
+    const paths = c.files.map(f => f.path);
+    return {
+      sha: c.sha, at: c.at, summary: c.summary, ...(r.authors.has(c.sha) ? { agent: r.authors.get(c.sha) } : {}), merge,
+      added: merge ? (m?.added ?? 0) : c.files.reduce((n, f) => n + f.added, 0),
+      removed: merge ? (m?.removed ?? 0) : c.files.reduce((n, f) => n + f.removed, 0),
+      files: merge ? (m?.files ?? 0) : c.files.length,
+      areas: [...new Set(paths.map(where))], paths: paths.slice(0, 200),
+    };
+  });
+  const usedBy = new Map<string, number>();
+  for (const f of r.after.files) for (const i of f.imports ?? []) usedBy.set(i, (usedBy.get(i) ?? 0) + 1);
+  const size = new Map(r.after.files.map(f => [f.path, f.size]));
+  const gross = new Map<string, { churn: number; commits: number; agents: Set<string> }>();
+  for (const c of r.log) {
+    for (const f of c.files) {
+      const g = gross.get(f.path) ?? { churn: 0, commits: 0, agents: new Set<string>() };
+      g.churn += f.added + f.removed;
+      g.commits++;
+      if (r.authors.has(c.sha)) g.agents.add(r.authors.get(c.sha)!);
+      gross.set(f.path, g);
+    }
+  }
+  const files: FileChange[] = [];
+  for (const path of new Set([...r.net.keys(), ...gross.keys()])) {
+    const n = r.net.get(path) ?? { added: 0, removed: 0 };
+    const g = gross.get(path) ?? { churn: n.added + n.removed, commits: 0, agents: new Set<string>() };
+    const sz = size.get(path) ?? 0;
+    const ub = usedBy.get(path) ?? 0;
+    // A heuristic for ranking, not a measure: churn, weighted up for rework, several hands,
+    // many dependants and size.
+    const score = g.churn
+      ? Math.round(Math.log2(1 + g.churn) * (1 + 0.5 * Math.max(0, g.commits - 1)) * (1 + 0.5 * Math.max(0, g.agents.size - 1)) * (1 + Math.log2(1 + ub) / 2) * (sz > LARGE ? 1.5 : 1) * 10) / 10
+      : 0;
+    const reasons = [
+      g.commits >= 3 ? `changed in ${g.commits} commits` : '',
+      g.agents.size > 1 ? `changed by ${g.agents.size} agents (${[...g.agents].join(', ')})` : '',
+      ub >= 5 ? `used by ${ub} files` : '',
+      sz > LARGE ? `large: ${Math.round(sz / 1024)} KB` : '',
+      g.churn >= 300 ? `${g.churn} lines changed along the way` : '',
+    ].filter(Boolean);
+    files.push({ path, area: where(path), added: n.added, removed: n.removed, churn: g.churn, commits: g.commits, agents: [...g.agents], size: sz, usedBy: ub, score, reasons });
+  }
+  files.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  const byArea = new Map<string, AreaChange>();
+  const area = (p: string) => {
+    let a = byArea.get(p);
+    if (!a) byArea.set(p, (a = { path: p, added: 0, removed: 0, files: 0, commits: 0, agents: [], symbols: { added: 0, changed: 0, removed: 0 }, hotspot: 0 }));
+    return a;
+  };
+  for (const f of files) {
+    const a = area(f.area);
+    if (r.net.has(f.path)) {
+      a.added += f.added;
+      a.removed += f.removed;
+      a.files++;
+    }
+    a.hotspot = Math.max(a.hotspot, f.score);
+  }
+  for (const c of commits) {
+    for (const p of c.areas) {
+      const a = area(p);
+      a.commits++;
+      if (c.agent) {
+        const who = a.agents.find(x => x.name === c.agent);
+        if (who) who.commits++;
+        else a.agents.push({ name: c.agent, commits: 1 });
+      }
+    }
+  }
+  for (const [k, list] of [['added', r.change.symbols.added], ['changed', r.change.symbols.changed], ['removed', r.change.symbols.removed]] as const) {
+    for (const s of list) area(s.area).symbols[k]++;
+  }
+  for (const a of byArea.values()) a.agents.sort((x, y) => y.commits - x.commits);
+  const before = new Set(cycles(r.before.edges).map(c => c.join('\n')));
+  const linked = new Set(r.after.edges.flatMap(e => [`${e.from}\n${e.to}`, `${e.to}\n${e.from}`]));
+  return {
+    goal: r.goal,
+    scope: r.scope,
+    at: new Date().toISOString(),
+    totals: {
+      commits: commits.length, files: r.net.size,
+      added: [...r.net.values()].reduce((n, x) => n + x.added, 0), removed: [...r.net.values()].reduce((n, x) => n + x.removed, 0),
+      agents: [...new Set(commits.map(c => c.agent).filter((a): a is string => !!a))],
+    },
+    commits,
+    areas: [...byArea.values()].sort((a, b) => b.added + b.removed - (a.added + a.removed)),
+    files: files.slice(0, 2000),
+    hotspots: files.filter(f => f.score > 0).slice(0, 20).map(f => f.path),
+    cycles: cycles(r.after.edges).map(c => ({ areas: c, new: !before.has(c.join('\n')) })),
+    edges: r.change.edges,
+    coupling: areas.map(a => ({ area: a.path, uses: r.after.edges.filter(e => e.from === a.path).length, usedBy: r.after.edges.filter(e => e.to === a.path).length })).filter(c => c.uses || c.usedBy),
+    flows: (r.after.map.flows ?? []).map(f => {
+      const unbacked: [string, string][] = [];
+      for (let i = 1; i < f.steps.length; i++) {
+        const [a, b] = [f.steps[i - 1].area, f.steps[i].area];
+        if (a !== undefined && b !== undefined && a !== b && !linked.has(`${a}\n${b}`)) unbacked.push([a, b]);
+      }
+      return { name: f.name, unknown: f.steps.filter(st => st.area === undefined).map(st => st.label), unbacked };
+    }),
+  };
+}

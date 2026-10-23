@@ -57,7 +57,7 @@ export function DiffFiles({ files, empty = 'No changes.' }: { files: DiffFile[];
 }
 
 /** Unified hunks with old and new line numbers. */
-function Hunks({ patch, cut }: { patch: string; cut?: boolean }) {
+export function Hunks({ patch, cut }: { patch: string; cut?: boolean }) {
   const rows = useMemo(() => {
     const out: { kind: 'hunk' | 'add' | 'del' | 'ctx'; text: string; a?: number; b?: number }[] = [];
     let a = 0;

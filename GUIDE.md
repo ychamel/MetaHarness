@@ -204,26 +204,50 @@ You review the result in your checkout like any other change, and push it yourse
     - **Story** (the default): what happened, the important parts first. Who started whom,
       messages, results, commits, problems and your answers are cards; the steps in between
       (status lines, tool calls, file updates) fold into one line you can open.
-    - **Design:** the code as its areas, the way `ARCHITECTURE.md` describes them (or its
-      folders, when there's no map), with arrows for which area uses which. Each card shows
-      what the area is for, its files and definitions, and who is working there right now:
-      a bar coloured by agent, with their names. Areas the map leaves out show dashed, and ⚠
-      marks a file more than one agent edited.
-      - **The timeline** at the top has a snapshot from when the goal started and one each
-        time work landed on the branch. Pick one to see the design then; **Changes** says
-        what moved since the snapshot before (or since the start): new areas, new arrows
-        (drawn in blue), classes and functions added, changed or removed.
-      - **Click an area** for its files as a map sized by how big they are and coloured by who
-        last edited them; click a file for its classes and functions, what it uses and what
-        uses it. There you can also **pin a note** for the agents working there (each gets it
-        the first time it touches the area), **keep it for future goals** (it becomes a rule),
-        or message the team about the area.
-      - **With nothing selected**, the panel shows the map's overview, the design's history
-        (the cartographer's commits read as a changelog) and **For next time**: files several
-        agents edited, merge conflicts, files reworked over and over, how widely each agent
-        roamed, and which rules fired. Those are the places to adjust a workflow or a rule.
+    - **Design:** one screen for following the code as the team changes it, without reading
+      every diff. The map shows the code as its areas, the way `ARCHITECTURE.md` describes
+      them (or its folders, when there's no map); areas the map leaves out show dashed.
+      - **Looking at** (the bar at the top) picks what the map shows the effect of. **Whole
+        goal** compares the code when the goal started with the goal branch now; tick **with
+        unmerged branches** to include the agents' committed work that hasn't been merged yet,
+        merged as a picture (nothing in your checkout or their branches moves; files that would
+        conflict are named). **Landings** lists each time work landed on the branch, with who
+        and what. Below, each branch is a lane in its agent's colour and each commit a dot:
+        click a dot for that commit, shift-click a second one for everything in between, click
+        a lane's name for that agent's branch. The commits in what you're looking at are ringed.
+      - **Layers**, each on or off: **Change** tints each area by how much it changed and
+        names what changed on the card (`+ class`, `~ function`, `− removed`), with its lines
+        added and removed, commits, and a bar of who made them; new areas are outlined, removed
+        ones show faded. **Dependencies** draws which area imports which, new arrows in blue,
+        lost ones dashed, circular ones in amber. **Flows** draws the paths data takes, from
+        the map's `## Flows` section. **Hotspots** rings the areas and files that may need
+        attention: changed often, by several agents, used by many files, or large. **Activity**
+        shows who is editing where (the last 15 minutes while the goal runs). **Fade
+        unchanged** dims what the scope left alone. Your choice of layers is remembered.
+      - **Click an agent's name** (beside the layers, or in the panel) to focus on it: the
+        map and the lanes fade everything it didn't touch, and the panel keeps to its commits.
+      - **With nothing selected**, the panel says what the scope holds: what changed in the
+        design, its commits (point at one to light up the areas it touched; click it to look at
+        it), hotspots, circular dependencies, the flows (click one to pick it out on the map;
+        a step that names no area, or two steps with no import between them, is flagged), and
+        under **The map, its history, and findings for next time**: the overview, the
+        cartographer's commits, and files several agents edited, conflicts, rework, how widely
+        each agent roamed and which rules fired.
+      - **Click an area** for what the scope did there: its lines and commits, who made them,
+        and each definition added, changed or removed. Click a definition to see just its part
+        of the diff. Below are the area's files as a map, sized by how big they are and tinted
+        by how much they changed (and by whom); click a file for its definitions (a changed one
+        opens its diff), the whole file's diff, what it uses and what uses it. There you can
+        also **pin a note** for the agents working there (each gets it the first time it
+        touches the area), **keep it for future goals** (it becomes a rule), or message the
+        team about the area.
+      - Each landing leaves a **report** in the goal's `design/reports/` folder (JSON: the
+        commits, each area's share, files ranked as hotspots, circular dependencies, coupling,
+        the flows checked against the imports), for a later goal or a model to analyse.
     - **Git:** the goal branch, each agent's branch (merged or not, uncommitted files), and
-      every commit and merge with who made it and its size. Click one for its diff; **Whole
+      every commit and merge with who made it, its size, and the areas of the design it
+      touched (click one to open the Design tab there, at that commit). Click a commit for its
+      diff (**Open in Design** shows what it did to the design); **Whole
       goal** shows everything since the goal started (what a pull request would hold), and
       **Uncommitted** what's changed but not committed, in your checkout or an agent's
       worktree.
@@ -382,7 +406,10 @@ restarting the daemon. The pages write the same files described below.
   design, and it can ask them back. MetaHarness wakes it when work lands on the goal branch
   (once the branch has been quiet for a minute), with the commits and files that came in; it
   updates the map and commits it alone, with a one-line message saying what changed in the
-  design. Those lines are the design history in the Design view. Turn the `cartographer` rule
+  design. Those lines are the design history in the Design view. It also keeps the map's
+  `## Flows` section, the main paths data takes through the areas, one per line:
+  `- Checkout: src/api/ → src/orders/ → src/store/ — an order is placed and saved`; the Design
+  view draws them. Turn the `cartographer` rule
   off to work without one. A workflow with a `roles:` line has to name `cartographer` for the
   lead to start it.
 
@@ -520,7 +547,7 @@ Finished goals stay in the app's goal list, rebuilt from the log.
 |---|---|
 | `MH_HOME` | Where goals, the event log and the token live (default `~/.metaharness`) |
 | `MH_PORT` | The daemon's port (default 7777) |
-| `~/.metaharness/goals/<goal>/` | `shared/` (and `.history/`), `worktrees/`, `design/` (the Design view's snapshots), each agent's harness config |
+| `~/.metaharness/goals/<goal>/` | `shared/` (and `.history/`), `worktrees/`, `design/` (the Design view's snapshots, and `reports/`), each agent's harness config |
 | `.git/metaharness/authors-<goal>` | Which agent made each commit, written by MetaHarness's git hooks (removed with the goal) |
 | `mh help` | Every command |
 | `npm run ui:dev` | The web app with hot reload, for working on it, talking to a running daemon |

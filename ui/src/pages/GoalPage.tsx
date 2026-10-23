@@ -12,6 +12,7 @@ import { Story } from '../views/Story.tsx';
 import { Files } from '../views/Files.tsx';
 import { Activity } from '../views/Activity.tsx';
 import type { GitSel } from '../views/Git.tsx';
+import type { DesignNav } from '../views/Design.tsx';
 
 // The flow views pull in React Flow; load them when first opened.
 const Graph = lazy(() => import('../views/Graph.tsx'));
@@ -24,7 +25,7 @@ const Git = lazy(() => import('../views/Git.tsx'));
 export type GoalTab = 'story' | 'design' | 'git' | 'files' | 'graph' | 'sequence' | 'timeline' | 'costs' | 'log';
 const TABS: [GoalTab, string, string][] = [
   ['story', 'Story', 'What happened, the important parts first'],
-  ['design', 'Design', 'The code as areas from the map: how they depend on each other, how that changed, and who works where'],
+  ['design', 'Design', 'The code as areas from the map, in layers: what a commit, a landing, a branch or the whole goal changed, dependencies, flows, hotspots, and who works where'],
   ['git', 'Git', 'Commits, branches and diffs'],
   ['files', 'Files', 'The shared folder: designs, reviews, reports'],
   ['graph', 'Graph', 'Who talks to whom'],
@@ -67,6 +68,13 @@ export function GoalPage(p: Props) {
   const openGit = (sel: GitSel) => {
     setGitSel(sel);
     p.onTab('git');
+  };
+  // Where the Design view is (its scope, area and focus) outlasts switching tabs, not goals.
+  const [designNav, setDesignNav] = useState<DesignNav>({});
+  useEffect(() => setDesignNav({}), [goal?.id]);
+  const openDesign = (nav: DesignNav) => {
+    setDesignNav(nav);
+    p.onTab('design');
   };
 
   if (!goal) {
@@ -125,8 +133,8 @@ export function GoalPage(p: Props) {
                 }}
               />
             )}
-            {p.tab === 'design' && <Design goal={goal} events={events} onCommand={p.onCommand} onSelectAgent={p.onAgent} onOpenCommit={sha => openGit({ kind: 'commit', sha })} />}
-            {p.tab === 'git' && <Git goal={goal} events={events} sel={gitSel} onSel={setGitSel} onSelectAgent={p.onAgent} />}
+            {p.tab === 'design' && <Design goal={goal} events={events} nav={designNav} onNav={setDesignNav} onCommand={p.onCommand} onSelectAgent={p.onAgent} onOpenCommit={sha => openGit({ kind: 'commit', sha })} />}
+            {p.tab === 'git' && <Git goal={goal} events={events} sel={gitSel} onSel={setGitSel} onSelectAgent={p.onAgent} onOpenDesign={(sha, area) => openDesign({ scope: { kind: 'commit', sha }, area })} />}
             {p.tab === 'files' && <Files goal={goal} events={events} selected={p.file} onSelect={p.onFile} onSelectAgent={p.onAgent} />}
             {p.tab === 'graph' && <Graph goal={goal} events={events} selected={agent?.name} onSelect={p.onAgent} />}
             {p.tab === 'sequence' && <Sequence goal={goal} events={events} onSelect={p.onAgent} />}

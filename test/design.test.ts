@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { FakeAdapter, type FakeCtx, type FakeScript, type FakeTurnScript } from '../src/adapters/fake.ts';
 import { Daemon, landedNote } from '../src/daemon.ts';
-import { compareDesigns, DesignTracker, folderAreas, mapAreas, summarize } from '../src/design.ts';
+import { compareDesigns, cycles, DesignTracker, folderAreas, mapAreas, parseFlows, summarize } from '../src/design.ts';
 import * as gitx from '../src/git.ts';
 import { git } from '../src/git.ts';
 import { readAuthors } from '../src/guard.ts';
@@ -278,7 +278,7 @@ test('a language pack in a config folder adds a language with patterns', async (
   const lua = packs.get('lua')!;
   assert.equal(lua.builtIn, false);
   const o = await new Outliner(packs).outline(lua, 'local m = require("game.state")\nfunction M.start()\nend\n');
-  assert.deepEqual(o, { symbols: [{ kind: 'function', name: 'M.start', line: 2, hash: o!.symbols[0].hash }], imports: ['game.state'], references: [] });
+  assert.deepEqual(o, { symbols: [{ kind: 'function', name: 'M.start', line: 2, end: 2, hash: o!.symbols[0].hash }], imports: ['game.state'], references: [] });
   assert.equal(resolveImport(lua, 'main.lua', 'game.state', resolveContext(['game/state.lua'])), 'game/state.lua');
 });
 
@@ -389,4 +389,94 @@ test('comparing designs names symbols added, changed and removed', () => {
   assert.deepEqual([c.symbols.added.map(s => s.name), c.symbols.changed.map(s => s.name), c.symbols.removed.map(s => s.name)], [['fresh'], ['X'], ['gone']]);
   assert.deepEqual(summarize(c).highlights, ['added function fresh (src/x.ts)', 'removed function gone (src/x.ts)']);
   assert.ok(existsSync(join(import.meta.dirname, '..', 'defaults', 'languages', 'gdscript', 'grammar.wasm')));
+});
+
+test('flows come from the map; steps name areas by path or title; cycles are found', () => {
+  const areas = [
+    { path: 'src/api', title: 'the HTTP side', summary: '' },
+    { path: 'src/store', title: 'store', summary: '' },
+    { path: 'src/orders', title: 'Orders', summary: '' },
+  ];
+  const map = [
+    '# Shop', '', '## src/api/', 'x', '',
+    '## Flows', '',
+    '- **Checkout**: `src/api/` → orders → `src/store/db.ts` — a request becomes a saved order',
+    '- src/api -> Mailer',
+    '- not a flow',
+    '', '## src/store/', '- a → b inside an area section is no flow',
+  ].join('\n');
+  assert.deepEqual(parseFlows(map, areas), [
+    { name: 'Checkout', steps: [{ label: '`src/api/`', area: 'src/api' }, { label: 'orders', area: 'src/orders' }, { label: '`src/store/db.ts`', area: 'src/store' }], text: 'a request becomes a saved order' },
+    { name: 'src/api → Mailer', steps: [{ label: 'src/api', area: 'src/api' }, { label: 'Mailer' }], text: '' },
+  ]);
+  assert.deepEqual(cycles([{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }, { from: 'c', to: 'a' }, { from: 'c', to: 'd' }, { from: 'd', to: 'd' }]), [['a', 'b', 'c']]);
+});
+
+test('design scopes: the whole goal (with unmerged branches as a picture), a commit, a branch; each with a report', async () => {
+  const repo = shopRepo();
+  commitAll(repo, 'Flows', { 'ARCHITECTURE.md': MAP + '\n## Flows\n\n- Listing: `src/api/` → `src/store/` — orders are read from the store\n' });
+  const { d } = team(
+    {
+      lead: async ctx => {
+        await ctx.tool('spawn', { role: 'impl', name: 'impl', brief: 'b', worktree: true });
+        await ctx.nextMessage(4000);
+        await ctx.tool('done', { note: 'ok' });
+      },
+      impl: async ctx => {
+        write(ctx.spec.cwd, { 'src/store/db.ts': "import { Orders } from '../api/orders.ts';\nexport const db = { all: () => [] };\nexport function refund() {\n  return 1;\n}\n" });
+        agentGit(ctx, 'commit', '-qam', 'Refunds in the store');
+        await ctx.tool('done', { note: 'on my branch' });
+      },
+    },
+    { repo },
+  );
+  const goal = d.startGoal({ request: 'r', lead: 'lead' });
+  await withTimeout(d.goals.get(goal)!.leadDone, 6000, 'lead done');
+  await d.designIdle();
+  commitAll(repo, 'List orders by day', { 'src/api/orders.ts': "import { db } from '../store/db.ts';\nexport class Orders {\n  list() {\n    return db.all();\n  }\n  byDay() {}\n}\n" });
+  d.refreshGit(goal);
+
+  const whole = await d.designScope(goal, { kind: 'goal' });
+  assert.equal(whole.report!.totals.commits, 1);
+  assert.deepEqual(whole.report!.areas.map(a => [a.path, a.added, a.removed, a.symbols]), [['src/api', 1, 0, { added: 1, changed: 1, removed: 0 }]]);
+  const byDay = whole.change!.symbols.added[0];
+  assert.deepEqual([byDay.name, byDay.line, byDay.end], ['byDay', 6, 6]);
+  assert.deepEqual(whole.snapshot!.map.flows!.map(f => [f.name, f.steps.map(s => s.area)]), [['Listing', ['src/api', 'src/store']]]);
+
+  // With the unmerged branch: the store now imports the api back, a cycle.
+  const all = await d.designScope(goal, { kind: 'goal', branches: true });
+  assert.deepEqual(all.scope!.merged, ['impl']);
+  assert.deepEqual(all.scope!.conflicts, []);
+  assert.match(all.snapshot!.sha, /^[0-9a-f]{40}$/);
+  assert.notEqual(all.snapshot!.sha, git(repo, 'rev-parse', 'HEAD'));
+  assert.deepEqual(all.report!.cycles, [{ areas: ['src/api', 'src/store'], new: true }]);
+  assert.deepEqual(all.change!.edges.added, [{ from: 'src/store', to: 'src/api' }]);
+  assert.deepEqual(all.report!.commits.map(c => [c.summary, c.agent ?? null]).sort(), [['List orders by day', null], ['Refunds in the store', 'impl']]);
+  assert.equal(git(repo, 'status', '--porcelain'), '', 'nothing in the checkout moved');
+  // Diffs read against the picture, and narrowed to an area.
+  const diff = d.diffView(goal, { from: all.scope!.from, to: all.scope!.to, paths: ['src/store'] });
+  assert.deepEqual(diff.files.map(f => f.path), ['src/store/db.ts']);
+
+  const branch = await d.designScope(goal, { kind: 'branch', agent: 'impl' });
+  assert.equal(branch.scope!.title, "impl's branch");
+  assert.deepEqual(branch.report!.commits.map(c => c.agent), ['impl']);
+  const file = branch.report!.files.find(f => f.path === 'src/store/db.ts')!;
+  assert.deepEqual([file.added, file.removed, file.commits, file.agents], [4, 0, 1, ['impl']]);
+  assert.deepEqual(branch.report!.hotspots, ['src/store/db.ts']);
+
+  const sha = git(repo, 'rev-parse', 'HEAD');
+  const one = await d.designScope(goal, { kind: 'commit', sha });
+  assert.equal(one.scope!.title, `${sha.slice(0, 7)} List orders by day`);
+  assert.equal(one.scope!.from, git(repo, 'rev-parse', 'HEAD^'));
+  assert.ok(existsSync(join(d.home, 'goals', goal, 'design', 'reports', `${one.scope!.from}..${sha}.json`)), 'the report is kept');
+
+  // Each landing keeps a report of its own and one for the goal so far.
+  d.landed(d.goals.get(goal)!);
+  await d.designIdle();
+  const reports = readdirSync(join(d.home, 'goals', goal, 'design', 'reports'));
+  const list = d.design.list(goal);
+  assert.ok(reports.includes(`${list[0].sha}..${list[1].sha}.json`));
+  // Commits name the areas they touched, for the Git tab.
+  assert.deepEqual(d.gitView(goal).areas!.map(a => a.path), ['src/api', 'src/store', '']);
+  await d.close();
 });

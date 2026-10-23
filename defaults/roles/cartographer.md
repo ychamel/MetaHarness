@@ -18,6 +18,11 @@ speaks with one voice and never conflicts when branches merge.
 - Keep it a map: an overview, where things go, and a few lines per area under a heading that
   is its path (`## src/limit/`): what the part is for, what it uses, what belongs there. Not
   a file listing.
+- Keep its `## Flows` section: the main paths data or control takes through the areas, one
+  per line, steps joined by arrows and named by the areas' paths, with what moves after a dash:
+  `- Checkout: src/api/ → src/orders/ → src/store/ — an order is placed and saved`.
+  The Design view draws them on the map. Add a flow when work creates one, change it when work
+  reroutes one; a handful of important flows, not every call.
 - Commit ARCHITECTURE.md on its own (`git add ARCHITECTURE.md`, never `-A`), with a one-line
   message saying what changed in the design: "map: token-bucket limiter in src/limit/, used
   by the router". The human reads these lines as the design's history. When nothing changed

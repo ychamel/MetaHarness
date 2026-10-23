@@ -21,7 +21,7 @@ import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } 
 import { HISTORY, SharedFolder } from './shared.ts';
 import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
 import { authorsDir, deniedCommandPrefixes, guardEnv, installGuard, readAuthors, refusedGitCommand, removeAuthors } from './guard.ts';
-import { DesignTracker, MAP_FILE, compareDesigns, type SnapshotInfo } from './design.ts';
+import { DesignTracker, MAP_FILE, compareDesigns, designReport, type DesignReport, type SnapshotInfo } from './design.ts';
 import { Outliner } from './languages.ts';
 import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
@@ -537,8 +537,18 @@ export class Daemon {
     if (this.config.settings.design === false) return;
     const p = this.design
       .record(g.id, gg, g.dir, { sha, ...info })
-      .then(r => {
-        if (!r?.info.change) return;
+      .then(async r => {
+        if (!r) return;
+        // Reports for what this landing did and for the goal so far, for later goals and models.
+        const list = this.design.list(g.id);
+        const prev = list.at(-2);
+        try {
+          if (prev) await this.scopeReport(g.id, gg, g.dir, { kind: 'landing', title: `Work landed${info.by?.length ? ` (${info.by.join(', ')})` : ''}`, from: prev.sha, to: sha, heads: [sha] });
+          if (list[0] && list[0].sha !== sha && list[0].sha !== prev?.sha) await this.scopeReport(g.id, gg, g.dir, { kind: 'goal', title: `The goal up to ${sha.slice(0, 7)}`, from: list[0].sha, to: sha, heads: [sha] });
+        } catch {
+          // The snapshot stands without its reports; looking at the scope builds them again.
+        }
+        if (!r.info.change) return;
         const c = r.info.change;
         if (c.areas || c.edges || c.symbols || c.files) this.emit({ goal: g.id, type: 'design.changed', data: { sha, ...c } });
       })
@@ -3618,18 +3628,21 @@ export class Daemon {
       };
     });
     const conflicts = [...(this.goals.get(goalId)?.conflicts.entries() ?? [])].map(([d, c]) => ({ dir: d, ...c }));
+    // The latest snapshot's areas, so each commit can say which parts of the design it touched.
+    const last = this.design.list(goalId).at(-1);
+    const areas = last ? this.design.cached(goalId, last.sha)?.map.areas.map(a => ({ path: a.path, title: a.title })) : undefined;
     return {
       git: { repo: gg.repo, branch: gg.branch, base: gg.base, tip, commits: git.countCommits(gg, gg.base, tip), uncommitted: git.statusShort(dir).length },
-      branches, conflicts, mapFile: MAP_FILE,
+      branches, conflicts, mapFile: MAP_FILE, areas: areas ?? [],
     };
   }
 
   /** A diff for the Git view: one commit, a range, the whole goal, or an agent's uncommitted work. */
-  diffView(goalId: string, q: { sha?: string; from?: string; to?: string; agent?: string; whole?: boolean }) {
+  diffView(goalId: string, q: { sha?: string; from?: string; to?: string; agent?: string; whole?: boolean; paths?: string[] }) {
     const gg = this.goalGit(goalId);
     if (!gg) throw new Error('No git repository for this goal.');
     const rev = (r: string) => {
-      const sha = /^[\w./@^~-]+$/.test(r) && !r.startsWith('-') ? git.resolveCommit(gg, r) : undefined;
+      const sha = /^[\w./@^~-]+$/.test(r) && !r.startsWith('-') ? git.resolveTreeish(gg, r) : undefined;
       if (!sha) throw new Error(`There's no commit or branch "${r}".`);
       return sha;
     };
@@ -3638,7 +3651,7 @@ export class Daemon {
       const tip = git.resolveCommit(gg, gg.branch) ?? gg.base;
       return { title: `Everything on ${gg.branch} since the goal started`, files: git.rangeDiff(gg, gg.base, tip) };
     }
-    if (q.from && q.to) return { title: `${q.from} → ${q.to}`, files: git.rangeDiff(gg, rev(q.from), rev(q.to)) };
+    if (q.from && q.to) return { title: `${q.from.slice(0, 7)} → ${q.to.slice(0, 7)}`, files: git.rangeDiff(gg, rev(q.from), rev(q.to), q.paths) };
     if (q.agent) {
       const w = this.worktreesOf(goalId).find(x => x.agent === q.agent);
       const dir = w?.path ?? this.goals.get(goalId)?.dir ?? gg.repo;
@@ -3674,6 +3687,87 @@ export class Daemon {
     };
     const [a, b] = await Promise.all([this.design.get(goalId, gg, dir, sha(from)), this.design.get(goalId, gg, dir, sha(to))]);
     return compareDesigns(a, b);
+  }
+
+  /**
+   * The Design view's scope (design §14): the design after a piece of work, what it changed
+   * against the design before, its commits and its report. A scope is the whole goal
+   * (optionally with the agents' unmerged branches merged in, as a picture), one commit, an
+   * agent's branch, or a range between two commits.
+   */
+  async designScope(goalId: string, q: { kind?: string; sha?: string; from?: string; to?: string; agent?: string; branches?: boolean; title?: string }) {
+    const gg = this.goalGit(goalId);
+    if (!gg) return { snapshot: null, list: [], note: 'No git repository for this goal, so no design to show.' };
+    const dir = this.goals.get(goalId)?.dir ?? gg.repo;
+    const list = this.design.list(goalId);
+    const tip = git.resolveCommit(gg, gg.branch) ?? gg.base;
+    const rev = (r: string) => {
+      const s = /^[\w./@^~-]+$/.test(r) && !r.startsWith('-') ? git.resolveTreeish(gg, r) : undefined;
+      if (!s) throw new Error(`There's no commit or branch "${r}".`);
+      return s;
+    };
+    const short = (s: string) => s.slice(0, 7);
+    let scope: { kind: string; title: string; from: string; to: string; heads: string[] };
+    let conflicts: string[] = [];
+    let merged: string[] = [];
+    const kind = q.kind ?? 'goal';
+    if (kind === 'commit') {
+      if (!q.sha) throw new Error('A commit scope needs &sha=<commit>.');
+      const sha = rev(q.sha);
+      scope = { kind, title: `${short(sha)} ${git.subject(gg, sha)}`, from: git.resolveCommit(gg, `${sha}^1`) ?? git.EMPTY_TREE, to: sha, heads: [sha] };
+    } else if (kind === 'branch') {
+      const w = this.worktreesOf(goalId).find(x => x.agent === q.agent);
+      const t = w ? git.resolveCommit(gg, w.branch) : undefined;
+      if (!w || !t) throw new Error(`${q.agent ?? 'That agent'} has no branch.`);
+      scope = { kind, title: `${w.agent}'s branch`, from: git.mergeBase(gg, tip, t) ?? w.base, to: t, heads: [t] };
+    } else if (kind === 'range') {
+      if (!q.from || !q.to) throw new Error('A range needs &from=<commit>&to=<commit>.');
+      const to = rev(q.to);
+      scope = { kind: 'range', title: q.title?.slice(0, 200) || `${short(q.from)} → ${short(q.to)}`, from: rev(q.from), to, heads: git.resolveCommit(gg, to) ? [to] : [] };
+    } else {
+      scope = { kind: 'goal', title: `Everything on ${gg.branch} since the goal started`, from: gg.base, to: tip, heads: [tip] };
+      if (q.branches) {
+        const open = this.worktreesOf(goalId)
+          .map(w => ({ agent: w.agent, tip: git.resolveCommit(gg, w.branch) }))
+          .filter((w): w is { agent: string; tip: string } => !!w.tip && git.countCommits(gg, tip, w.tip) > 0);
+        if (open.length) {
+          const m = git.mergedTree(gg, tip, open.map(w => w.tip));
+          conflicts = m.conflicts;
+          merged = open.map(w => w.agent);
+          scope = { ...scope, title: `${scope.title}, with ${merged.join(', ')}'s unmerged work`, to: m.tree, heads: [tip, ...open.map(w => w.tip)] };
+        }
+      }
+    }
+    const { report, before, after, change } = await this.scopeReport(goalId, gg, dir, scope);
+    return {
+      scope: { kind: scope.kind, title: scope.title, from: scope.from, to: scope.to, conflicts, merged },
+      snapshot: after, change, report, list, tip,
+      removedAreas: before.map.areas.filter(a => change.areas.removed.includes(a.path)),
+    };
+  }
+
+  /** Builds a scope's report (src/design.ts) and keeps it beside the snapshots. */
+  private async scopeReport(goalId: string, gg: git.GoalGit, dir: string, scope: { kind: string; title: string; from: string; to: string; heads: string[] }) {
+    const [before, after] = await Promise.all([this.design.get(goalId, gg, dir, scope.from), this.design.get(goalId, gg, dir, scope.to)]);
+    const change = compareDesigns(before, after);
+    const authors = new Map<string, string>();
+    const mergeSizes = new Map<string, { added: number; removed: number; files: number }>();
+    for (const e of this.store.since(goalId)) {
+      if ((e.type !== 'git.commit' && e.type !== 'git.merge') || !e.data.sha) continue;
+      const sha = String(e.data.sha);
+      if (e.agent && !authors.has(sha)) authors.set(sha, e.agent);
+      if (typeof e.data.added === 'number') mergeSizes.set(sha, { added: e.data.added, removed: Number(e.data.removed) || 0, files: Number(e.data.files) || 0 });
+    }
+    const report: DesignReport = designReport({
+      goal: goalId, scope: { kind: scope.kind, title: scope.title, from: scope.from, to: scope.to }, before, after, change,
+      log: scope.heads.length ? git.scopeLog(gg, scope.heads, scope.from) : [], net: git.numstat(gg, scope.from, scope.to), authors, mergeSizes,
+    });
+    try {
+      this.design.saveReport(report);
+    } catch {
+      // A report that can't be kept is still shown.
+    }
+    return { report, before, after, change };
   }
 
   sharedFile(goalId: string, path: string, version?: number) {

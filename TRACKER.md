@@ -393,13 +393,33 @@ Findings from the run:
     keep their old harness, and the new model drops out of them. The role editor shows the
     assistant and gatekeeper only model, effort, backups and instructions.
   Checked with tests (2 new, 3 updated) and in headless Chrome on a fake daemon. Not yet live.
+- [x] **One Design screen, in layers** (2026-10-23), from the user: changes were hard to see
+      on the map, and tracing a colour meant hunting through the Git list.
+  - **Scopes** (`GET /design/scope`): the whole goal, optionally with the unmerged branches
+    merged in as a picture (`git merge-tree`, nothing moves), a landing, an agent's branch, a
+    commit, or a shift-clicked range, picked on a lane graph of the branches at the top.
+  - **Layers**: change (areas tinted by lines changed, top definitions named on the card, new
+    and removed areas), dependencies (new, lost, circular), flows from the map's `## Flows`
+    section (checked against the imports), hotspots, activity, fade unchanged. Picking an agent
+    fades what it didn't touch.
+  - **Inspector**: the scope's changes, commits (hover lights their areas), hotspots, cycles and
+    flows; an area's lines, authors, and changed definitions, each opening just its part of the
+    diff (definitions now keep their last line); the file treemap tinted by change.
+  - **Reports**: JSON per landing and for the goal so far in `design/reports/`, for a later
+    analysis goal (no suggestions yet).
+  - Git commits name their areas and open the Design tab there; the Git tab stays until the
+    Design view makes it redundant.
+  - The cartographer, the map-bootstrap workflow and `map-upkeep` know about flows.
+  Checked with tests (2 new) and in headless Chrome against a scripted team (two merged
+  implementers, one left unmerged that makes a circular dependency, the cartographer), light
+  and dark. Not yet in a real run or on a large repository.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search
 
 ## Milestone 3: improve
 
-- [ ] Role×model stats, retrospectives (totalling the Design view's findings across goals),
+- [ ] Role×model stats, retrospectives (totalling the Design view's findings and reports across goals),
       replay, search
 
 ## Not yet verified live
@@ -416,7 +436,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 124 tests, about half a minute, no model calls
+npm install && npm test        # 126 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

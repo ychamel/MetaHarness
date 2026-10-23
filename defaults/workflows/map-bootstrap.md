@@ -20,6 +20,9 @@ and one section and know which files to open.
    - One section per area, its heading the area's path (`## src/adapters/`), 3 to 10 lines
      each. MetaHarness hands agents the section for wherever they're working, so each one has
      to make sense on its own.
+   - `## Flows`: the few main paths data or control takes through the areas, one per line,
+     steps joined by arrows and named by the areas' paths, with what moves after a dash:
+     `- Checkout: src/api/ → src/orders/ → src/store/ — an order is placed and saved`.
 4. If the code follows clear conventions (naming, layout, error handling, tests), write them
    down in CONVENTIONS.md, short and specific to this code. Skip it when there's nothing
    beyond general good practice.

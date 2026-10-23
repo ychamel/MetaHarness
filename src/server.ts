@@ -76,9 +76,12 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
     const q = (k: string) => url.searchParams.get(k) ?? undefined;
     if (req.method === 'GET' && url.pathname === '/git') return json(res, 200, d.gitView(goalOf()));
     if (req.method === 'GET' && url.pathname === '/diff') {
-      return json(res, 200, d.diffView(goalOf(), { sha: q('sha'), from: q('from'), to: q('to'), agent: q('agent'), whole: q('whole') === '1' }));
+      return json(res, 200, d.diffView(goalOf(), { sha: q('sha'), from: q('from'), to: q('to'), agent: q('agent'), whole: q('whole') === '1', paths: url.searchParams.getAll('path') }));
     }
     if (req.method === 'GET' && url.pathname === '/design') return json(res, 200, await d.designView(goalOf(), q('rev')));
+    if (req.method === 'GET' && url.pathname === '/design/scope') {
+      return json(res, 200, await d.designScope(goalOf(), { kind: q('kind'), sha: q('sha'), from: q('from'), to: q('to'), agent: q('agent'), branches: q('branches') === '1', title: q('title') }));
+    }
     if (req.method === 'GET' && url.pathname === '/design/compare') {
       const from = q('from'), to = q('to');
       if (!from || !to) throw new Error('GET /design/compare needs &from=<commit>&to=<commit>.');
@@ -113,7 +116,7 @@ function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse):
   });
 }
 
-const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/git', '/diff', '/design', '/design/compare', '/commands']);
+const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/git', '/diff', '/design', '/design/scope', '/design/compare', '/commands']);
 
 /** The built web app (ui/dist). */
 export const UI_DIR = join(import.meta.dirname, '..', 'ui', 'dist');

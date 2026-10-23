@@ -322,9 +322,9 @@ export function commitDiff(g: GoalGit, sha: string): DiffFile[] {
   return parsePatch(runDiff(g.repo, ['diff-tree', '-p', '-M', '--no-commit-id', '--root', '--diff-merges=first-parent', sha]));
 }
 
-/** Everything between two commits, e.g. what a goal changed since it started. */
-export function rangeDiff(g: GoalGit, from: string, to: string): DiffFile[] {
-  return parsePatch(runDiff(g.repo, ['diff', '-M', from, to]));
+/** Everything between two commits (or trees), e.g. what a goal changed since it started; `paths` narrows it. */
+export function rangeDiff(g: GoalGit, from: string, to: string, paths: string[] = []): DiffFile[] {
+  return parsePatch(runDiff(g.repo, ['diff', '-M', from, to, ...(paths.length ? ['--', ...paths] : [])]));
 }
 
 /** Uncommitted changes in a checkout or worktree, new files included. */
@@ -381,4 +381,85 @@ export function showFile(g: GoalGit, rev: string, path: string): string | undefi
   } catch {
     return undefined;
   }
+}
+
+/* ---------------- a scope of work, for the Design view (design §14) ---------------- */
+
+/** Git's empty tree: what a first commit is compared with. */
+export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+export function mergeBase(g: GoalGit, a: string, b: string): string | undefined {
+  return tryGit(g.repo, 'merge-base', a, b);
+}
+
+/** A commit, or a tree (a merged picture of unmerged branches is one), by name. */
+export function resolveTreeish(g: GoalGit, ref: string): string | undefined {
+  return resolveCommit(g, ref) ?? tryGit(g.repo, 'rev-parse', '--verify', '--quiet', `${ref}^{tree}`);
+}
+
+/**
+ * The tree the goal branch would have with these branches merged into it, without touching any
+ * branch or checkout (`git merge-tree`). Conflicted files keep their markers and are listed. The
+ * objects it writes are unreferenced, and git's housekeeping removes them in time.
+ */
+export function mergedTree(g: GoalGit, tip: string, branches: string[]): { tree: string; conflicts: string[] } {
+  // Fixed dates make the in-between commits, and so the result, the same each time.
+  const env = { ...process.env, GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' };
+  const id = ['-c', 'user.name=MetaHarness', '-c', 'user.email=metaharness@localhost'];
+  let head = tip;
+  let tree = git(g.repo, 'rev-parse', `${tip}^{tree}`);
+  const conflicts = new Set<string>();
+  for (const b of branches) {
+    let out: string;
+    try {
+      out = execFileSync('git', ['merge-tree', '--write-tree', '--name-only', '--no-messages', head, b], { cwd: g.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env });
+    } catch (e) {
+      // Exit 1: merged, with conflicts. Anything else is an error, and the branch is left out.
+      const err = e as { status?: number; stdout?: string };
+      if (err.status !== 1 || !err.stdout) continue;
+      out = err.stdout;
+    }
+    const [first, ...rest] = out.trim().split('\n');
+    tree = first.trim();
+    for (const f of rest) if (f.trim()) conflicts.add(f.trim());
+    head = execFileSync('git', [...id, 'commit-tree', tree, '-p', head, '-p', b, '-m', 'merged picture'], { cwd: g.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env }).trim();
+  }
+  return { tree, conflicts: [...conflicts] };
+}
+
+export interface LogCommit {
+  sha: string;
+  parents: string[];
+  at: string;
+  summary: string;
+  /** Lines added and removed per file; empty for a merge, whose work is in the commits it brings. */
+  files: { path: string; added: number; removed: number }[];
+}
+
+/** Commits reachable from `heads` and not from `from`, newest first, with their files. */
+export function scopeLog(g: GoalGit, heads: string[], from: string, max = 400): LogCommit[] {
+  const out = tryGit(g.repo, '-c', 'core.quotepath=off', 'log', '-n', String(max), '-M', '--numstat', '--format=%x01%H %P%x09%aI%x09%s', ...heads, ...(from === EMPTY_TREE ? [] : [`^${from}`])) ?? '';
+  const commits: LogCommit[] = [];
+  for (const chunk of out.split('\x01').slice(1)) {
+    const [head, ...lines] = chunk.split('\n');
+    const [ids, at = '', ...subject] = head.split('\t');
+    const [sha, ...parents] = ids.split(' ').filter(Boolean);
+    const files = lines
+      .map(l => l.split('\t'))
+      .filter(p => p.length >= 3)
+      .map(([a, r, ...rest]) => ({ path: renamedTo(rest.join('\t')), added: Number(a) || 0, removed: Number(r) || 0 }));
+    commits.push({ sha, parents, at, summary: subject.join('\t'), files });
+  }
+  return commits;
+}
+
+/** Lines added and removed per file between two trees. */
+export function numstat(g: GoalGit, from: string, to: string): Map<string, { added: number; removed: number }> {
+  const out = tryGit(g.repo, '-c', 'core.quotepath=off', 'diff', '-M', '--numstat', from, to) ?? '';
+  const m = new Map<string, { added: number; removed: number }>();
+  for (const line of out.split('\n')) {
+    const [a, r, ...rest] = line.split('\t');
+    if (rest.length) m.set(renamedTo(rest.join('\t')), { added: Number(a) || 0, removed: Number(r) || 0 });
+  }
+  return m;
 }

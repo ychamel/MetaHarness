@@ -200,3 +200,119 @@ export function pinnedNotes(events: MhEvent[]): { id: string; path: string; text
   }
   return [...notes.values()];
 }
+
+/* ---------------- the scope bar: branches as lanes, commits as dots ---------------- */
+
+export interface LaneDot {
+  sha: string;
+  col: number;
+  lane: number;
+  agent?: string;
+  summary: string;
+  added?: number;
+  removed?: number;
+  merge: boolean;
+}
+
+export interface Lanes {
+  lanes: { branch: string; agent?: string }[];
+  dots: LaneDot[];
+  /** Merges, and where each branch started from the goal branch. */
+  links: { from: [number, number]; to: [number, number]; ff?: boolean }[];
+  cols: number;
+}
+
+/**
+ * The goal's commits laid out like a small git graph, from the log: one lane for the goal
+ * branch, then one per agent branch, a column per commit in the order they were made.
+ */
+export function lanes(events: MhEvent[], goalBranch: string, branches: { name: string; agent: string }[]): Lanes {
+  const out: Lanes = { lanes: [{ branch: goalBranch }], dots: [], links: [], cols: 0 };
+  const laneOf = (branch: string, agent?: string) => {
+    let i = out.lanes.findIndex(l => l.branch === branch);
+    if (i < 0) {
+      out.lanes.push({ branch, agent: agent ?? branches.find(b => b.name === branch)?.agent });
+      i = out.lanes.length - 1;
+    }
+    return i;
+  };
+  for (const b of branches) laneOf(b.name, b.agent);
+  const bySha = new Map<string, LaneDot>();
+  for (const e of events) {
+    const d = e.data;
+    if (e.type === 'git.commit' && !bySha.has(String(d.sha))) {
+      const dot: LaneDot = { sha: String(d.sha), col: out.cols++, lane: laneOf(String(d.branch)), agent: e.agent, summary: String(d.summary ?? ''), added: d.added as number, removed: d.removed as number, merge: false };
+      bySha.set(dot.sha, dot);
+      out.dots.push(dot);
+    } else if (e.type === 'git.merge') {
+      const into = laneOf(String(d.into));
+      const fromLane = out.lanes.findIndex(l => l.branch === String(d.from));
+      const target = bySha.get(String(d.sha));
+      if (target && !d.fastForward) target.merge = true;
+      if (fromLane < 0) continue;
+      const last = out.dots.filter(x => x.lane === fromLane && x.col <= (target?.col ?? out.cols)).at(-1);
+      if (!last) continue;
+      // A fast-forward moves the goal branch onto the branch's commit: drawn as a link to a column of its own.
+      const col = d.fastForward ? out.cols++ : (target?.col ?? out.cols++);
+      out.links.push({ from: [last.col, fromLane], to: [col, into], ...(d.fastForward ? { ff: true } : {}) });
+    }
+  }
+  for (let i = 1; i < out.lanes.length; i++) {
+    const first = out.dots.find(x => x.lane === i);
+    if (first) out.links.push({ from: [Math.max(0, first.col - 1), 0], to: [first.col, i] });
+  }
+  return out;
+}
+
+/* ---------------- one definition's part of a diff ---------------- */
+
+/** A definition's last line: as outlined, else up to the next definition in the file. */
+export function symbolEnd(file: { symbols?: { line: number; end?: number; name: string; kind: string; parent?: string }[] } | undefined, s: { line?: number; end?: number; name: string; kind: string }): number | undefined {
+  if (s.end) return s.end;
+  if (!s.line) return undefined;
+  const own = file?.symbols?.find(x => x.name === s.name && x.kind === s.kind && x.line === s.line);
+  if (own?.end) return own.end;
+  const next = file?.symbols?.map(x => x.line).filter(l => l > s.line!).sort((a, b) => a - b)[0];
+  return next ? next - 1 : s.line + 60;
+}
+
+/**
+ * The hunks of a file's patch that touch lines `from`..`to`, on the new side (or the old side,
+ * for a definition that was removed). A new file's single hunk is cut down to those lines.
+ */
+export function hunksFor(patch: string, from: number, to: number, side: 'new' | 'old' = 'new'): string {
+  const hunks: { head: string; start: number; lines: string[] }[] = [];
+  for (const line of patch.split('\n')) {
+    const h = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (h) hunks.push({ head: line, start: Number(side === 'new' ? h[3] : h[1]), lines: [] });
+    else hunks.at(-1)?.lines.push(line);
+  }
+  const out: string[] = [];
+  for (const h of hunks) {
+    // Walk the hunk, keeping the lines whose number on this side falls in the range.
+    let n = h.start;
+    let a = Number(/^@@ -(\d+)/.exec(h.head)?.[1] ?? 0);
+    let b = Number(/\+(\d+)/.exec(h.head)?.[1] ?? 0);
+    const keep: string[] = [];
+    let first: [number, number] | undefined;
+    for (const l of h.lines) {
+      if (l.startsWith('\\')) continue;
+      const mine = side === 'new' ? !l.startsWith('-') : !l.startsWith('+');
+      const inRange = mine ? n >= from && n <= to : n >= from && n <= to + 1;
+      if (inRange) {
+        if (!first) first = [a, b];
+        keep.push(l);
+      }
+      if (l.startsWith('+')) b++;
+      else if (l.startsWith('-')) a++;
+      else {
+        a++;
+        b++;
+      }
+      if (mine) n++;
+    }
+    if (!first || !keep.some(l => l.startsWith('+') || l.startsWith('-'))) continue;
+    out.push(`@@ -${first[0]} +${first[1]} @@`, ...keep);
+  }
+  return out.join('\n');
+}

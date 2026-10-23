@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.ts';
 import { agentColors } from '../agentColors.ts';
 import { ago } from '../format.ts';
-import type { DiffView, Goal, GitView, MhEvent } from '../types.ts';
+import type { DesignArea, DiffView, Goal, GitView, MhEvent } from '../types.ts';
+import { areaLabel, areaOf } from '../designData.ts';
 import { DiffFiles } from '../components/Diff.tsx';
 import { Splitter } from '../components/Splitter.tsx';
 
@@ -21,6 +22,7 @@ interface Row {
   removed?: number;
   files?: number;
   map?: boolean;
+  paths?: string[];
 }
 
 /** The goal's commits, merges and conflicts, newest first, from the event log. */
@@ -32,9 +34,9 @@ export function gitRows(events: MhEvent[], mapFile = 'ARCHITECTURE.md'): Row[] {
     const d = e.data;
     if (e.type === 'git.commit' && merges.has(String(d.sha))) {
       const m = merges.get(String(d.sha))!.data;
-      rows.push({ seq: e.seq, ts: e.ts, kind: 'merge', agent: e.agent, branch: String(d.branch), sha: String(d.sha), text: `merged ${m.from} into ${m.into}`, added: d.added as number, removed: d.removed as number, files: d.files as number });
+      rows.push({ seq: e.seq, ts: e.ts, kind: 'merge', agent: e.agent, branch: String(d.branch), sha: String(d.sha), text: `merged ${m.from} into ${m.into}`, added: d.added as number, removed: d.removed as number, files: d.files as number, paths: d.paths as string[] | undefined });
     } else if (e.type === 'git.commit') {
-      rows.push({ seq: e.seq, ts: e.ts, kind: 'commit', agent: e.agent, branch: String(d.branch), sha: String(d.sha), text: String(d.summary), added: d.added as number, removed: d.removed as number, files: d.files as number, map: (d.paths as string[] | undefined)?.includes(mapFile) });
+      rows.push({ seq: e.seq, ts: e.ts, kind: 'commit', agent: e.agent, branch: String(d.branch), sha: String(d.sha), text: String(d.summary), added: d.added as number, removed: d.removed as number, files: d.files as number, map: (d.paths as string[] | undefined)?.includes(mapFile), paths: d.paths as string[] | undefined });
     } else if (e.type === 'git.merge' && !d.fastForward) {
       if (events.some(c => c.type === 'git.commit' && c.data.sha === d.sha)) continue;
       rows.push({ seq: e.seq, ts: e.ts, kind: 'merge', agent: e.agent, branch: String(d.into), sha: String(d.sha), text: `merged ${d.from} into ${d.into}`, added: d.added as number, removed: d.removed as number, files: d.files as number });
@@ -51,7 +53,7 @@ export function gitRows(events: MhEvent[], mapFile = 'ARCHITECTURE.md'): Row[] {
 
 export const shortBranch = (goal: string, b: string) => b.replace(`mh/${goal}/`, '');
 
-export default function Git({ goal, events, sel, onSel, onSelectAgent }: { goal: Goal; events: MhEvent[]; sel?: GitSel; onSel: (s: GitSel) => void; onSelectAgent: (n: string) => void }) {
+export default function Git({ goal, events, sel, onSel, onSelectAgent, onOpenDesign }: { goal: Goal; events: MhEvent[]; sel?: GitSel; onSel: (s: GitSel) => void; onSelectAgent: (n: string) => void; onOpenDesign: (sha: string, area?: string) => void }) {
   const [view, setView] = useState<GitView>();
   const [diff, setDiff] = useState<DiffView>();
   const [error, setError] = useState<string>();
@@ -93,6 +95,9 @@ export default function Git({ goal, events, sel, onSel, onSelectAgent }: { goal:
   if (view && !view.git) return <div className="empty">{view.note}</div>;
   const g = view?.git;
   const shown = branch ? rows.filter(r => r.branch === branch) : rows;
+  // Which parts of the design each commit touched, from the latest snapshot's areas.
+  const areas = (view?.areas ?? []) as DesignArea[];
+  const areasOf = (r: Row) => (areas.length && r.paths ? [...new Set(r.paths.map(p => areaOf(areas, p)).filter((a): a is string => a !== undefined))] : []);
   const isSel = (s: GitSel) => JSON.stringify(s) === key;
   return (
     <div className="git-view">
@@ -197,6 +202,31 @@ export default function Git({ goal, events, sel, onSel, onSelectAgent }: { goal:
                   {' · '}
                   {ago(r.ts)}
                 </span>
+                {r.sha && areasOf(r).length > 0 && (
+                  <span className="area-chips">
+                    {areasOf(r).slice(0, 5).map(a => (
+                      <span
+                        key={a}
+                        role="link"
+                        tabIndex={0}
+                        className="area-chip"
+                        title={`Open ${areaLabel(a)} in the Design tab, at this commit`}
+                        onClick={ev => {
+                          ev.stopPropagation();
+                          onOpenDesign(r.sha!, a);
+                        }}
+                        onKeyDown={ev => {
+                          if (ev.key !== 'Enter') return;
+                          ev.stopPropagation();
+                          onOpenDesign(r.sha!, a);
+                        }}
+                      >
+                        {areas.find(x => x.path === a)?.title ?? areaLabel(a)}
+                      </span>
+                    ))}
+                    {areasOf(r).length > 5 && <span className="muted small">+{areasOf(r).length - 5}</span>}
+                  </span>
+                )}
               </span>
               {r.added !== undefined && (
                 <span className="commit-size">
@@ -211,7 +241,14 @@ export default function Git({ goal, events, sel, onSel, onSelectAgent }: { goal:
       <Splitter pane="git" grow="right" min={240} max={700} label="Commit list" />
       <div className="git-diff">
         <div className="git-diff-head">
-          <b>{current.kind === 'range' ? `Changes on ${current.label}` : diff?.title ?? '…'}</b>
+          <div className="row-wrap">
+            <b className="grow">{current.kind === 'range' ? `Changes on ${current.label}` : diff?.title ?? '…'}</b>
+            {current.kind === 'commit' && (
+              <button className="btn ghost small" onClick={() => onOpenDesign(current.sha)} title="See what this commit did to the design">
+                Open in Design
+              </button>
+            )}
+          </div>
           {diff?.shared && <div className="muted small">Uncommitted changes in your checkout could be anyone's: yours, or any agent working there.</div>}
         </div>
         <div className="scroll">{error ? <div className="empty warn-text">{error}</div> : diff ? <DiffFiles files={diff.files} /> : <div className="empty">Loading…</div>}</div>

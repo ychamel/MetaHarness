@@ -376,6 +376,8 @@ export interface GitView {
   branches?: GitBranch[];
   conflicts?: { dir: string; op: string; branch: string; agent?: string }[];
   mapFile?: string;
+  /** The latest design snapshot's areas, to say which parts each commit touched. */
+  areas?: { path: string; title: string }[];
 }
 
 export interface DiffFile {
@@ -401,6 +403,7 @@ export interface DesignSymbol {
   name: string;
   parent?: string;
   line: number;
+  end?: number;
   hash: string;
 }
 
@@ -424,7 +427,7 @@ export interface DesignFile {
 export interface DesignSnapshot {
   sha: string;
   at: string;
-  map: { file: string | null; overview: string; areas: DesignArea[] };
+  map: { file: string | null; overview: string; areas: DesignArea[]; flows?: DesignFlow[] };
   files: DesignFile[];
   edges: { from: string; to: string; n: number }[];
   skipped: number;
@@ -456,12 +459,20 @@ export interface DesignView {
   languages?: { name: string; extensions: string[]; engine: string; builtIn: boolean }[];
 }
 
+export interface DesignFlow {
+  name: string;
+  steps: { label: string; area?: string }[];
+  text: string;
+}
+
 export interface SymbolRef {
   file: string;
   kind: string;
   name: string;
   parent?: string;
   area: string;
+  line?: number;
+  end?: number;
 }
 
 export interface DesignChange {
@@ -470,4 +481,75 @@ export interface DesignChange {
   files: { added: string[]; removed: string[]; changed: string[] };
   symbols: { added: SymbolRef[]; removed: SymbolRef[]; changed: SymbolRef[] };
   overviewChanged: boolean;
+}
+
+/** What the Design view looks at: the whole goal, one commit, an agent's branch, or a range (a landing is one). */
+export type ScopeSel =
+  | { kind: 'goal'; branches?: boolean }
+  | { kind: 'commit'; sha: string }
+  | { kind: 'branch'; agent: string }
+  | { kind: 'range'; from: string; to: string; title: string };
+
+export interface ScopeCommit {
+  sha: string;
+  at: string;
+  summary: string;
+  agent?: string;
+  merge: boolean;
+  added: number;
+  removed: number;
+  files: number;
+  areas: string[];
+  paths: string[];
+}
+
+export interface AreaChange {
+  path: string;
+  added: number;
+  removed: number;
+  files: number;
+  commits: number;
+  agents: { name: string; commits: number }[];
+  symbols: { added: number; changed: number; removed: number };
+  hotspot: number;
+}
+
+export interface FileChange {
+  path: string;
+  area: string;
+  added: number;
+  removed: number;
+  churn: number;
+  commits: number;
+  agents: string[];
+  size: number;
+  usedBy: number;
+  score: number;
+  reasons: string[];
+}
+
+export interface DesignReport {
+  goal: string;
+  scope: { kind: string; title: string; from: string; to: string };
+  at: string;
+  totals: { commits: number; files: number; added: number; removed: number; agents: string[] };
+  commits: ScopeCommit[];
+  areas: AreaChange[];
+  files: FileChange[];
+  hotspots: string[];
+  cycles: { areas: string[]; new: boolean }[];
+  edges: DesignChange['edges'];
+  coupling: { area: string; uses: number; usedBy: number }[];
+  flows: { name: string; unknown: string[]; unbacked: [string, string][] }[];
+}
+
+export interface DesignScopeView {
+  scope?: { kind: string; title: string; from: string; to: string; conflicts: string[]; merged: string[] };
+  snapshot: DesignSnapshot | null;
+  change?: DesignChange;
+  report?: DesignReport;
+  removedAreas?: DesignArea[];
+  list: SnapshotInfo[];
+  tip?: string;
+  note?: string;
 }

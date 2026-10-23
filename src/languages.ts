@@ -111,6 +111,8 @@ export interface Symbol {
   parent?: string;
   /** 1-based. */
   line: number;
+  /** Its last line, 1-based (snapshots taken before this was kept don't have it). */
+  end?: number;
   /** A short hash of its text, to tell a changed definition from an unchanged one. */
   hash: string;
 }
@@ -177,12 +179,12 @@ function treeOutline(l: Loaded, text: string): FileOutline {
   const out: FileOutline = { symbols: [], imports: [], references: [] };
   if (!tree) return out;
   try {
-    const defs: { kind: string; name: string; start: number; end: number; line: number; hash: string }[] = [];
+    const defs: { kind: string; name: string; start: number; end: number; line: number; last: number; hash: string }[] = [];
     for (const m of l.query.matches(tree.rootNode)) {
       const def = m.captures.find(c => c.name.startsWith('definition.'));
       const name = m.captures.find(c => c.name === 'name');
       if (def && name) {
-        defs.push({ kind: def.name.slice(11), name: name.node.text, start: def.node.startIndex, end: def.node.endIndex, line: def.node.startPosition.row + 1, hash: hash(def.node.text) });
+        defs.push({ kind: def.name.slice(11), name: name.node.text, start: def.node.startIndex, end: def.node.endIndex, line: def.node.startPosition.row + 1, last: def.node.endPosition.row + 1, hash: hash(def.node.text) });
       }
       for (const c of m.captures) if (c.name === 'import') out.imports.push(c.node.text.replace(/^(['"])(.*)\1$/s, '$2'));
       // A reference names what it uses with @name, as in tags.scm; calls are too many to follow.
@@ -194,7 +196,7 @@ function treeOutline(l: Loaded, text: string): FileOutline {
       // The innermost definition around it, if any, is its parent: a method's class.
       const around = defs.filter(o => o !== d && o.start <= d.start && o.end >= d.end && (o.start < d.start || o.end > d.end)).at(-1);
       const kind = around && d.kind === 'function' && around.kind === 'class' ? 'method' : d.kind;
-      out.symbols.push({ kind, name: d.name, ...(around ? { parent: around.name } : {}), line: d.line, hash: d.hash });
+      out.symbols.push({ kind, name: d.name, ...(around ? { parent: around.name } : {}), line: d.line, end: d.last, hash: d.hash });
     }
   } finally {
     tree.delete();
@@ -236,6 +238,8 @@ function patternOutline(patterns: { kind: string; re: RegExp }[], text: string):
     let end = d.at + 1;
     while (end < lines.length && !(lines[end].trim() && lines[end].length - lines[end].trimStart().length <= d.indent)) end++;
     d.s.hash = hash(lines.slice(d.at, end).join('\n'));
+    while (end > d.at + 1 && !lines[end - 1].trim()) end--;
+    d.s.end = end;
   }
   out.imports = [...new Set(out.imports)];
   out.references = [...new Set(out.references)];
