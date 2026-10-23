@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { basename, dirname, join } from 'node:path';
 import { loadConfig, parseFrontMatter } from './config.ts';
 import type { McpServerDef } from './mcpservers.ts';
+import type { Role } from './types.ts';
 import { BUILTIN_DIR, loadRuleFiles, loadRules, RULE_WHENS, type Rule } from './rules.ts';
 import { loadSettings } from './settings.ts';
 import { loadSkillFolder, loadSkills, skillFiles, skillLayers, type Skill, type SkillSource } from './skills.ts';
@@ -44,10 +45,11 @@ function checkName(name: unknown, what: string): string {
 
 export interface RoleView {
   name: string;
-  scope: Scope;
+  /** built-in: ships with MetaHarness (the cartographer); saving it writes a copy into a folder. */
+  scope: Scope | 'built-in';
   file: string;
-  /** Also defined in a folder this one overrides (a personal role of the same name). */
-  overrides?: Scope;
+  /** Also defined in a folder this one overrides (a personal role of the same name, or a built-in one). */
+  overrides?: Scope | 'built-in';
   harness: string;
   model: string;
   /** Empty: the harness's default. */
@@ -133,6 +135,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
   const roles = new Map<string, RoleView>();
   const workflows = new Map<string, WorkflowView>();
   for (const w of builtIn.workflows.values()) workflows.set(w.name, { name: w.name, scope: 'built-in', file: w.file, goodAt: w.goodAt, roles: w.roles, body: w.body });
+  for (const r of builtIn.roles.values()) if (r.builtIn) roles.set(r.name, roleView(r, 'built-in'));
   const mcp = new Map<string, { name: string; scope: Scope; def: McpServerDef }>();
   const guide = (file: string, def: string): GuideView => {
     const g: GuideView = { text: def, from: 'built-in', builtIn: def, files: {} };
@@ -151,11 +154,7 @@ export function configView(scopes: ScopeDir[]): ConfigView {
       // Built-in roles (the gatekeeper) have no file to edit.
       if (r.file === '(built in)') continue;
       const before = roles.get(r.name);
-      roles.set(r.name, {
-        name: r.name, scope, file: r.file, overrides: before?.scope, harness: r.harness, model: r.model, effort: r.effort ?? '', fallback: r.fallback, goodAt: r.goodAt,
-        instructions: r.instructions, helper: r.helper, worktree: r.worktree, workflow: r.workflow ?? '', mcp: r.mcp, skills: r.skills ?? [], autoApprove: r.autoApprove, approvals: r.approvals ?? '',
-        permissionMode: r.permissionMode ?? '', allow: r.allow, nativeSkills: !!r.nativeSkills,
-      });
+      roles.set(r.name, roleView(r, scope, before?.scope));
     }
     for (const w of c.workflows.values()) {
       const before = workflows.get(w.name);
@@ -173,6 +172,14 @@ export function configView(scopes: ScopeDir[]): ConfigView {
     methodology: guide('methodology.md', builtIn.methodology),
     helperMethodology: guide('helper-methodology.md', builtIn.helperMethodology),
     mcp: byName(mcp),
+  };
+}
+
+function roleView(r: Role, scope: RoleView['scope'], overrides?: RoleView['scope']): RoleView {
+  return {
+    name: r.name, scope, file: r.file, ...(overrides ? { overrides } : {}), harness: r.harness, model: r.model, effort: r.effort ?? '', fallback: r.fallback, goodAt: r.goodAt,
+    instructions: r.instructions, helper: r.helper, worktree: r.worktree, workflow: r.workflow ?? '', mcp: r.mcp, skills: r.skills ?? [], autoApprove: r.autoApprove, approvals: r.approvals ?? '',
+    permissionMode: r.permissionMode ?? '', allow: r.allow, nativeSkills: !!r.nativeSkills,
   };
 }
 
@@ -271,7 +278,9 @@ export function saveRole(scopes: ScopeDir[], b: Record<string, unknown>): string
   if (!harness) throw new Error('A role needs a harness.');
   const file = join(dir, 'roles', `${name}.md`);
   const prev = (b.previous ?? {}) as Previous;
-  const prevFile = prev.name ? join(dirOf(scopes, prev.scope ?? b.scope), 'roles', `${checkName(prev.name, 'role')}.md`) : undefined;
+  // A built-in role is saved as a copy in a folder; its other settings (wake:) come along.
+  const builtInPrev = prev.scope === ('built-in' as Scope);
+  const prevFile = !prev.name ? undefined : builtInPrev ? join(BUILTIN_DIR, 'roles', `${checkName(prev.name, 'role')}.md`) : join(dirOf(scopes, prev.scope ?? b.scope), 'roles', `${checkName(prev.name, 'role')}.md`);
   if (file !== prevFile && existsSync(file)) throw new Error(`There's already a role called ${name} in the ${String(b.scope)} folder.`);
   const old = prevFile && existsSync(prevFile) ? readFileSync(prevFile, 'utf8') : '';
   const extra = Object.entries(parseFrontMatter(old).meta).filter(([k]) => !ROLE_KEYS.includes(k));
@@ -299,7 +308,7 @@ export function saveRole(scopes: ScopeDir[], b: Record<string, unknown>): string
     str(b.instructions),
     leadingComments(old),
   );
-  if (prevFile && prevFile !== file) rmSync(prevFile, { force: true });
+  if (prevFile && prevFile !== file && !builtInPrev) rmSync(prevFile, { force: true });
   return file;
 }
 

@@ -132,11 +132,11 @@ export function SpawnDialog({ config, goal, parent, onClose, onSpawn }: { config
 }
 
 /** A message to one agent, the lead, everyone on the goal, or every agent in a role (as `mh send`). */
-export function MessageDialog({ goal, onClose, onSend }: { goal: Goal; onClose: () => void; onSend: (b: Record<string, unknown>) => Promise<boolean> }) {
+export function MessageDialog({ goal, initial = '', onClose, onSend }: { goal: Goal; initial?: string; onClose: () => void; onSend: (b: Record<string, unknown>) => Promise<boolean> }) {
   const live = goal.agents.filter(a => !['ended', 'crashed'].includes(a.state));
   const roles = [...new Set(live.map(a => a.role))];
   const [to, setTo] = useState('lead');
-  const [text, setText] = useState('');
+  const [text, setText] = useState(initial);
   const [urgent, setUrgent] = useState(false);
   const send = async () => {
     if (text.trim() && (await onSend({ cmd: 'agent.message', goal: goal.id, to, text: text.trim(), urgent }))) onClose();

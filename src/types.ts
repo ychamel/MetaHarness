@@ -53,6 +53,10 @@ export interface Role {
   nativeSkills?: boolean;
   /** How this role's approvals are decided, instead of the settings' default. */
   approvals?: import('./settings.ts').ApprovalMode;
+  /** What wakes agents in this role besides messages: `landed`, work reaching the goal branch (the cartographer). */
+  wake?: string[];
+  /** Ships with MetaHarness (defaults/roles/); a folder's role of the same name replaces it. */
+  builtIn?: boolean;
   file: string;
 }
 

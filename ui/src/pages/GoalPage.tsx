@@ -11,16 +11,21 @@ import { Splitter } from '../components/Splitter.tsx';
 import { Story } from '../views/Story.tsx';
 import { Files } from '../views/Files.tsx';
 import { Activity } from '../views/Activity.tsx';
+import type { GitSel } from '../views/Git.tsx';
 
 // The flow views pull in React Flow; load them when first opened.
 const Graph = lazy(() => import('../views/Graph.tsx'));
 const Sequence = lazy(() => import('../views/Sequence.tsx'));
 const Timeline = lazy(() => import('../views/Timeline.tsx'));
 const Costs = lazy(() => import('../views/Costs.tsx'));
+const Design = lazy(() => import('../views/Design.tsx'));
+const Git = lazy(() => import('../views/Git.tsx'));
 
-export type GoalTab = 'story' | 'files' | 'graph' | 'sequence' | 'timeline' | 'costs' | 'log';
+export type GoalTab = 'story' | 'design' | 'git' | 'files' | 'graph' | 'sequence' | 'timeline' | 'costs' | 'log';
 const TABS: [GoalTab, string, string][] = [
   ['story', 'Story', 'What happened, the important parts first'],
+  ['design', 'Design', 'The code as areas from the map: how they depend on each other, how that changed, and who works where'],
+  ['git', 'Git', 'Commits, branches and diffs'],
   ['files', 'Files', 'The shared folder: designs, reviews, reports'],
   ['graph', 'Graph', 'Who talks to whom'],
   ['sequence', 'Sequence', 'Messages over time'],
@@ -58,6 +63,11 @@ export function GoalPage(p: Props) {
   const updates = inbox.filter(i => !ACTIONABLE.includes(i.kind));
   const agent = goal?.agents.find(a => a.name === p.agentName) ?? goal?.agents.find(a => a.name === goal.lead);
   const resolve = (item: string, decision: string, reply?: string) => void p.onCommand({ cmd: 'inbox.resolve', item, decision, reply });
+  const [gitSel, setGitSel] = useState<GitSel>();
+  const openGit = (sel: GitSel) => {
+    setGitSel(sel);
+    p.onTab('git');
+  };
 
   if (!goal) {
     return (
@@ -115,6 +125,8 @@ export function GoalPage(p: Props) {
                 }}
               />
             )}
+            {p.tab === 'design' && <Design goal={goal} events={events} onCommand={p.onCommand} onSelectAgent={p.onAgent} onOpenCommit={sha => openGit({ kind: 'commit', sha })} />}
+            {p.tab === 'git' && <Git goal={goal} events={events} sel={gitSel} onSel={setGitSel} onSelectAgent={p.onAgent} />}
             {p.tab === 'files' && <Files goal={goal} events={events} selected={p.file} onSelect={p.onFile} onSelectAgent={p.onAgent} />}
             {p.tab === 'graph' && <Graph goal={goal} events={events} selected={agent?.name} onSelect={p.onAgent} />}
             {p.tab === 'sequence' && <Sequence goal={goal} events={events} onSelect={p.onAgent} />}
@@ -137,6 +149,7 @@ export function GoalPage(p: Props) {
               onCommand={p.onCommand}
               onSpawnUnder={name => p.onSpawn(name)}
               onEditRole={p.onEditRole}
+              onOpenGit={openGit}
             />
           ) : (
             <div className="empty">Pick an agent to see what it's doing.</div>

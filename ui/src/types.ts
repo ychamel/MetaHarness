@@ -146,9 +146,10 @@ export type Scope = 'personal' | 'repo';
 
 export interface RoleDef {
   name: string;
-  scope: Scope;
+  /** built-in: ships with MetaHarness; saving writes a copy into a folder. */
+  scope: Scope | 'built-in';
   file: string;
-  overrides?: Scope;
+  overrides?: Scope | 'built-in';
   harness: string;
   model: string;
   /** Empty: the harness's default. */
@@ -352,4 +353,121 @@ export interface HarnessReport {
   modelsError?: string;
   install?: string;
   loginCommand?: string;
+}
+
+/* ---------------- Git and Design views (design §14) ---------------- */
+
+export interface GitBranch {
+  name: string;
+  agent: string;
+  base: string;
+  tip: string | null;
+  /** Commits on it that the goal branch doesn't have, and the other way round. */
+  ahead: number;
+  behind: number;
+  /** Files changed and not committed in its worktree; null once the worktree is gone. */
+  uncommitted: number | null;
+  worktree: string | null;
+}
+
+export interface GitView {
+  git: { repo: string; branch: string; base: string; tip: string; commits: number; uncommitted: number } | null;
+  note?: string;
+  branches?: GitBranch[];
+  conflicts?: { dir: string; op: string; branch: string; agent?: string }[];
+  mapFile?: string;
+}
+
+export interface DiffFile {
+  path: string;
+  from?: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  added: number;
+  removed: number;
+  binary: boolean;
+  patch: string;
+  cut?: boolean;
+}
+
+export interface DiffView {
+  title: string;
+  /** Uncommitted work in the human's checkout: anyone's. */
+  shared?: boolean;
+  files: DiffFile[];
+}
+
+export interface DesignSymbol {
+  kind: string;
+  name: string;
+  parent?: string;
+  line: number;
+  hash: string;
+}
+
+export interface DesignArea {
+  path: string;
+  title: string;
+  summary: string;
+  unmapped?: boolean;
+}
+
+export interface DesignFile {
+  path: string;
+  size: number;
+  blob: string;
+  area: string;
+  lang?: string;
+  symbols?: DesignSymbol[];
+  imports?: string[];
+}
+
+export interface DesignSnapshot {
+  sha: string;
+  at: string;
+  map: { file: string | null; overview: string; areas: DesignArea[] };
+  files: DesignFile[];
+  edges: { from: string; to: string; n: number }[];
+  skipped: number;
+  problems: string[];
+}
+
+export interface ChangeSummary {
+  areas: number;
+  edges: number;
+  files: number;
+  symbols: number;
+  highlights: string[];
+}
+
+export interface SnapshotInfo {
+  sha: string;
+  at: string;
+  kind: 'start' | 'landed' | 'asked';
+  by?: string[];
+  summaries?: string[];
+  change?: ChangeSummary;
+}
+
+export interface DesignView {
+  snapshot: DesignSnapshot | null;
+  list: SnapshotInfo[];
+  tip?: string;
+  note?: string;
+  languages?: { name: string; extensions: string[]; engine: string; builtIn: boolean }[];
+}
+
+export interface SymbolRef {
+  file: string;
+  kind: string;
+  name: string;
+  parent?: string;
+  area: string;
+}
+
+export interface DesignChange {
+  areas: { added: string[]; removed: string[]; rewritten: string[] };
+  edges: { added: { from: string; to: string }[]; removed: { from: string; to: string }[] };
+  files: { added: string[]; removed: string[]; changed: string[] };
+  symbols: { added: SymbolRef[]; removed: SymbolRef[]; changed: SymbolRef[] };
+  overviewChanged: boolean;
 }

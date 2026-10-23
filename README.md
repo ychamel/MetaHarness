@@ -47,6 +47,11 @@ Milestone 1 in progress:
 
 - The web app follows a goal live (the graph shows each agent's step, messages in flight and
   who waits on whom), and its **Goals** page opens, or deletes, past goals from any folder.
+- The **Design** tab shows the code as the map's areas, which uses which, and where each agent
+  is working, with snapshots as work lands and what changed between them (classes, functions,
+  new dependencies); language packs read Python, TypeScript, JavaScript, GDScript and Godot
+  scenes, and you can add more. The **Git** tab names who made each commit (git hooks record
+  it) and shows diffs. A built-in **cartographer** role keeps `ARCHITECTURE.md` as work lands.
 
 See [TRACKER.md](TRACKER.md).
 
@@ -113,9 +118,10 @@ Another harness on a transport MetaHarness already speaks is a profile, not code
 | `src/harnesses.ts` | Harness profiles: finding each CLI, its login and its models |
 | `src/mcpservers.ts`, `src/readonly.ts` | Roles' MCP servers by name; which shell commands only read |
 | `src/doctor.ts`, `src/probe.ts` | `mh doctor` and `mh test` |
-| `src/git.ts` | Worktrees and branches per agent, and reading new commits for git events |
+| `src/git.ts` | Worktrees and branches per agent, reading new commits for git events, and diffs |
+| `src/design.ts`, `src/languages.ts` | The Design view's snapshots (areas, imports, what changed) and the language packs that read code |
 | `src/rules.ts` | Rules: loading the layers, and which ones fire for a tool call, a commit or a done |
-| `defaults/` | The built-in rules and the `map-bootstrap` workflow |
+| `defaults/` | The built-in rules, the `map-bootstrap` workflow, the cartographer role, and language packs (grammars in `defaults/languages/`) |
 | `src/mcp.ts` | The tools as an MCP server, one identity per agent, plus the approval tool |
 | `src/cli.ts` | The `mh` command |
 | `src/adapters/` | `claude.ts` (Claude Code, stream-json), `codex.ts` (Codex app-server), `agy.ts` + `agy-hook.ts` (Antigravity CLI, stream-json and hooks), `fake.ts` (scripted agents for tests) |

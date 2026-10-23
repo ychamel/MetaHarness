@@ -3,6 +3,7 @@ import { basename, join } from 'node:path';
 import { loadMcpDefs, type McpServerDef } from './mcpservers.ts';
 import { BUILTIN_DIR, loadRules, type Rule } from './rules.ts';
 import { loadSkills, skillLayers, type Skill } from './skills.ts';
+import { loadLanguages, type LanguagePack } from './languages.ts';
 import { APPROVAL_MODES, loadSettings, type ApprovalMode, type Settings } from './settings.ts';
 import type { Role, Workflow } from './types.ts';
 
@@ -18,6 +19,8 @@ export interface Config {
   skills: Map<string, Skill>;
   /** MCP server definitions from mcp.json, for roles' `mcp:` names. */
   mcp: Map<string, McpServerDef>;
+  /** From languages/: how the Design view reads each kind of file (src/languages.ts). */
+  languages: Map<string, LanguagePack>;
   settings: Settings;
 }
 
@@ -70,9 +73,14 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string
     rules: loadRules(builtIn ? [BUILTIN_DIR, ...dirs] : dirs, settings.rules),
     skills: loadSkills(skillLayers(dirs, o.repo, builtIn), settings.skills),
     mcp: loadMcpDefs(dirs),
+    languages: loadLanguages(dirs, builtIn),
     settings,
   };
   if (builtIn) {
+    for (const file of markdownFiles(join(BUILTIN_DIR, 'roles'))) {
+      const role = parseRole(file);
+      cfg.roles.set(role.name, { ...role, builtIn: true });
+    }
     for (const file of markdownFiles(join(BUILTIN_DIR, 'workflows'))) {
       const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
       cfg.workflows.set(basename(file, '.md'), { name: basename(file, '.md'), goodAt: meta.good_at ?? '', roles: list(meta.roles), body, file, builtIn: true });
@@ -82,28 +90,8 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string
     cfg.methodology = readIf(join(dir, 'methodology.md')) ?? cfg.methodology;
     cfg.helperMethodology = readIf(join(dir, 'helper-methodology.md')) ?? cfg.helperMethodology;
     for (const file of markdownFiles(join(dir, 'roles'))) {
-      const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
-      const name = basename(file, '.md');
-      cfg.roles.set(name, {
-        name,
-        harness: meta.harness ?? 'claude-code',
-        model: meta.model ?? '',
-        ...(meta.effort ? { effort: meta.effort.toLowerCase() } : {}),
-        fallback: list(meta.fallback ?? meta.fallbacks),
-        goodAt: meta.good_at ?? '',
-        instructions: body,
-        helper: /^(true|yes|1)$/i.test(meta.helper ?? ''),
-        allow: (meta.allow ?? '').split(/,(?![^(]*\))/).map(s => s.trim()).filter(Boolean),
-        permissionMode: meta.permission_mode || undefined,
-        autoApprove: /^(none|no|off|false|ask)$/i.test(meta.auto_approve ?? '') ? 'none' : 'read-only',
-        mcp: list(meta.mcp),
-        skills: list(meta.skills),
-        workflow: meta.workflow || undefined,
-        worktree: /^(true|yes|1)$/i.test(meta.worktree ?? ''),
-        nativeSkills: /^(true|yes|1)$/i.test(meta.native_skills ?? ''),
-        ...(APPROVAL_MODES.includes(meta.approvals as ApprovalMode) ? { approvals: meta.approvals as ApprovalMode } : {}),
-        file,
-      });
+      const role = parseRole(file);
+      cfg.roles.set(role.name, role);
     }
     for (const file of [...markdownFiles(join(dir, 'playbooks')), ...markdownFiles(join(dir, 'workflows'))]) {
       const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
@@ -115,6 +103,33 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string
   if (!cfg.roles.has(cfg.settings.gatekeeper)) cfg.roles.set(cfg.settings.gatekeeper, { ...BUILTIN_GATEKEEPER, name: cfg.settings.gatekeeper });
   if (!cfg.roles.has(cfg.settings.assistant)) cfg.roles.set(cfg.settings.assistant, { ...BUILTIN_ASSISTANT, name: cfg.settings.assistant });
   return cfg;
+}
+
+/** A role file: roles/<name>.md. */
+export function parseRole(file: string): Role {
+  const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
+  const name = basename(file, '.md');
+  return {
+    name,
+    harness: meta.harness ?? 'claude-code',
+    model: meta.model ?? '',
+    ...(meta.effort ? { effort: meta.effort.toLowerCase() } : {}),
+    fallback: list(meta.fallback ?? meta.fallbacks),
+    goodAt: meta.good_at ?? '',
+    instructions: body,
+    helper: /^(true|yes|1)$/i.test(meta.helper ?? ''),
+    allow: (meta.allow ?? '').split(/,(?![^(]*\))/).map(s => s.trim()).filter(Boolean),
+    permissionMode: meta.permission_mode || undefined,
+    autoApprove: /^(none|no|off|false|ask)$/i.test(meta.auto_approve ?? '') ? 'none' : 'read-only',
+    mcp: list(meta.mcp),
+    skills: list(meta.skills),
+    workflow: meta.workflow || undefined,
+    worktree: /^(true|yes|1)$/i.test(meta.worktree ?? ''),
+    nativeSkills: /^(true|yes|1)$/i.test(meta.native_skills ?? ''),
+    ...(APPROVAL_MODES.includes(meta.approvals as ApprovalMode) ? { approvals: meta.approvals as ApprovalMode } : {}),
+    ...(list(meta.wake).length ? { wake: list(meta.wake) } : {}),
+    file,
+  };
 }
 
 export const ASSISTANT_INSTRUCTIONS = `You're the assistant in MetaHarness's web app. MetaHarness runs teams of AI coding agents

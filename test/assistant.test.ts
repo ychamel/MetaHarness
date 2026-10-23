@@ -64,7 +64,7 @@ test('the assistant answers from its read-only tools, and changes the setup only
   d.assistant.ask('Make it cheaper');
   await waitFor('a proposal', () => stream().filter(e => e.type === 'assistant.text').length >= 4);
   const texts = stream().filter(e => e.type === 'assistant.text').map(e => String(e.data.text));
-  assert.match(texts[1], /Roles I can see: architect, assistant, implementer; built in: gatekeeper/);
+  assert.match(texts[1], /Roles I can see: architect, assistant, cartographer, implementer; built in: gatekeeper/);
   assert.match(texts[3], /can't propose goal.start/);
   const p = stream().find(e => e.type === 'assistant.proposal')!;
   assert.equal(p.data.summary, 'Run the implementer on m2, which is cheaper');

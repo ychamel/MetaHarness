@@ -118,6 +118,11 @@ export function commitsBetween(g: GoalGit, from: string, to: string): NewCommit[
     });
 }
 
+/** The commits a merge brought in: on its second parent's line, not already on its first. */
+export function mergedCommits(g: GoalGit, merge: string): string[] {
+  return (tryGit(g.repo, 'rev-list', '-n', '100', `${merge}^1..${merge}^2`) ?? '').split('\n').filter(Boolean);
+}
+
 /** The files a commit changed, against its first parent (renames detected). */
 export function changedFiles(g: GoalGit, sha: string): import('./rules.ts').CommitFile[] {
   const out = tryGit(g.repo, 'diff-tree', '--no-commit-id', '--root', '-r', '-M', '--name-status', sha) ?? '';
@@ -212,4 +217,168 @@ export function removeWorktree(repo: string | undefined, path: string): void {
 
 export function deleteBranch(repo: string, branch: string): void {
   git(repo, 'branch', '-D', branch);
+}
+
+/* ---------------- what changed: sizes and diffs, for the app (design §14) ---------------- */
+
+export interface CommitStats {
+  files: number;
+  added: number;
+  removed: number;
+  /** The paths it changed, at most PATHS_MAX of them. */
+  paths: string[];
+}
+
+const PATHS_MAX = 200;
+
+/** Lines added and removed by a commit, against its first parent (so a merge counts what it brought in). */
+export function commitStats(g: GoalGit, sha: string): CommitStats {
+  const out = tryGit(g.repo, 'diff-tree', '--no-commit-id', '-r', '-M', '--numstat', '--root', '--diff-merges=first-parent', sha) ?? '';
+  const s: CommitStats = { files: 0, added: 0, removed: 0, paths: [] };
+  for (const line of out.split('\n')) {
+    const [a, r, ...rest] = line.split('\t');
+    if (!rest.length) continue;
+    s.files++;
+    s.added += Number(a) || 0;
+    s.removed += Number(r) || 0;
+    if (s.paths.length < PATHS_MAX) s.paths.push(renamedTo(rest.join('\t')));
+  }
+  return s;
+}
+
+/** numstat names a rename "old => new" or "dir/{old => new}/file". */
+function renamedTo(p: string): string {
+  const brace = /^(.*)\{(.*) => (.*)\}(.*)$/.exec(p);
+  if (brace) return (brace[1] + brace[3] + brace[4]).replace(/\/\//g, '/');
+  const arrow = p.indexOf(' => ');
+  return arrow >= 0 ? p.slice(arrow + 4) : p;
+}
+
+export interface DiffFile {
+  path: string;
+  /** The old path of a rename or copy. */
+  from?: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  added: number;
+  removed: number;
+  binary: boolean;
+  /** The file's hunks, from its first @@ line; empty for binary files, cut at FILE_MAX. */
+  patch: string;
+  cut?: boolean;
+}
+
+const FILE_MAX = 80 * 1024;
+const DIFF_MAX = 2 * 1024 * 1024;
+
+/** Splits `git diff` output into files. */
+export function parsePatch(text: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  for (const chunk of text.split(/^diff --git /m).slice(1)) {
+    const lines = chunk.split('\n');
+    const head = /^a\/(.*) b\/(.*)$/.exec(lines[0]) ?? [];
+    const f: DiffFile = { path: head[2] ?? lines[0], status: 'modified', added: 0, removed: 0, binary: false, patch: '' };
+    let i = 1;
+    for (; i < lines.length && !lines[i].startsWith('@@'); i++) {
+      const l = lines[i];
+      if (l.startsWith('new file')) f.status = 'added';
+      else if (l.startsWith('deleted file')) f.status = 'deleted';
+      else if (l.startsWith('rename from ') || l.startsWith('copy from ')) f.from = l.replace(/^(rename|copy) from /, '');
+      else if (l.startsWith('rename to ') || l.startsWith('copy to ')) {
+        f.path = l.replace(/^(rename|copy) to /, '');
+        f.status = l.startsWith('rename') ? 'renamed' : 'added';
+      } else if (l.startsWith('+++ b/')) f.path = l.slice(6);
+      else if (l.startsWith('--- a/') && f.status === 'deleted') f.path = l.slice(6);
+      else if (l.startsWith('Binary files') || l.startsWith('GIT binary patch')) f.binary = true;
+    }
+    const hunks = lines.slice(i);
+    while (hunks.length && hunks.at(-1) === '') hunks.pop();
+    for (const l of hunks) {
+      if (l.startsWith('+')) f.added++;
+      else if (l.startsWith('-')) f.removed++;
+    }
+    f.patch = hunks.join('\n');
+    if (f.patch.length > FILE_MAX) {
+      f.patch = f.patch.slice(0, f.patch.lastIndexOf('\n', FILE_MAX));
+      f.cut = true;
+    }
+    files.push(f);
+  }
+  return files;
+}
+
+function runDiff(cwd: string, args: string[]): string {
+  try {
+    return execFileSync('git', ['-c', 'core.quotepath=off', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: DIFF_MAX * 4 }).slice(0, DIFF_MAX);
+  } catch (e) {
+    // `diff --no-index` exits 1 when the files differ, which is the point.
+    const out = (e as { stdout?: string }).stdout;
+    if (typeof out === 'string') return out.slice(0, DIFF_MAX);
+    throw e;
+  }
+}
+
+/** What a commit changed, against its first parent. */
+export function commitDiff(g: GoalGit, sha: string): DiffFile[] {
+  return parsePatch(runDiff(g.repo, ['diff-tree', '-p', '-M', '--no-commit-id', '--root', '--diff-merges=first-parent', sha]));
+}
+
+/** Everything between two commits, e.g. what a goal changed since it started. */
+export function rangeDiff(g: GoalGit, from: string, to: string): DiffFile[] {
+  return parsePatch(runDiff(g.repo, ['diff', '-M', from, to]));
+}
+
+/** Uncommitted changes in a checkout or worktree, new files included. */
+export function workingDiff(cwd: string): DiffFile[] {
+  const files = parsePatch(runDiff(cwd, ['diff', '-M', 'HEAD']));
+  const untracked = (tryGit(cwd, 'ls-files', '--others', '--exclude-standard') ?? '').split('\n').filter(Boolean);
+  for (const p of untracked.slice(0, 200)) files.push(...parsePatch(runDiff(cwd, ['diff', '--no-index', '--', '/dev/null', p])).map(f => ({ ...f, path: p, status: 'added' as const })));
+  return files;
+}
+
+export interface TreeFile {
+  path: string;
+  /** Bytes. */
+  size: number;
+  blob: string;
+}
+
+/** Every file in a commit's tree. */
+export function treeFiles(g: GoalGit, rev: string): TreeFile[] {
+  const out = tryGit(g.repo, '-c', 'core.quotepath=off', 'ls-tree', '-r', '--long', rev) ?? '';
+  const files: TreeFile[] = [];
+  for (const line of out.split('\n')) {
+    // <mode> blob <sha> <size>\t<path>
+    const m = /^\d+ blob ([0-9a-f]+)\s+(\d+)\t(.*)$/.exec(line);
+    if (m) files.push({ path: m[3], size: Number(m[2]), blob: m[1] });
+  }
+  return files;
+}
+
+/** The text of blobs, by sha (git cat-file --batch). Binary or missing ones are left out. */
+export function readBlobs(g: GoalGit, blobs: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!blobs.length) return out;
+  const buf = execFileSync('git', ['cat-file', '--batch'], { cwd: g.repo, input: blobs.join('\n') + '\n', maxBuffer: 512 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] });
+  let at = 0;
+  for (const sha of blobs) {
+    const nl = buf.indexOf(10, at);
+    if (nl < 0) break;
+    const header = buf.subarray(at, nl).toString();
+    const size = Number(header.split(' ')[2]);
+    at = nl + 1;
+    if (header.endsWith('missing') || !Number.isFinite(size)) continue;
+    const body = buf.subarray(at, at + size);
+    at += size + 1;
+    if (!body.includes(0)) out.set(sha, body.toString('utf8'));
+  }
+  return out;
+}
+
+/** A file's text at a revision, if it's there. */
+export function showFile(g: GoalGit, rev: string, path: string): string | undefined {
+  try {
+    return execFileSync('git', ['show', `${rev}:${path}`], { cwd: g.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 * 1024 * 1024 });
+  } catch {
+    return undefined;
+  }
 }

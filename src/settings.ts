@@ -57,6 +57,8 @@ export interface Settings {
   rules: Record<string, boolean>;
   /** Skills turned off (false) or back on (true) by name. */
   skills: Record<string, boolean>;
+  /** Design snapshots (the Design view) when the goal starts and as work lands; false: none. */
+  design: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -73,6 +75,7 @@ export const DEFAULT_SETTINGS: Settings = {
   models: {},
   rules: {},
   skills: {},
+  design: true,
 };
 
 const FILE = 'settings.json';
@@ -117,6 +120,7 @@ function apply(s: Settings, raw: Record<string, unknown>): void {
   if (typeof raw.gatekeeper === 'string' && raw.gatekeeper.trim()) s.gatekeeper = raw.gatekeeper.trim();
   if (typeof raw.assistant === 'string' && raw.assistant.trim()) s.assistant = raw.assistant.trim();
   if (typeof raw.cacheReminders === 'boolean') s.cacheReminders = raw.cacheReminders;
+  if (typeof raw.design === 'boolean') s.design = raw.design;
   for (const k of ['cacheRemindSec', 'cacheRemindMinTokens', 'defaultCacheMinutes', 'limitCheckMinutes', 'contextHandoffPct', 'stallMinutes'] as const) if (num(raw[k]) !== undefined) s[k] = num(raw[k])!;
   if (raw.models && typeof raw.models === 'object') {
     for (const [key, v] of Object.entries(raw.models)) s.models[key] = { ...s.models[key], ...readModel(v) };

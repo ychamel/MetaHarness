@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { join, normalize, sep } from 'node:path';
+import { join, normalize, relative, sep } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventStore } from './store.ts';
 import { loadConfig, type Config } from './config.ts';
 import { resolveName } from './fuzzy.ts';
-import { Hub } from './hub.ts';
+import { Hub, TOOL_NAMES } from './hub.ts';
 import * as git from './git.ts';
 import type { AgentState, MhEvent, NewEvent, Role, Workflow } from './types.ts';
 import type { ApprovalDecision, CostSplit, HarnessAdapter, HookRequest, LimitWindow, RateLimitInfo, Session, SessionEvents, ToolRequest, Usage } from './adapters/types.ts';
@@ -20,12 +20,14 @@ import { readOnlyCommand } from './readonly.ts';
 import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } from './recover.ts';
 import { HISTORY, SharedFolder } from './shared.ts';
 import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
-import { deniedCommandPrefixes, guardEnv, installGuard, refusedGitCommand } from './guard.ts';
+import { authorsDir, deniedCommandPrefixes, guardEnv, installGuard, readAuthors, refusedGitCommand, removeAuthors } from './guard.ts';
+import { DesignTracker, MAP_FILE, compareDesigns, type SnapshotInfo } from './design.ts';
+import { Outliner } from './languages.ts';
 import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
 import { settle } from './procs.ts';
 import { foldEfforts, splitEffort, type EffortVariant } from './effort.ts';
-import { onCommit, onDone, onToolCall, rulesPrompt, RuleState, type Rule, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
+import { matchesPaths, onCommit, onDone, onToolCall, rulesPrompt, RuleState, toolPaths, type Rule, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
 import { claimedSkills, skillsFor, skillsPrompt, withSkills, type Skill } from './skills.ts';
 
 export interface InboxEntry {
@@ -153,10 +155,16 @@ export interface GoalRec {
   /** Last seen tip of each goal branch, and the branch each reported commit was made on, for git events. */
   refs: Map<string, string>;
   seenOn: Map<string, string>;
-  /** The last agent in the human's checkout to run a git command that commits, so its commits are named after it. */
+  /** The last agent in the human's checkout to run a git command that commits: who a commit the hooks didn't record is named after. */
   gitActor?: { agent: string; at: number };
+  /** Commits on the goal branch not yet announced as landed, gathered until the branch goes quiet (see landed). */
+  landing?: { from: string; commits: LandedCommit[]; timer?: NodeJS.Timeout };
+  /** Watches the folder the git hooks write authors to, so new commits show at once. */
+  authorsWatch?: import('node:fs').FSWatcher;
   /** Merges (and the like) stopped on conflicts, by the folder they're in. */
   conflicts: Map<string, OpenConflict>;
+  /** Notes the human pinned on areas, and who has had each. */
+  notes: Map<string, PinnedNote>;
   /** The shared folder's files and their history. */
   shared: SharedFolder;
   /** Recent tool calls that named a shared file, to tell who wrote it. */
@@ -219,6 +227,8 @@ export interface DaemonOptions {
   contextNotesMs?: number;
   /** How long a finished agent keeps its process before it's let go (its session resumes when messaged). Default 10 minutes; 0 never. */
   releaseMs?: number;
+  /** How long the goal branch stays quiet before what landed on it is announced (default a minute). */
+  landedQuietMs?: number;
   /** How long close() waits for the harnesses' processes to exit before they're killed. */
   closeGraceMs?: number;
 }
@@ -284,6 +294,25 @@ interface Route {
 type SpawnResult =
   | { ok: true; name: string; rec: AgentRec; guessedRole?: string; note?: string }
   | { ok: false; error: string };
+
+/** A commit that reached the goal branch: made there, or merged in. */
+export interface LandedCommit {
+  sha: string;
+  summary: string;
+  agent?: string;
+  paths: string[];
+  merge: boolean;
+  /** For a merge, who made the commits it brought in. */
+  brought?: string[];
+}
+
+export interface PinnedNote {
+  id: string;
+  /** A folder or file in the repository; '' for the whole project. */
+  path: string;
+  text: string;
+  delivered: Set<string>;
+}
 
 interface OpenConflict {
   op: git.Conflict['op'];
@@ -357,6 +386,11 @@ export class Daemon {
   readonly contextNotesMs: number;
   private releaseMs: number;
   private closeGraceMs: number;
+  private landedQuietMs: number;
+  /** Design snapshots for the Design view (src/design.ts). */
+  design: DesignTracker;
+  /** Snapshots being taken, so close() waits for them. */
+  private designing = new Set<Promise<unknown>>();
   /** The app's assistant: answers the human's questions, reads only. */
   readonly assistant: Assistant;
 
@@ -380,6 +414,8 @@ export class Daemon {
     this.contextNotesMs = o.contextNotesMs ?? 120_000;
     this.releaseMs = o.releaseMs ?? 10 * 60_000;
     this.closeGraceMs = o.closeGraceMs ?? 3000;
+    this.landedQuietMs = o.landedQuietMs ?? 60_000;
+    this.design = new DesignTracker(o.home, new Outliner(this.config.languages));
     let assistantRoute = { harness: '', model: '' };
     let assistantSpent = 0;
     this.assistant = new Assistant({
@@ -436,7 +472,7 @@ export class Daemon {
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const g: GoalRec = {
       id, request: o.request, dir: o.dir ?? this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
-      refs: new Map(), seenOn: new Map(), workflow, chained: [], conflicts: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
+      refs: new Map(), seenOn: new Map(), workflow, chained: [], conflicts: new Map(), notes: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
       status: 'running', agents: new Map(), counters: new Map(), gatekeeperCost: new Map(), leadDone, resolveLeadDone,
     };
     const gs = git.setupGoal(g.dir, id);
@@ -444,6 +480,7 @@ export class Daemon {
     else {
       g.git = gs;
       g.refs.set(gs.branch, gs.base);
+      this.watchAuthors(g, gs);
     }
     this.goals.set(id, g);
     const leadRole = o.leadDef?.name ?? o.lead ?? 'architect';
@@ -462,7 +499,48 @@ export class Daemon {
     }
     g.lead = r.name;
     this.startPolling();
+    if (g.git) this.recordDesign(g, g.git, g.git.base, { kind: 'start' });
     return id;
+  }
+
+  /**
+   * New commits show at once: the git hooks write their author to a file the daemon watches, and
+   * that runs the same refresh the poll does. Only while polling is on (tests drive it by hand).
+   */
+  private watchAuthors(g: GoalRec, gg: git.GoalGit): void {
+    if (this.pollMs <= 0) return;
+    try {
+      const dir = authorsDir(gg.commonDir);
+      mkdirSync(dir, { recursive: true });
+      let timer: NodeJS.Timeout | undefined;
+      g.authorsWatch = watch(dir, () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => this.refreshGit(g.id), 250);
+      });
+      g.authorsWatch.on('error', () => g.authorsWatch?.close());
+    } catch {
+      // The poll still finds the commits.
+    }
+  }
+
+  /** Resolves once the design snapshots being taken are done (for tests and close). */
+  async designIdle(): Promise<void> {
+    while (this.designing.size) await Promise.all([...this.designing]);
+  }
+
+  /** Takes a design snapshot in the background; what changed since the last one is logged as design.changed. */
+  private recordDesign(g: GoalRec, gg: git.GoalGit, sha: string, info: Omit<SnapshotInfo, 'sha' | 'at' | 'change'>): void {
+    if (this.config.settings.design === false) return;
+    const p = this.design
+      .record(g.id, gg, g.dir, { sha, ...info })
+      .then(r => {
+        if (!r?.info.change) return;
+        const c = r.info.change;
+        if (c.areas || c.edges || c.symbols || c.files) this.emit({ goal: g.id, type: 'design.changed', data: { sha, ...c } });
+      })
+      .catch(e => this.emit({ goal: g.id, type: 'design.failed', data: { sha, error: (e as Error).message } }))
+      .finally(() => this.designing.delete(p));
+    this.designing.add(p);
   }
 
   /** What the human should know about where the agents' work happens. */
@@ -587,7 +665,7 @@ export class Daemon {
           mcpServers: rec.role.mcp.map(name => ({ name, def: this.config.mcp.get(name) })),
           // Committing writes to the shared .git (and a worktree's own git directory).
           gitDirs: !g.git || rec.quick ? [] : rec.worktree ? [g.git.commonDir, rec.worktree.gitDir] : [g.git.commonDir],
-          env: g.git ? guardEnv(this.guardDir, rec.worktree?.branch, g.git.repo) : undefined,
+          env: g.git ? guardEnv(this.guardDir, rec.worktree?.branch, g.git.repo, { goal: rec.goal, agent: rec.name }) : undefined,
           sharedCheckout: this.sharedCheckout(rec),
           deniedCommands: deniedCommandPrefixes(this.sharedCheckout(rec)),
           approvals: this.approvalMode(rec),
@@ -779,8 +857,10 @@ export class Daemon {
         if (!WAITING_TOOLS.test(tool)) this.touch(rec);
         this.noteGitActor(rec, summary);
         this.noteSharedTouch(rec, summary);
-        this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary } });
+        const touched = this.repoPaths(rec, tool, summary, info);
+        this.emit({ ...base, type: 'agent.tool_call', data: { tool, summary, ...(touched.paths.length ? touched : {}) } });
         this.toolRules(rec, tool, summary, info);
+        this.pinnedNotes(rec, touched.paths);
       },
       toolResult: (summary, ok) => {
         if (!live()) return;
@@ -1063,7 +1143,8 @@ export class Daemon {
    */
   private endedTurnWithoutDone(rec: AgentRec): void {
     this.setState(rec, 'idle');
-    if (rec.inbox.length) return;
+    // A role woken by events (the cartographer) rests between them: nothing to report.
+    if (rec.inbox.length || rec.role.wake?.length) return;
     const g = this.goals.get(rec.goal)!;
     const activeChildren = [...g.agents.values()].some(a => a.parent === rec.name && a.doneNote === undefined && !FINISHED.includes(a.state));
     if (activeChildren) return;
@@ -1265,6 +1346,7 @@ export class Daemon {
   }
 
   private refreshGoalGit(g: GoalRec, gg: git.GoalGit): void {
+    const authors = readAuthors(gg.commonDir, g.id);
     const tips = git.goalBranches(gg, g.id);
     // The branch the team shares, in the human's checkout.
     const head = git.resolveCommit(gg, gg.branch);
@@ -1276,20 +1358,37 @@ export class Daemon {
       const old = g.refs.get(branch);
       g.refs.set(branch, sha);
       if (!old || old === sha) continue;
-      const owner = [...g.agents.values()].find(a => a.worktree?.branch === branch)?.name ?? (branch === gg.branch ? this.checkoutActor(g) : undefined);
+      // The hooks say who made each commit; failing that, a worktree's owner, or whoever in the
+      // human's checkout last ran a committing git command.
+      const branchOwner = [...g.agents.values()].find(a => a.worktree?.branch === branch)?.name ?? (branch === gg.branch ? this.checkoutActor(g) : undefined);
+      const ownerOf = (sha: string) => authors.get(sha) ?? branchOwner;
+      const landing = branch === gg.branch;
       // Name a merge after the branch its commit was made on. Several branches can point at the
       // same commit (a reviewer's starts at the implementer's tip), so asking git is a last resort.
-      const merged = (from: string, sha: string, fastForward?: boolean) =>
+      const merged = (from: string, sha: string, fastForward?: boolean) => {
+        const stats = git.commitStats(gg, sha);
         this.emit({
-          goal: g.id, agent: owner, type: 'git.merge',
+          goal: g.id, agent: ownerOf(sha), type: 'git.merge',
           data: {
             from: g.seenOn.get(from) ?? git.branchOf(gg, g.id, from, branch) ?? from.slice(0, 7),
             into: branch, sha, ...(fastForward ? { fastForward } : {}),
+            ...(fastForward ? {} : { files: stats.files, added: stats.added, removed: stats.removed, paths: stats.paths }),
           },
         });
+      };
+      if (landing) g.landing ??= { from: old, commits: [] };
       // Commits already reported on another branch arrived here by a fast-forward merge.
       let fastForwarded = '';
       for (const c of git.commitsBetween(gg, old, sha)) {
+        const stats = git.commitStats(gg, c.sha);
+        if (landing) {
+          // A commit fast-forwarded in from a teammate's branch is theirs, not the merger's.
+          const seen = g.seenOn.get(c.sha);
+          const ownerOfBranch = (b?: string) => [...g.agents.values()].find(a => a.worktree?.branch === b)?.name;
+          const agent = authors.get(c.sha) ?? (seen && seen !== branch ? ownerOfBranch(seen) : branchOwner);
+          const brought = c.mergedSha ? [...new Set(git.mergedCommits(gg, c.sha).map(s => authors.get(s) ?? ownerOfBranch(g.seenOn.get(s))).filter((a): a is string => !!a))] : [];
+          g.landing!.commits.push({ sha: c.sha, summary: c.summary, ...(agent ? { agent } : {}), paths: stats.paths, merge: !!c.mergedSha, ...(brought.length ? { brought } : {}) });
+        }
         if (g.seenOn.has(c.sha)) {
           fastForwarded = c.sha;
           continue;
@@ -1297,13 +1396,53 @@ export class Daemon {
         if (fastForwarded) merged(fastForwarded, fastForwarded, true);
         fastForwarded = '';
         g.seenOn.set(c.sha, branch);
-        this.emit({ goal: g.id, agent: owner, type: 'git.commit', data: { branch, sha: c.sha, summary: c.summary } });
+        const owner = ownerOf(c.sha);
+        this.emit({
+          goal: g.id, agent: owner, type: 'git.commit',
+          data: { branch, sha: c.sha, summary: c.summary, files: stats.files, added: stats.added, removed: stats.removed, paths: stats.paths },
+        });
         if (c.mergedSha) merged(c.mergedSha, c.sha);
         else if (owner) this.commitRules(g, gg, owner, c.sha);
       }
       if (fastForwarded) merged(fastForwarded, fastForwarded, true);
+      if (landing) this.scheduleLanded(g, gg);
     }
     this.refreshConflicts(g, gg);
+  }
+
+  /**
+   * Work landed on the goal branch: once it has been quiet for landedQuietMs, it's announced in
+   * one go (`git.landed`), a design snapshot is taken, and roles that asked to be woken by it
+   * (`wake: landed`, e.g. the cartographer) hear what came in.
+   */
+  private scheduleLanded(g: GoalRec, gg: git.GoalGit): void {
+    const l = g.landing;
+    if (!l?.commits.length) return;
+    clearTimeout(l.timer);
+    l.timer = setTimeout(() => this.landed(g, gg), this.landedQuietMs);
+    l.timer.unref?.();
+  }
+
+  /** Announces what landed since the last time (see scheduleLanded). Public for tests, which don't wait. */
+  landed(g: GoalRec, gg = g.git): void {
+    const l = g.landing;
+    g.landing = undefined;
+    if (!l?.commits.length || !gg) return;
+    clearTimeout(l.timer);
+    const to = l.commits.at(-1)!.sha;
+    const by = [...new Set(l.commits.flatMap(c => [...(c.brought ?? []), c.agent]).filter((a): a is string => !!a))];
+    const paths = [...new Set(l.commits.flatMap(c => c.paths))];
+    this.emit({
+      goal: g.id, type: 'git.landed',
+      data: { branch: gg.branch, from: l.from, to, commits: l.commits.length, by, paths: paths.slice(0, 200), summaries: l.commits.slice(-20).map(c => c.summary) },
+    });
+    this.recordDesign(g, gg, to, { kind: 'landed', by, summaries: l.commits.slice(-20).map(c => c.summary) });
+    for (const rec of g.agents.values()) {
+      if (!rec.role.wake?.includes('landed') || rec.quick || FINISHED.includes(rec.state)) continue;
+      // Its own commits (the map it just wrote) don't wake it again.
+      if (l.commits.every(c => c.agent === rec.name)) continue;
+      this.notice(rec, landedNote(gg.branch, l.from, to, l.commits, paths));
+    }
   }
 
   /** Looks at git and the shared folders every few seconds, once there's a goal. */
@@ -1630,6 +1769,84 @@ export class Daemon {
     this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: n.paths.slice(0, 20), ...(skill ? { skill } : {}) } });
     if (rec.session?.busy() && !FINISHED.includes(rec.state)) this.notice(rec, n.text);
     else rec.ruleNotes.push(n.text);
+  }
+
+  /**
+   * The repository files a tool call names, relative to the repository's top (a worktree's top
+   * for an agent in one), for the Design view's activity and for pinned notes. `edit`: an edit
+   * tool wrote them; otherwise it read, searched or ran something naming them.
+   */
+  private repoPaths(rec: AgentRec, tool: string, summary: string, info?: ToolInfo): { paths: string[]; edit?: true } {
+    const g = this.goals.get(rec.goal);
+    // MetaHarness's own tools (a message naming a file) aren't work on the code.
+    const own = (TOOL_NAMES as readonly string[]).includes(tool.replace(/^(mcp__)?metaharness[_.:/-]+/, ''));
+    if (!g?.git || own || FINISHED.includes(rec.state)) return { paths: [] };
+    const { paths, edit } = toolPaths(tool, summary, rec.cwd, info);
+    if (!paths.length) return { paths: [] };
+    const root = [...g.agents.values()].map(a => a.worktree?.path).find(w => w && (rec.cwd === w || rec.cwd.startsWith(w + sep))) ?? g.git.repo;
+    const rel = paths.map(p => relative(root, join(rec.cwd, p.path)).split(sep).join('/')).filter(p => p && !p.startsWith('..'));
+    return { paths: rel.slice(0, 20), ...(edit ? { edit: true as const } : {}) };
+  }
+
+  /** Notes the human pinned on an area reach each agent once, the first time it works there. */
+  private pinnedNotes(rec: AgentRec, paths: string[]): void {
+    const g = this.goals.get(rec.goal);
+    if (!g?.notes.size || !paths.length || rec.quick) return;
+    for (const n of g.notes.values()) {
+      if (n.delivered.has(rec.name)) continue;
+      const hit = paths.find(p => n.path === '' || p === n.path || p.startsWith(n.path + '/'));
+      if (!hit) continue;
+      n.delivered.add(rec.name);
+      this.emit({ goal: g.id, agent: rec.name, type: 'note.delivered', data: { id: n.id, path: hit } });
+      const text = `[MetaHarness · note from the human on ${n.path || 'the whole project'}] ${n.text} (You're working on ${hit}.)`;
+      if (rec.session?.busy() && !FINISHED.includes(rec.state)) this.notice(rec, text);
+      else rec.ruleNotes.push(text);
+    }
+  }
+
+  /** Pins a note on an area (a folder or file path, '' for everything) for the agents who work there. */
+  pinNote(goalId: string, path: string, text: string): { id: string } {
+    const g = this.goals.get(goalId);
+    if (!g) throw new Error(`Goal ${goalId} isn't running here, so nobody would read the note.`);
+    if (!text.trim()) throw new Error('The note is empty.');
+    const id = randomUUID().slice(0, 8);
+    const clean = path.trim().replace(/^\.?\/+|\/+$/g, '');
+    g.notes.set(id, { id, path: clean, text: text.trim(), delivered: new Set() });
+    this.emit({ goal: goalId, type: 'note.pinned', data: { id, path: clean, text: text.trim() } });
+    return { id };
+  }
+
+  unpinNote(goalId: string, id: string): void {
+    const g = this.goals.get(goalId);
+    if (!g?.notes.delete(id)) throw new Error(`There's no note ${id} on goal ${goalId}.`);
+    this.emit({ goal: goalId, type: 'note.removed', data: { id } });
+  }
+
+  /** Keeps a pinned note for future goals: a path rule in the repository's rules folder. */
+  keepNote(goalId: string, id: string, scope = 'repo'): string {
+    const g = this.goals.get(goalId);
+    const n = g?.notes.get(id) ?? this.pastNotes(goalId).get(id);
+    if (!n) throw new Error(`There's no note ${id} on goal ${goalId}.`);
+    const slug = (n.path || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'project';
+    let name = `note-${slug}`;
+    const existing = new Set(this.config.rules.keys());
+    for (let i = 2; existing.has(name); i++) name = `note-${slug}-${i}`;
+    const file = saveRule(scopesOf(this.configDirs), {
+      name, scope, when: 'path', description: `the human's note on ${n.path || 'the whole project'}`, paths: n.path ? [n.path, `${n.path}/**`] : ['**'], body: n.text,
+    });
+    this.reloadConfig();
+    this.emit({ goal: goalId, type: 'note.kept', data: { id, rule: name, file } });
+    return file;
+  }
+
+  /** Notes pinned on a goal that isn't loaded, from its log. */
+  private pastNotes(goalId: string): Map<string, { id: string; path: string; text: string }> {
+    const out = new Map<string, { id: string; path: string; text: string }>();
+    for (const e of this.store.since(goalId)) {
+      if (e.type === 'note.pinned') out.set(String(e.data.id), { id: String(e.data.id), path: String(e.data.path), text: String(e.data.text) });
+      else if (e.type === 'note.removed') out.delete(String(e.data.id));
+    }
+    return out;
   }
 
   /** Remembers who in the human's checkout last ran a git command that makes commits. */
@@ -2526,7 +2743,7 @@ export class Daemon {
       id: r.id, request: r.request, dir: r.dir, lead: r.lead, createdAt: r.createdAt, sharedDir: r.sharedDir,
       refs: r.refs, seenOn: r.seenOn, workflow: r.workflow, status: 'running',
       chained: [...new Set(this.store.ofType('workflow.read').filter(e => e.goal === r.id).map(e => String(e.data.workflow)))], agents: new Map(), counters: r.counters,
-      conflicts: r.conflicts, shared: new SharedFolder(r.sharedDir), sharedTouches: [], leadDone, resolveLeadDone,
+      conflicts: r.conflicts, notes: r.notes, shared: new SharedFolder(r.sharedDir), sharedTouches: [], leadDone, resolveLeadDone,
       // Spent before the restart; sessions from now on are counted from 0.
       gatekeeperCost: new Map(r.gatekeeperCost ? [[-1, r.gatekeeperCost]] : []),
     };
@@ -2536,7 +2753,10 @@ export class Daemon {
     // The branch and base the goal started on, not whatever is checked out now.
     const gs = r.base ? git.setupGoal(g.dir, g.id) : { reason: 'there was no git repository when it started' };
     if ('reason' in gs) g.gitNote = gs.reason;
-    else g.git = { ...gs, branch: r.branch ?? gs.branch, base: r.base ?? gs.base };
+    else {
+      g.git = { ...gs, branch: r.branch ?? gs.branch, base: r.base ?? gs.base };
+      this.watchAuthors(g, g.git);
+    }
     this.goals.set(g.id, g);
     for (const a of r.agents.values()) g.agents.set(a.name, this.restoreAgent(g, a));
 
@@ -2779,6 +2999,9 @@ export class Daemon {
         this.goals.delete(id);
       }
       for (let i = this.humanInbox.length - 1; i >= 0; i--) if (this.humanInbox[i].goal === id) this.humanInbox.splice(i, 1);
+      const gg = live?.git ?? this.pastGoalGit(id);
+      if (gg) removeAuthors(gg.commonDir, id);
+      live?.authorsWatch?.close();
       this.store.deleteGoal(id);
       rmSync(dir, { recursive: true, force: true });
       out.deleted.push(id);
@@ -3088,6 +3311,15 @@ export class Daemon {
         if (!ids.length) throw new Error('goal.delete needs "goals": the goals to delete.');
         return this.deleteGoals(ids, b.force === true);
       }
+      case 'note.pin':
+        return { result: 'Pinned. Agents get it the first time they work there.', ...this.pinNote(String(b.goal), String(b.path ?? ''), String(b.text ?? '')) };
+      case 'note.remove':
+        this.unpinNote(String(b.goal), String(b.id));
+        return { result: 'Removed.' };
+      case 'note.keep': {
+        const file = this.keepNote(String(b.goal), String(b.id), b.scope ? String(b.scope) : 'repo');
+        return { result: `Saved as a rule in ${file}: agents get it in future goals too.`, file };
+      }
       case 'goal.sizes':
         return { sizes: this.goalSizes() };
       case 'goal.open_folder':
@@ -3207,6 +3439,7 @@ export class Daemon {
   reloadConfig(): void {
     this.config = loadConfig(this.configDirs, { repo: this.repo });
     if (this.settingsOverride) Object.assign(this.config.settings, this.settingsOverride);
+    this.design = new DesignTracker(this.home, new Outliner(this.config.languages));
   }
 
   /** Roles, workflows, guidelines and MCP servers with the folder each comes from, plus the harnesses a role can name. */
@@ -3271,6 +3504,102 @@ export class Daemon {
    * A file in a goal's shared folder: its latest text, or one version from .history/, with the
    * versions kept. Paths outside the folder are refused.
    */
+  /* ---------------- git and design views (design §14) ---------------- */
+
+  /** A goal's git state: live, or from its log for a goal this daemon didn't start. */
+  goalGit(goalId: string): git.GoalGit | undefined {
+    return this.goals.get(goalId)?.git ?? this.pastGoalGit(goalId);
+  }
+
+  private pastGoalGit(goalId: string): git.GoalGit | undefined {
+    const start = this.store.ofType('goal.started').find(e => e.goal === goalId);
+    const { dir, branch, base } = (start?.data ?? {}) as { dir?: string; branch?: string; base?: string };
+    if (!dir || !base || !existsSync(dir)) return undefined;
+    const gs = git.setupGoal(dir, goalId);
+    return 'reason' in gs ? undefined : { ...gs, branch: branch ?? gs.branch, base };
+  }
+
+  /** The agents with a worktree, live or from the log. */
+  private worktreesOf(goalId: string): { agent: string; path: string; branch: string; base: string }[] {
+    const live = this.goals.get(goalId);
+    if (live) return [...live.agents.values()].filter(a => a.worktree).map(a => ({ agent: a.name, ...a.worktree! }));
+    const r = replayGoal(this.store.since(goalId));
+    return r ? [...r.agents.values()].filter(a => a.worktree).map(a => ({ agent: a.name, ...a.worktree! })) : [];
+  }
+
+  /** Branches, how far each is ahead of or behind the goal branch, and uncommitted work: the Git view's header. */
+  gitView(goalId: string) {
+    const gg = this.goalGit(goalId);
+    if (!gg) return { git: null, note: this.goals.get(goalId)?.gitNote ?? 'No git repository for this goal (or it has gone).' };
+    const tip = git.resolveCommit(gg, gg.branch) ?? gg.base;
+    const dir = this.goals.get(goalId)?.dir ?? gg.repo;
+    const branches = this.worktreesOf(goalId).map(w => {
+      const t = git.resolveCommit(gg, w.branch);
+      return {
+        name: w.branch, agent: w.agent, base: w.base, tip: t ?? null,
+        ahead: t ? git.countCommits(gg, tip, t) : 0, behind: t ? git.countCommits(gg, t, tip) : 0,
+        uncommitted: existsSync(w.path) ? git.statusShort(w.path).length : null, worktree: existsSync(w.path) ? w.path : null,
+      };
+    });
+    const conflicts = [...(this.goals.get(goalId)?.conflicts.entries() ?? [])].map(([d, c]) => ({ dir: d, ...c }));
+    return {
+      git: { repo: gg.repo, branch: gg.branch, base: gg.base, tip, commits: git.countCommits(gg, gg.base, tip), uncommitted: git.statusShort(dir).length },
+      branches, conflicts, mapFile: MAP_FILE,
+    };
+  }
+
+  /** A diff for the Git view: one commit, a range, the whole goal, or an agent's uncommitted work. */
+  diffView(goalId: string, q: { sha?: string; from?: string; to?: string; agent?: string; whole?: boolean }) {
+    const gg = this.goalGit(goalId);
+    if (!gg) throw new Error('No git repository for this goal.');
+    const rev = (r: string) => {
+      const sha = /^[\w./@^~-]+$/.test(r) && !r.startsWith('-') ? git.resolveCommit(gg, r) : undefined;
+      if (!sha) throw new Error(`There's no commit or branch "${r}".`);
+      return sha;
+    };
+    if (q.sha) return { title: `${q.sha.slice(0, 7)} ${git.subject(gg, rev(q.sha))}`, files: git.commitDiff(gg, rev(q.sha)) };
+    if (q.whole) {
+      const tip = git.resolveCommit(gg, gg.branch) ?? gg.base;
+      return { title: `Everything on ${gg.branch} since the goal started`, files: git.rangeDiff(gg, gg.base, tip) };
+    }
+    if (q.from && q.to) return { title: `${q.from} → ${q.to}`, files: git.rangeDiff(gg, rev(q.from), rev(q.to)) };
+    if (q.agent) {
+      const w = this.worktreesOf(goalId).find(x => x.agent === q.agent);
+      const dir = w?.path ?? this.goals.get(goalId)?.dir ?? gg.repo;
+      if (!existsSync(dir)) throw new Error(`${q.agent}'s worktree has been removed.`);
+      return { title: w ? `Uncommitted in ${q.agent}'s worktree` : 'Uncommitted in your checkout', shared: !w, files: git.workingDiff(dir) };
+    }
+    throw new Error('Say which diff: sha, from and to, whole, or agent.');
+  }
+
+  /** The design at a commit (default: the latest snapshot, else the goal branch now), with the timeline. */
+  async designView(goalId: string, rev?: string) {
+    const gg = this.goalGit(goalId);
+    if (!gg) return { snapshot: null, list: [], note: 'No git repository for this goal, so no design to show.' };
+    const list = this.design.list(goalId);
+    const tip = git.resolveCommit(gg, gg.branch) ?? gg.base;
+    const sha = !rev ? (list.at(-1)?.sha ?? tip) : rev === 'now' ? tip : /^[\w./@^~-]+$/.test(rev) && !rev.startsWith('-') ? git.resolveCommit(gg, rev) : undefined;
+    if (!sha) throw new Error(`There's no commit or branch "${rev}".`);
+    const dir = this.goals.get(goalId)?.dir ?? gg.repo;
+    return {
+      snapshot: await this.design.get(goalId, gg, dir, sha), list, tip,
+      languages: [...this.config.languages.values()].map(p => ({ name: p.name, extensions: p.extensions, engine: p.grammar ? 'tree-sitter' : 'patterns', builtIn: p.builtIn })),
+    };
+  }
+
+  async designCompare(goalId: string, from: string, to: string) {
+    const gg = this.goalGit(goalId);
+    if (!gg) throw new Error('No git repository for this goal.');
+    const dir = this.goals.get(goalId)?.dir ?? gg.repo;
+    const sha = (r: string) => {
+      const s = /^[\w./@^~-]+$/.test(r) && !r.startsWith('-') ? git.resolveCommit(gg, r) : undefined;
+      if (!s) throw new Error(`There's no commit or branch "${r}".`);
+      return s;
+    };
+    const [a, b] = await Promise.all([this.design.get(goalId, gg, dir, sha(from)), this.design.get(goalId, gg, dir, sha(to))]);
+    return compareDesigns(a, b);
+  }
+
   sharedFile(goalId: string, path: string, version?: number) {
     if (!/^[0-9a-f-]+$/i.test(goalId)) throw new Error(`There's no goal ${goalId}.`);
     const dir = this.goals.get(goalId)?.sharedDir ?? join(this.home, 'goals', goalId, 'shared');
@@ -3303,6 +3632,11 @@ export class Daemon {
   async close(): Promise<void> {
     clearInterval(this.pollTimer);
     clearInterval(this.limitTimer);
+    for (const g of this.goals.values()) {
+      g.authorsWatch?.close();
+      clearTimeout(g.landing?.timer);
+    }
+    await this.designIdle();
     const stopping: Promise<unknown>[] = [this.assistant.stop()];
     for (const g of this.goals.values()) {
       if (g.gatekeeper) stopping.push(g.gatekeeper.stop());
@@ -3353,6 +3687,18 @@ export function roleAllows(role: Role, command: string): boolean {
 }
 
 /** For an agent's prompt: the dependency folders copied into its worktree from the checkout. */
+/** What a role woken by landed work (`wake: landed`) hears: the commits, the files, and how to see the diff. */
+export function landedNote(branch: string, from: string, to: string, commits: LandedCommit[], paths: string[]): string {
+  const shown = commits.slice(-15);
+  return [
+    `Work landed on ${branch}: ${commits.length} commit${commits.length === 1 ? '' : 's'}, ${from.slice(0, 7)}..${to.slice(0, 7)}.`,
+    ...(commits.length > shown.length ? [`- … ${commits.length - shown.length} earlier`] : []),
+    ...shown.map(c => `- ${c.sha.slice(0, 7)} ${c.agent ?? 'unnamed'}: ${c.summary}`),
+    `Files: ${paths.slice(0, 30).join(', ')}${paths.length > 30 ? `, and ${paths.length - 30} more` : ''}.`,
+    `The changes: \`git diff --stat ${from.slice(0, 12)} ${to.slice(0, 12)}\`, then the diff of the files that matter.`,
+  ].join('\n');
+}
+
 function depsLines(copied: string[]): string[] {
   if (!copied.length) return [];
   return [

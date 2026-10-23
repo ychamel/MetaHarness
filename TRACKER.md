@@ -346,14 +346,46 @@ Findings from the run:
     goal's folder and events; unsaved work asks again; a goal at work is refused), and folders
     the log no longer has a goal for.
   Checked in headless Chrome against scripted teams; not yet in a real run.
+- [x] **Git and design round** (2026-10-23), from the user wanting the architecture visible
+      rather than reading every diff:
+  - **Exact authorship**: `post-commit`/`post-merge`/`post-rewrite` hooks in the guard's hooks
+    folder record `<sha> <agent>` in `.git/metaharness/authors-<goal>` (`MH_AGENT`, `MH_GOAL`
+    in each agent's environment); the daemon watches the folder, so commits show at once. The
+    two-minute guess stays as the fallback. Commits and merges carry their size and paths
+    (`--diff-merges=first-parent`).
+  - **Landed work**: commits reaching the goal branch are announced as `git.landed` once the
+    branch is quiet for a minute; a design snapshot follows, and roles with `wake: landed` hear
+    about it.
+  - **Git tab**: branches with ahead/behind and uncommitted files, every commit and merge with
+    its author colour and size, diffs of a commit, a branch, the whole goal, or uncommitted
+    work (`GET /git`, `GET /diff`, read when asked, never logged). Agent detail has a
+    **Changes** tab.
+  - **Design tab**: areas from `ARCHITECTURE.md` (folders without one; unmapped folders dashed),
+    import arrows between them, live activity by agent, collisions; a timeline of snapshots
+    (`goals/<goal>/design/`) with what changed since the one before or the start; an area's
+    files as a treemap, a file's definitions and imports; pinned notes (`note.pin`, kept as a
+    rule with `note.keep`); history (map commits, snapshots) and findings for next time
+    (collisions, conflicts, rework, spread, rules fired).
+  - **Language packs** (`src/languages.ts`, web-tree-sitter 0.27): Python, TypeScript, TSX,
+    JavaScript, GDScript (grammar built to wasm with emscripten, `defaults/languages/GRAMMARS.md`),
+    Godot scenes (patterns); packs in `languages/` folders add more, with a tree-sitter grammar
+    or line patterns, and five ways to resolve imports.
+  - **Cartographer**: built-in role (`defaults/roles/`, which now loads like the built-in rules
+    and workflows), the only editor of the map; messaged by teammates, woken by landed work,
+    commits the map with a one-line design summary. A `cartographer` start rule tells the lead
+    to use one; `map` and `map-upkeep` point teammates at it.
+  Checked with tests (11 new) and in headless Chrome against a scripted team (lead, two
+  worktree implementers, the cartographer) on a small repository, light and dark. Not yet in a
+  real run: whether a real cartographer keeps the map well, and how the Design view reads on a
+  large repository.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
-- [ ] Build order 3 (Milestone 3): diffs and the git view, shared-folder history browser, costs,
-      replay, search
+- [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search
 
 ## Milestone 3: improve
 
-- [ ] Role×model stats, retrospectives, replay, costs, git view, search
+- [ ] Role×model stats, retrospectives (totalling the Design view's findings across goals),
+      replay, search
 
 ## Not yet verified live
 
@@ -369,7 +401,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 111 tests, about half a minute, no model calls
+npm install && npm test        # 122 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

@@ -72,6 +72,13 @@ export function eventText(e: MhEvent): string {
     case 'git.merge': return `merged ${d.from} into ${d.into}${d.fastForward ? ' (fast-forward)' : ''}`;
     case 'git.conflict': return `⚠ ${d.op} conflict on ${d.branch}${d.from ? ` with ${d.from}` : ''}: ${(d.files as string[]).join(', ')}`;
     case 'git.conflict_resolved': return `${d.op} on ${d.branch} ${d.how}`;
+    case 'git.landed': return `${d.commits} commit${d.commits === 1 ? '' : 's'} landed on ${d.branch}${(d.by as string[])?.length ? ` (${(d.by as string[]).join(', ')})` : ''}`;
+    case 'design.changed': return `design: ${(d.highlights as string[]).length ? (d.highlights as string[]).join(' · ') : `${d.files} files changed`}`;
+    case 'design.failed': return `⚠ couldn't read the design at ${String(d.sha).slice(0, 7)}: ${oneLine(d.error)}`;
+    case 'note.pinned': return `📌 you pinned a note on ${d.path || 'the whole project'}: ${oneLine(d.text, 200)}`;
+    case 'note.removed': return 'you removed a pinned note';
+    case 'note.delivered': return `got your note on ${d.path}`;
+    case 'note.kept': return `your note is kept as rule ${d.rule}`;
     case 'shared.write': return `wrote shared/${d.path} (v${d.version})`;
     case 'shared.delete': return `deleted shared/${d.path}`;
     case 'shared.clash': return `⚠ changed shared/${d.path}, which is ${d.owner}'s`;
@@ -131,6 +138,7 @@ export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
     case 'agent.spawned': case 'agent.done': case 'agent.crashed': case 'agent.ended': case 'agent.idle': case 'agent.moved': case 'agent.limited':
     case 'agent.context_handoff': case 'goal.stalled':
     case 'message.sent': case 'git.commit': case 'git.merge': case 'git.conflict': case 'git.conflict_resolved': case 'shared.clash': case 'inbox.resolved':
+    case 'design.changed': case 'note.pinned':
       return 'key';
     case 'inbox.item':
       // Decisions and questions show as the message that asked them; results as the done note.

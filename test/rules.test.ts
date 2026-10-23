@@ -185,7 +185,7 @@ test('rules in a run: the prompt, the map as an agent moves, new files, commits 
   await settle();
 
   const prompt = fake.started[0].spec.systemPrompt;
-  assert.match(prompt, /## Rules\n\n### conventions\n\nWrite code that's readable[\s\S]*CONVENTIONS.md:\n\nHandlers are named after their resource/);
+  assert.match(prompt, /## Rules\n\n### cartographer\n\nWhen teammates will change code[\s\S]*spawn a `cartographer`[\s\S]*### conventions\n\nWrite code that's readable[\s\S]*CONVENTIONS.md:\n\nHandlers are named after their resource/, 'a lead with a map is told about the cartographer');
   assert.match(prompt, /- map, when you look at files: the part of ARCHITECTURE.md/);
   assert.match(prompt, /- no-duplicates, when you create a file \(\*\*, !\*\*\/\*test\*\/\*\*/);
   assert.doesNotMatch(prompt, /map-missing/, 'the repository has a map');

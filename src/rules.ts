@@ -366,7 +366,8 @@ export function rulesPrompt(rules: Iterable<Rule>, a: RuleAgent, cwd: string): s
 }
 
 /** A tool call: path rules for what it looks at, new-file rules for what it creates. */
-export function onToolCall(rules: Iterable<Rule>, a: RuleAgent, cwd: string, st: RuleState, tool: string, summary: string, info?: ToolInfo): RuleNote[] {
+/** The paths a tool call names, relative to the working folder, and whether it edits them (an edit tool, not a command). */
+export function toolPaths(tool: string, summary: string, cwd: string, info?: ToolInfo): { paths: ToolPath[]; edit: boolean } {
   const how = kindOf(tool, info);
   const paths = pathsIn(summary, cwd, how);
   for (const c of info?.created ?? []) {
@@ -375,6 +376,12 @@ export function onToolCall(rules: Iterable<Rule>, a: RuleAgent, cwd: string, st:
     if (p) p.exists = false;
     else if (rel) paths.push({ path: rel, exists: false });
   }
+  return { paths, edit: how.write };
+}
+
+export function onToolCall(rules: Iterable<Rule>, a: RuleAgent, cwd: string, st: RuleState, tool: string, summary: string, info?: ToolInfo): RuleNote[] {
+  const how = kindOf(tool, info);
+  const { paths } = toolPaths(tool, summary, cwd, info);
   if (!paths.length) return [];
   if (how.write) st.edited = true;
   const out: RuleNote[] = [];

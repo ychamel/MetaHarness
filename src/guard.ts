@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -17,8 +17,7 @@ import { join } from 'node:path';
 /** Hooks that only hand on to the repository's own. */
 const PASS_THROUGH = [
   'applypatch-msg', 'pre-applypatch', 'post-applypatch', 'pre-commit', 'pre-merge-commit', 'prepare-commit-msg',
-  'commit-msg', 'post-commit', 'pre-rebase', 'post-checkout', 'post-merge', 'post-rewrite', 'post-index-change',
-  'pre-auto-gc', 'sendemail-validate',
+  'commit-msg', 'pre-rebase', 'post-checkout', 'post-index-change', 'pre-auto-gc', 'sendemail-validate',
 ];
 
 /** The repository's own hook folder: its core.hooksPath (as the human has it), else the shared .git/hooks. */
@@ -62,11 +61,58 @@ ${USER_HOOK(name)}
 exit 0
 `;
 
+/**
+ * Who made each commit, for the app: "<sha> <agent>" lines in the shared .git's
+ * metaharness/authors-<goal>, which is inside every harness's writable roots. It never fails the
+ * commit and leaves commit messages alone. `shas` is a shell expression for the new commits.
+ */
+const AUTHORS_FILE = (goal: string) => `metaharness/authors-${goal}`;
+const recordAuthor = (name: string, shas: string, input = false) => `#!/bin/sh
+# MetaHarness: note which agent made the commit, so the app can name it.
+${input ? 'input=$(cat)' : ''}
+if [ -n "$MH_AGENT" ] && [ -n "$MH_GOAL" ]; then
+  d="$(git rev-parse --git-common-dir)/metaharness"
+  mkdir -p "$d" 2>/dev/null && for s in ${shas}; do echo "$s $MH_AGENT"; done >> "$d/authors-$MH_GOAL" 2>/dev/null
+fi
+${USER_HOOK(name)}
+[ -x "$h" ] || exit 0
+${input ? `printf '%s\\n' "$input" | "$h" "$@"` : 'exec "$h" "$@"'}
+`;
+
+const AUTHOR_HOOKS: Record<string, string> = {
+  'post-commit': recordAuthor('post-commit', '$(git rev-parse HEAD)'),
+  // A merge without conflicts makes its commit without post-commit; a fast-forward makes none.
+  'post-merge': recordAuthor('post-merge', '$(git rev-parse -q --verify HEAD^2 >/dev/null && git rev-parse HEAD)'),
+  // Rebased and amended commits are new ones: "<old> <new>" lines on stdin.
+  'post-rewrite': recordAuthor('post-rewrite', `$(printf '%s\\n' "$input" | cut -d' ' -f2)`, true),
+};
+
+/** The agents' commits in a goal, by sha, as the hooks recorded them. */
+export function readAuthors(commonDir: string, goal: string): Map<string, string> {
+  const out = new Map<string, string>();
+  try {
+    for (const line of readFileSync(join(commonDir, AUTHORS_FILE(goal)), 'utf8').split('\n')) {
+      const [sha, agent] = line.trim().split(' ');
+      if (sha && agent) out.set(sha, agent);
+    }
+  } catch {
+    // No commits by agents yet.
+  }
+  return out;
+}
+
+/** The folder the hooks write to, to watch for new commits. */
+export const authorsDir = (commonDir: string) => join(commonDir, 'metaharness');
+
+export function removeAuthors(commonDir: string, goal: string): void {
+  rmSync(join(commonDir, AUTHORS_FILE(goal)), { force: true });
+}
+
 /** Writes the hooks under the daemon's home and returns their folder. */
 export function installGuard(home: string): string {
   const dir = join(home, 'git-guard');
   mkdirSync(dir, { recursive: true });
-  const files: Record<string, string> = { 'reference-transaction': REFERENCE_TRANSACTION, 'pre-push': PRE_PUSH };
+  const files: Record<string, string> = { 'reference-transaction': REFERENCE_TRANSACTION, 'pre-push': PRE_PUSH, ...AUTHOR_HOOKS };
   for (const name of PASS_THROUGH) files[name] = passThrough(name);
   for (const [name, text] of Object.entries(files)) {
     writeFileSync(join(dir, name), text);
@@ -78,14 +124,16 @@ export function installGuard(home: string): string {
 /**
  * Environment for an agent's harness, so every git command it runs uses the guard. `ownBranch`
  * is its worktree branch, which it may rewrite. `repo` is read for the human's core.hooksPath.
+ * `who` names the agent in the commits it makes.
  */
-export function guardEnv(hooksDir: string, ownBranch: string | undefined, repo: string | undefined): Record<string, string> {
+export function guardEnv(hooksDir: string, ownBranch: string | undefined, repo: string | undefined, who?: { goal: string; agent: string }): Record<string, string> {
   const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const param = `${quote('core.hooksPath')}=${quote(hooksDir)}`;
   const before = process.env.GIT_CONFIG_PARAMETERS;
   const env: Record<string, string> = {
     GIT_CONFIG_PARAMETERS: before ? `${before} ${param}` : param,
     MH_OWN_BRANCH: ownBranch ?? '',
+    ...(who ? { MH_GOAL: who.goal, MH_AGENT: who.agent } : {}),
   };
   if (repo) {
     try {

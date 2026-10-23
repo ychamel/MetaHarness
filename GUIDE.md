@@ -199,6 +199,29 @@ You review the result in your checkout like any other change, and push it yourse
     - **Story** (the default): what happened, the important parts first. Who started whom,
       messages, results, commits, problems and your answers are cards; the steps in between
       (status lines, tool calls, file updates) fold into one line you can open.
+    - **Design:** the code as its areas, the way `ARCHITECTURE.md` describes them (or its
+      folders, when there's no map), with arrows for which area uses which. Each card shows
+      what the area is for, its files and definitions, and who is working there right now:
+      a bar coloured by agent, with their names. Areas the map leaves out show dashed, and ⚠
+      marks a file more than one agent edited.
+      - **The timeline** at the top has a snapshot from when the goal started and one each
+        time work landed on the branch. Pick one to see the design then; **Changes** says
+        what moved since the snapshot before (or since the start): new areas, new arrows
+        (drawn in blue), classes and functions added, changed or removed.
+      - **Click an area** for its files as a map sized by how big they are and coloured by who
+        last edited them; click a file for its classes and functions, what it uses and what
+        uses it. There you can also **pin a note** for the agents working there (each gets it
+        the first time it touches the area), **keep it for future goals** (it becomes a rule),
+        or message the team about the area.
+      - **With nothing selected**, the panel shows the map's overview, the design's history
+        (the cartographer's commits read as a changelog) and **For next time**: files several
+        agents edited, merge conflicts, files reworked over and over, how widely each agent
+        roamed, and which rules fired. Those are the places to adjust a workflow or a rule.
+    - **Git:** the goal branch, each agent's branch (merged or not, uncommitted files), and
+      every commit and merge with who made it and its size. Click one for its diff; **Whole
+      goal** shows everything since the goal started (what a pull request would hold), and
+      **Uncommitted** what's changed but not committed, in your checkout or an agent's
+      worktree.
     - **Files:** the shared folder: designs, reviews and reports, rendered, with every version
       and who wrote it.
     - **Graph**, **Sequence**, **Timeline:** who talks to whom, messages in order, who was
@@ -212,8 +235,9 @@ You review the result in your checkout like any other change, and push it yourse
       reads, cache writes and output.
     - **Log:** every event, as `mh tail` shows it.
   - **Agent** (right): what the selected agent is doing now (or its result), its controls, and
-    its conversation (its words, messages, and its tool calls folded into groups), its brief,
-    and its setup (prompt, folder, worktree, session).
+    its conversation (its words, messages, and its tool calls folded into groups), its
+    **changes** (its commits, the files it edited, its uncommitted work), its brief, and its
+    setup (prompt, folder, worktree, session).
 
 Long texts show their first lines with **Show more**. Drag the edge between two panes (the
 columns, the graph's panel, the file list, the setup lists, the assistant) to resize it; the
@@ -338,6 +362,7 @@ restarting the daemon. The pages write the same files described below.
   | `map-upkeep` | Committing new, moved or removed files without touching the map: update it |
   | `finish-clean` | Its first `done`, if it changed files: one look over the changes, then `done` again |
   | `map-missing` | The lead, when there's no map: it can offer you the `map-bootstrap` workflow |
+  | `cartographer` | The lead, when there is a map and several agents will change code: start a cartographer |
 
   **The map** is `ARCHITECTURE.md` at the repository root: an overview, then a short section
   per area whose heading is its path (`## src/api/`). Agents get the section for wherever they
@@ -345,6 +370,16 @@ restarting the daemon. The pages write the same files described below.
   with the **map-bootstrap** workflow: explorers survey the code, the lead writes the map (and
   a `CONVENTIONS.md` if the code has clear conventions), and you approve it before it's
   committed.
+
+  **The cartographer** keeps the map while a team works. It's a built-in role (edit or
+  replace it on the Roles page) and the only agent that edits `ARCHITECTURE.md`, so the map
+  never conflicts when branches merge. Teammates message it when their work changes the
+  design, and it can ask them back. MetaHarness wakes it when work lands on the goal branch
+  (once the branch has been quiet for a minute), with the commits and files that came in; it
+  updates the map and commits it alone, with a one-line message saying what changed in the
+  design. Those lines are the design history in the Design view. Turn the `cartographer` rule
+  off to work without one. A workflow with a `roles:` line has to name `cartographer` for the
+  lead to start it.
 
   To change a built-in rule, open it and save: the copy goes into the folder you pick and
   replaces it there. To add one, write `.metaharness/rules/<name>.md`:
@@ -393,6 +428,31 @@ restarting the daemon. The pages write the same files described below.
   through the `skill` tool instead, filtered by role. Each harness's built-in skills, like
   Codex's image generation, stay. A role with `native_skills: true` (*Keep the harness's own
   skills* on the Roles page) keeps all of them, as the harness loads them.
+- **Language packs** tell the Design view how to read a kind of file: its classes, functions
+  and imports. Python, TypeScript, JavaScript, GDScript and Godot scenes (`.tscn`, which link a
+  scene to its scripts and the scenes it instances) are built in. A pack is a folder,
+  `.metaharness/languages/<name>/` or `~/.metaharness/languages/<name>/`, with a
+  `language.md`:
+
+  ```markdown
+  ---
+  extensions: .rb
+  grammar: grammar.wasm      # a tree-sitter grammar, with queries.scm next to it
+  resolve: relative, suffix  # how an import names a file: relative, dotted, res, name, suffix
+  try: .rb                   # endings tried when resolving
+  ---
+  ```
+
+  `queries.scm` uses tree-sitter's tags convention (`@definition.class` around a definition,
+  `@name` inside it), plus `@import` on the text that names another file, so a grammar's own
+  `queries/tags.scm` mostly works as is. Many grammars publish a `.wasm` (web-tree-sitter 0.27
+  reads them). For a simple format, skip the grammar and write `patterns.txt`, one line per
+  kind: `function: ^\s*def\s+(\w+)`, `import: require\(["']([^"']+)` (the first group is
+  the name, or the path). How imports resolve: `relative` (`./x` next to the file), `dotted`
+  (`a.b.c` under the `roots:` folders), `res` (Godot's `res://`), `name` (a class name defined
+  anywhere, like GDScript's `class_name`), `suffix` (any file whose path ends the same way).
+  Files no pack reads still show in their area, sized but without definitions.
+  `"design": false` in `settings.json` turns the snapshots off.
 - **MCP servers.** A role names what it needs, for example `mcp: blender`. Each name is looked
   up in `~/.metaharness/mcp.json`, in the format every harness uses
   (`{"mcpServers": {"blender": {"command": "…", "args": […]}}}`), else among the servers that
@@ -455,6 +515,7 @@ Finished goals stay in the app's goal list, rebuilt from the log.
 |---|---|
 | `MH_HOME` | Where goals, the event log and the token live (default `~/.metaharness`) |
 | `MH_PORT` | The daemon's port (default 7777) |
-| `~/.metaharness/goals/<goal>/` | `shared/` (and `.history/`), `worktrees/`, each agent's harness config |
+| `~/.metaharness/goals/<goal>/` | `shared/` (and `.history/`), `worktrees/`, `design/` (the Design view's snapshots), each agent's harness config |
+| `.git/metaharness/authors-<goal>` | Which agent made each commit, written by MetaHarness's git hooks (removed with the goal) |
 | `mh help` | Every command |
 | `npm run ui:dev` | The web app with hot reload, for working on it, talking to a running daemon |

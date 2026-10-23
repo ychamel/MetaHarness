@@ -3,6 +3,7 @@ import { api } from '../api.ts';
 import { BUSY, clock, modelLabel, isOwnTool, money, oneLine, ruleLine, skillLine, STATE_LABEL, GATE } from '../format.ts';
 import type { Agent, AgentDetail as Detail, Goal, Manifest, MhEvent } from '../types.ts';
 import { CopyText, Ctx, Dialog, Dot, Markdown, More, useConfirm, CacheClock } from './common.tsx';
+import type { GitSel } from '../views/Git.tsx';
 
 type Item =
   | { kind: 'say'; seq: number; ts: string; text: string }
@@ -146,11 +147,12 @@ interface Props {
   onCommand: (body: Record<string, unknown>) => Promise<unknown>;
   onSpawnUnder: (name: string) => void;
   onEditRole: (role: string) => void;
+  onOpenGit?: (sel: GitSel) => void;
 }
 
-type Tab = 'talk' | 'brief' | 'setup';
+type Tab = 'talk' | 'changes' | 'brief' | 'setup';
 
-export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnUnder, onEditRole }: Props) {
+export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnUnder, onEditRole, onOpenGit }: Props) {
   const items = useMemo(() => streamOf(events, agent.name), [events, agent.name]);
   const rows = useMemo(() => rowsOf(items), [items]);
   const [tab, setTab] = useState<Tab>('talk');
@@ -259,6 +261,7 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
         {(
           [
             ['talk', 'Conversation'],
+            ['changes', 'Changes'],
             ['brief', 'Brief'],
             ['setup', 'Setup'],
           ] as [Tab, string][]
@@ -284,6 +287,7 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
             <div ref={bottom} />
           </div>
         )}
+        {tab === 'changes' && <Changes goal={goal} agent={agent} events={events} onOpenGit={onOpenGit} />}
         {tab === 'brief' && (
           <div className="pane-body">
             <div className="kicker">What it was asked to do</div>
@@ -490,4 +494,65 @@ function StreamItem({ item }: { item: Item }) {
         </div>
       );
   }
+}
+
+/** What an agent changed: its commits, the files it edited, and its uncommitted work. */
+function Changes({ goal, agent, events, onOpenGit }: { goal: Goal; agent: Agent; events: MhEvent[]; onOpenGit?: (sel: GitSel) => void }) {
+  // A merge commit is logged as a commit and as a merge: shown once, as the merge.
+  const merges = useMemo(() => new Map(events.filter(e => e.type === 'git.merge' && !e.data.fastForward).map(e => [String(e.data.sha), e])), [events]);
+  const commits = useMemo(() => events.filter(e => e.type === 'git.commit' && e.agent === agent.name).reverse(), [events, agent.name]);
+  const edited = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of events) if (e.type === 'agent.tool_call' && e.agent === agent.name && e.data.edit) for (const p of e.data.paths as string[]) m.set(p, (m.get(p) ?? 0) + 1);
+    return [...m].sort((a, b) => b[1] - a[1]);
+  }, [events, agent.name]);
+  const added = commits.reduce((n, e) => n + (Number(e.data.added) || 0), 0);
+  const removed = commits.reduce((n, e) => n + (Number(e.data.removed) || 0), 0);
+  return (
+    <div className="pane-body">
+      <div className="kicker">
+        Commits{' '}
+        {commits.length > 0 && (
+          <span className="normal">
+            {commits.length} · <span className="diff-add">+{added}</span> <span className="diff-del">−{removed}</span>
+          </span>
+        )}
+      </div>
+      {commits.map(e => (
+        <button key={e.seq} className="commit-row" onClick={() => onOpenGit?.({ kind: 'commit', sha: String(e.data.sha) })}>
+          <span className="commit-text">
+            <span className="ellipsis">{merges.has(String(e.data.sha)) ? `merged ${merges.get(String(e.data.sha))!.data.from} into ${e.data.branch}` : String(e.data.summary)}</span>
+            <span className="sub mono">
+              {String(e.data.sha).slice(0, 7)} · {String(e.data.branch).replace(`mh/${goal.id}/`, '')} · {clock(e.ts)}
+            </span>
+          </span>
+          {e.data.added !== undefined && (
+            <span className="commit-size">
+              <span className="diff-add">+{String(e.data.added)}</span> <span className="diff-del">−{String(e.data.removed)}</span>
+            </span>
+          )}
+        </button>
+      ))}
+      {!commits.length && <div className="empty">No commits by {agent.name} yet.</div>}
+      {onOpenGit && (agent.worktree || !agent.quick) && (
+        <button className="btn small" onClick={() => onOpenGit({ kind: 'uncommitted', agent: agent.name })} title={agent.worktree ? 'What it changed in its worktree and hasn\'t committed' : "Your checkout's uncommitted changes: shared with everyone working there"}>
+          {agent.worktree ? 'Uncommitted in its worktree' : 'Uncommitted in the checkout'}
+        </button>
+      )}
+      {edited.length > 0 && (
+        <>
+          <div className="kicker" style={{ marginTop: 14 }}>
+            Files it edited
+          </div>
+          <ul className="plain small">
+            {edited.map(([p, n]) => (
+              <li key={p}>
+                <span className="mono">{p}</span> <span className="muted">×{n}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
 }

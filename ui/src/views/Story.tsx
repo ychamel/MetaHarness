@@ -220,6 +220,23 @@ function Card({ e, name, onOpenFile }: { e: MhEvent; name: (n?: string) => React
           <span className="meta"> on {d.branch}</span>
         </div>
       );
+    case 'design.changed':
+      return (
+        <div className="card design">
+          <div className="card-head">
+            <span className="verb">The design moved</span> <span className="meta">at {String(d.sha).slice(0, 7)}</span>
+            {t}
+          </div>
+          <ul className="plain small">
+            {(d.highlights as string[]).map(h => (
+              <li key={h}>{h}</li>
+            ))}
+            <li className="muted">
+              {String(d.files)} files, {String(d.symbols)} definitions changed
+            </li>
+          </ul>
+        </div>
+      );
     case 'git.merge':
       return (
         <div className="line git">

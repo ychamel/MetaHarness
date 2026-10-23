@@ -85,6 +85,8 @@ export interface GoalReplay {
   shared: Map<string, { version: number; owner?: string }>;
   /** What the goal's gatekeeper has spent. */
   gatekeeperCost: number;
+  /** Notes the human pinned on areas and hasn't removed, with who has had each. */
+  notes: Map<string, { id: string; path: string; text: string; delivered: Set<string> }>;
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -98,7 +100,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
     id: start.goal, request: str(d.request), dir: str(d.dir), sharedDir: str(d.sharedDir), createdAt: start.ts,
     workflow: str(d.workflow) || undefined, branch: str(d.branch) || undefined, base: str(d.base) || undefined,
     ended: false, lead: '', agents: new Map(), counters: new Map(), inbox: [], refs: new Map(), seenOn: new Map(),
-    conflicts: new Map(), shared: new Map(), gatekeeperCost: 0,
+    conflicts: new Map(), shared: new Map(), gatekeeperCost: 0, notes: new Map(),
   };
   if (g.branch && g.base) g.refs.set(g.branch, g.base);
   const pending = new Map<string, PendingMessage & { to: string }>();
@@ -212,6 +214,15 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
         break;
       case 'git.conflict_resolved':
         g.conflicts.delete(str(x.dir));
+        break;
+      case 'note.pinned':
+        g.notes.set(str(x.id), { id: str(x.id), path: str(x.path), text: str(x.text), delivered: new Set() });
+        break;
+      case 'note.removed':
+        g.notes.delete(str(x.id));
+        break;
+      case 'note.delivered':
+        g.notes.get(str(x.id))?.delivered.add(e.agent ?? '');
         break;
       case 'shared.write': {
         const prev = g.shared.get(str(x.path));

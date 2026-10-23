@@ -67,6 +67,23 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
       if (!goal || !path) return json(res, 400, { error: 'GET /file needs ?goal=<id>&path=<path in the shared folder>.' });
       return json(res, 200, d.sharedFile(goal, path, v ? Number(v) : undefined));
     }
+    // The Git and Design views (design §14): diffs and designs are read when asked for, never logged.
+    const goalOf = () => {
+      const goal = url.searchParams.get('goal');
+      if (!goal) throw new Error(`GET ${url.pathname} needs ?goal=<id>.`);
+      return goal;
+    };
+    const q = (k: string) => url.searchParams.get(k) ?? undefined;
+    if (req.method === 'GET' && url.pathname === '/git') return json(res, 200, d.gitView(goalOf()));
+    if (req.method === 'GET' && url.pathname === '/diff') {
+      return json(res, 200, d.diffView(goalOf(), { sha: q('sha'), from: q('from'), to: q('to'), agent: q('agent'), whole: q('whole') === '1' }));
+    }
+    if (req.method === 'GET' && url.pathname === '/design') return json(res, 200, await d.designView(goalOf(), q('rev')));
+    if (req.method === 'GET' && url.pathname === '/design/compare') {
+      const from = q('from'), to = q('to');
+      if (!from || !to) throw new Error('GET /design/compare needs &from=<commit>&to=<commit>.');
+      return json(res, 200, await d.designCompare(goalOf(), from, to));
+    }
     if (req.method === 'POST' && url.pathname === '/commands') {
       const body = await readBody(req);
       return json(res, 200, await d.command(body ? JSON.parse(body) : {}));
@@ -96,7 +113,7 @@ function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse):
   });
 }
 
-const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/commands']);
+const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/git', '/diff', '/design', '/design/compare', '/commands']);
 
 /** The built web app (ui/dist). */
 export const UI_DIR = join(import.meta.dirname, '..', 'ui', 'dist');

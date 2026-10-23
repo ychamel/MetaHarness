@@ -1,0 +1,3 @@
+# kind: regular expression, its first group being the name (or, for import, the path)
+node: ^\[node name="([^"]+)"
+import: ^\[ext_resource\b[^\]]*\bpath="([^"]+)"

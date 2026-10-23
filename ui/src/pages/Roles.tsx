@@ -31,8 +31,10 @@ export function Roles({ config, selected, onSelect, onSave, onCommand }: SetupPr
   const roles = config?.roles ?? [];
   const isNew = selected === 'new' || selected?.startsWith('new:');
   const current = roles.find(r => keyOf(r) === selected) ?? (isNew ? undefined : roles[0]);
+  const builtIn = !isNew && current?.scope === 'built-in';
   const template = useMemo(() => {
-    if (!isNew) return current ?? blank(config);
+    // A built-in role (the cartographer) is edited as a copy for one of the folders.
+    if (!isNew) return current ? (current.scope === 'built-in' ? { ...current, scope: blank(config).scope } : current) : blank(config);
     const from = roles.find(r => `new:${keyOf(r)}` === selected);
     return from ? { ...from, name: `${from.name}-copy`, file: '' } : blank(config);
   }, [isNew, current, selected, roles, config]);
@@ -112,7 +114,7 @@ export function Roles({ config, selected, onSelect, onSave, onCommand }: SetupPr
                 onSave={() => void save()}
                 onRevert={() => (isNew ? void go(roles[0] && keyOf(roles[0])) : revert())}
                 onDuplicate={() => current && void go(`new:${keyOf(current)}`)}
-                onDelete={async () => {
+                onDelete={builtIn ? undefined : async () => {
                   if (!current) return;
                   if (await confirm({ title: `Delete the ${current.name} role?`, body: <>Its file goes: <span className="mono">{current.file}</span>. Agents already running keep going.</>, confirm: 'Delete', danger: true })) {
                     const next = await onSave({ cmd: 'role.delete', name: current.name, scope: current.scope });
@@ -212,7 +214,7 @@ function RoleForm({ config, draft, set, isNew, original, footer }: { config?: Co
               <input type="text" value={draft.name} onChange={e => set('name', e.target.value.replace(/\s+/g, '-'))} placeholder="e.g. tester" />
             </Field>
             <Field label="Saved in">
-              <ScopePicker config={config} value={draft.scope} onChange={(s: Scope) => set('scope', s)} />
+              <ScopePicker config={config} value={draft.scope === 'built-in' ? 'repo' : draft.scope} onChange={(s: Scope) => set('scope', s)} />
             </Field>
           </div>
           <Field label="Good at" hint="One line. Leads read it when they choose whom to start.">

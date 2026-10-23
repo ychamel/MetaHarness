@@ -129,6 +129,11 @@ You can read the caller's worktree, but don't change it.
 The `good_at` line matters most. Every agent sees the roster with these lines, so a lead picks
 collaborators the way a person would, by reading what each one is good at.
 
+Roles can also ship with MetaHarness (`defaults/roles/`, the cartographer so far); a folder's
+role of the same name replaces one, and the Roles page saves an edited built-in role as a copy.
+`wake: landed` makes an agent in the role hear about work landing on the goal branch (§9),
+besides messages; it then rests between such events without reporting to its spawner.
+
 ```markdown
 <!-- .metaharness/methodology.md — given to every agent -->
 You're part of a team of AI agents from different providers working toward one goal.
@@ -353,8 +358,22 @@ there are new messages or file changes, so an agent nobody is messaging sees not
   with Codex 0.162). Claude Code's commands aren't sandboxed by default.
 - `git.commit` and `git.merge` events come from polling the checked-out branch and the
   worktree branches every few seconds, so they're best effort: a fast-forward merge is
-  recognised by commits already seen on another branch. Commits on the shared branch aren't
-  attributed to an agent, since anyone in the folder (the human included) could have made them.
+  recognised by commits already seen on another branch. Each carries its size (files, lines
+  added and removed against its first parent, and the paths), so views don't ask git again.
+- **Who made a commit comes from git itself.** The guard's hooks folder also has `post-commit`,
+  `post-merge` (a real merge, not a fast-forward) and `post-rewrite` hooks that append
+  `<sha> <agent>` to `metaharness/authors-<goal>` in the shared `.git`, from `MH_AGENT` and
+  `MH_GOAL` in the agent's environment. The shared `.git` is in every harness's writable roots,
+  the hooks never fail a commit, commit messages are untouched, and the human's own commits
+  (no such environment) stay unnamed. The daemon watches that folder, so a commit shows at
+  once instead of at the next poll. Without a record (git run some other way), a commit in a
+  worktree is its owner's, and one in the checkout goes to the agent that last ran a
+  committing git command there within two minutes. The file goes with the goal.
+- **Landed work.** Commits reaching the goal branch (made there, merged or fast-forwarded in)
+  are gathered until the branch has been quiet for a minute, then announced as `git.landed`
+  {from, to, commits, by, paths, summaries}: a design snapshot is taken (§14), and roles with
+  `wake: landed` hear what came in (the cartographer, §18). A merge's `by` names the agents
+  whose commits it brought in.
 - A folder that isn't a repository, or one with no commits, gets no worktrees: everyone shares
   it, and a spawn that asks for a worktree is told so.
 - **Parallel agents read each other's code through branches.** All worktrees share one git
@@ -509,12 +528,13 @@ type Event = {
 |---|---|---|
 | Goal | `goal.started` · `goal.paused` · `goal.resumed` · `goal.recovered` {resumed, later} · `goal.ended` · `goal.cleaned` {removed, deleted, kept} | Header, goal list |
 | Agent lifecycle | `agent.spawned` {role, harness, model, parent, brief, quick, worktree, branch, native_session} · `agent.state` · `agent.status` {text} · `agent.done` {note} · `agent.ended` · `agent.crashed` · `agent.resumed` · `agent.renamed` {from, to, by} (a crashed agent's events so far, and messages to it, now go by `to`; the `agent.spawned` that follows, with `replaces` and `resumed`, is its replacement) | Team tree, cards |
-| Activity | `agent.text` (streamed) · `agent.tool_call` {tool, summary} · `agent.tool_result` {summary, ok} · `agent.file_edit` {path, diff} · `agent.paused_between_steps` {urgent, waitedMs, cut} | Agent detail stream |
+| Activity | `agent.text` (streamed) · `agent.tool_call` {tool, summary, paths?, edit?} (the repository files it names, relative to the repository's or worktree's top; `edit` for edit tools; MetaHarness's own tools never count) · `agent.tool_result` {summary, ok} · `agent.file_edit` {path, diff} · `agent.paused_between_steps` {urgent, waitedMs, cut} | Agent detail stream |
 | Messages | `message.sent` {from, to, text, urgent} · `message.delivered` {via: hook \| tool \| turn \| interrupt} · `message.read` | Graph, sequence view |
 | Shared folder | `shared.write` {path, version, by, history} · `shared.delete` {path, by} · `shared.clash` {path, owner, by, previous} · `shared.read` {path} (not yet) | Graph file nodes, folder browser |
 | You | `inbox.item` {kind: approval \| decision \| question \| stuck \| crash} · `inbox.resolved` · `approval.auto` · `approval.refused` {tool, detail, why} | Inbox, notifications |
 | Usage | `usage` {tokens_in, tokens_out, cost, context_pct?} | Costs, context bars |
-| Git | `git.commit` {branch, sha, summary} · `git.merge` {from, into, sha, fastForward?} · `git.conflict` {op, branch, from, files, dir} · `git.conflict_resolved` {op, branch, how, dir} | Git view |
+| Git | `git.commit` {branch, sha, summary, files, added, removed, paths} · `git.merge` {from, into, sha, fastForward?, files?, added?, removed?, paths?} · `git.conflict` {op, branch, from, files, dir} · `git.conflict_resolved` {op, branch, how, dir} · `git.landed` {branch, from, to, commits, by, paths, summaries} | Git view, Design view |
+| Design | `design.changed` {sha, areas, edges, files, symbols, highlights} (what moved since the snapshot before) · `design.failed` {sha, error} · `note.pinned` {id, path, text} · `note.delivered` {id, path} · `note.removed` {id} · `note.kept` {id, rule, file} | Design view, Story |
 | Health | `nudge.sent` · `alert` {kind: idle \| ping_pong \| context_full \| cost} | Health flags |
 
 Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended` · `crashed`.
@@ -533,7 +553,15 @@ Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended
 | `inbox.resolve` | item, decision (approve \| deny \| dismiss), reply? |
 | `agent.open_native` | agent → the command to open its session in its own harness from its folder (e.g. `claude --resume <id>`), and a warning if it's still running |
 | `harness.test` | harness, model? |
+| `note.pin` · `note.remove` · `note.keep` | goal, path (an area: a folder or file, '' for the whole project), text · id · id, scope? (keep writes a path rule) |
 | `goal.set_lead` | (not built: a human as lead changes how the team works; to be designed) |
+
+Read-only views, fetched when shown and never logged: `GET /git?goal` (branches, ahead and
+behind, uncommitted files, open conflicts), `GET /diff?goal&sha | from&to | whole=1 | agent`
+(one commit against its first parent, a range, everything since the goal started, or an
+agent's uncommitted work: its worktree, or the shared checkout, flagged as anyone's), `GET
+/design?goal&rev` (a snapshot and the timeline; `rev=now` reads the goal branch's tip) and `GET
+/design/compare?goal&from&to`.
 
 A pause takes effect at once for messages (they wait) and at the next step boundary for a
 running turn, like every pause (§7): natively, or by ending the process and keeping the session
@@ -588,7 +616,8 @@ VS Code panel works the same way.
 | **Agent detail** | Live stream (text, collapsible tool calls, edits as diffs), brief + role prompt, messages in/out, files touched, worktree diff, helpers, cost; chat box; *Open in native harness* | Opening any agent and stepping in |
 | **Inbox** | Approvals, questions, stuck agents, crashes; browser notifications | Stepping in |
 | **Shared folder** | Files, every version, who wrote it, diffs between versions | Tracing handoffs |
-| **Git** | Branch per agent, diffs, merges, conflicts | Code integration |
+| **Design** | The code as areas (the map's path sections, or folders), arrows for which area imports which, live activity coloured by agent, a timeline of snapshots with what changed between them, an area's files as a treemap with their classes and functions, pinned notes, and findings for next time | Following the architecture as it changes, without reading every diff |
+| **Git** | Branch per agent, every commit and merge with its author and size, diffs (a commit, a branch, the whole goal, uncommitted work), conflicts | Code integration |
 | **Costs** | By agent, role and model; spending rate | Spend |
 | **Replay** | Time scrubber over a finished goal; every view replays | Improving roles and workflows |
 | **Search** | Across streams, messages and shared files | Finding anything |
@@ -634,11 +663,45 @@ looking at (the goal, agent and tab). Its conversation is its own event stream (
 Checked live on luna against the Evolution run's log: about 30 seconds for a question that
 took seven lookups.
 
+### The Design view
+
+Reading every diff from a team of agents is exhausting; what the human needs is the shape of the
+code and how it moves. The Design view draws it at three levels, each from data that works in
+any language or degrades gracefully:
+
+- **Areas** come from `ARCHITECTURE.md`'s path sections (§18), the words the agents keep up;
+  folders the map doesn't cover appear dashed beside them, at the same depth. Without a map,
+  the top folders are the areas, and a folder holding most of the code is split into its own.
+- **Files** are sized by bytes and coloured by the agent who last edited them, from the paths
+  in tool calls (live, before anything is committed) and commits.
+- **Structure** comes from language packs (`src/languages.ts`): a tree-sitter grammar
+  (web-tree-sitter, wasm) with a tags-style query, or line patterns for simple formats. Each
+  file gives its definitions (kind, name, parent, line, a hash of the text) and imports, which
+  the pack's `resolve` ways turn into repository files (`relative`, `dotted`, `res` for Godot,
+  `name` for global class names such as GDScript's `class_name`, `suffix`). Imports between
+  areas are the arrows. Built in: Python, TypeScript/TSX, JavaScript, GDScript, Godot scenes;
+  a folder's `languages/<name>/` adds or replaces one.
+
+**Snapshots** (`src/design.ts`): one when the goal starts and one at each landing, stored as
+`goals/<goal>/design/<sha>.json` with an index; outlines are cached by blob, so a snapshot only
+parses the files that changed. Comparing two gives areas added, removed or described anew,
+arrows added or removed, files and definitions added, changed (their hash moved) or removed;
+the first lines of that are `design.changed`'s highlights. At most 5000 files are read, none
+over 256 KB. `"design": false` in the settings turns snapshots off.
+
+**Insights** come from the log alone, so later retrospectives can total them across goals:
+files edited by several agents, merge conflicts, files changed in three commits or more, how
+many areas each agent edited in, rules fired, notes delivered.
+
+**Pinned notes** are the human's remarks on an area ("handlers stay thin"). Each agent gets
+one the first time a tool call names a path in that area, like a path rule but for this goal
+only; **Keep for future goals** saves it as a path rule in the chosen config folder.
+
 ### Build order
 
 1. **Find and talk to any agent:** team tree, agent detail, messaging and controls, Inbox.
 2. **See the flow:** graph, sequence, timeline.
-3. **Improve over time:** replay, costs, git, shared-folder history, search.
+3. **Improve over time:** replay, costs, git and design (built), shared-folder history, search.
 
 ### Tech
 
@@ -661,8 +724,11 @@ team tree, and tabs: **Story** (key events as cards, the steps between them fold
 (the shared folder rendered, every version, from `GET /file`), graph, sequence, timeline and
 **Log** (every event). Agent detail leads with what it's doing now or its result, shows only
 the controls that apply, and folds tool calls into groups. Long text shows a few lines with
-"Show more"; markdown is rendered as elements, never as HTML. Diffs and the git view, costs,
-replay and search are next.
+"Show more"; markdown is rendered as elements, never as HTML. Since then: **Costs**, **Design**
+and **Git** tabs, and agent detail's **Changes** (its commits, files it edited, uncommitted
+work). Agents in the Design and Git views take the eight validated categorical colours in the
+order they joined (`ui/src/agentColors.ts`), later ones a neutral grey; names always sit next
+to the colour. Replay and search are next.
 ---
 
 ## 15. Stack
@@ -1028,6 +1094,20 @@ area under a path heading. It's a map, not documentation.
 | `map-upkeep` | commit | team | Files were added, moved or removed without a change to `ARCHITECTURE.md`: update its section |
 | `finish-clean` | done | team | Look over your changes once before finishing (`edited: true`) |
 | `map-missing` | start | lead | There's no `ARCHITECTURE.md`: offer the `map-bootstrap` workflow to the human; never run it unasked |
+| `cartographer` | start | lead | There is a map and teammates will change code: spawn a cartographer first, and tell the team to message it about design changes |
+
+`map-upkeep` leaves out the cartographer (`roles: team, !cartographer`), and both it and `map`
+tell agents to message the cartographer, when the team has one, rather than edit the map.
+
+**The cartographer** (a built-in role, `defaults/roles/cartographer.md`; a folder's role of the
+same name replaces it) is the only one who edits `ARCHITECTURE.md`, so the map has one voice
+and never conflicts in a merge. Teammates message it about design changes, which leaves room
+for questions back. It doesn't change the map on a message alone, since the work may still
+change: its role has `wake: landed`, so the daemon sends it each batch of landed work (§9),
+and it then reads the diff and updates the sections touched, committing the map alone with a
+one-line design summary. Those commits are the design history the Design view shows; its own
+commits never wake it. Between batches it ends its turn without `done`, which for a role with
+`wake:` is rest, not news for its spawner.
 
 The **`map-bootstrap`** workflow (built in) has explorers survey the code area by area, writes
 `ARCHITECTURE.md` (and a `CONVENTIONS.md` when the code has clear conventions), asks the human

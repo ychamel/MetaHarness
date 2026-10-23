@@ -1,4 +1,4 @@
-import type { AgentDetail, ConfigView, GoalSummary, MhEvent, SharedFileView, Snapshot } from './types.ts';
+import type { AgentDetail, ConfigView, DesignChange, DesignView, DiffView, GitView, GoalSummary, MhEvent, SharedFileView, Snapshot } from './types.ts';
 
 /**
  * The daemon's API (design §13). `mh ui` opens the app with ?token=…; it's kept in this
@@ -55,6 +55,16 @@ export const api = {
   file: (goal: string, path: string, version?: number) =>
     call<SharedFileView>(`/file?goal=${encodeURIComponent(goal)}&path=${encodeURIComponent(path)}${version != null ? `&version=${version}` : ''}`),
   config: () => call<ConfigView>('/commands', { method: 'POST', body: JSON.stringify({ cmd: 'config.get' }) }),
+  git: (goal: string) => call<GitView>(`/git?goal=${encodeURIComponent(goal)}`),
+  /** One commit (sha), a range (from, to), the whole goal, or an agent's uncommitted work. */
+  diff: (goal: string, q: { sha?: string; from?: string; to?: string; agent?: string; whole?: boolean }) => {
+    const p = new URLSearchParams({ goal });
+    for (const [k, v] of Object.entries(q)) if (v) p.set(k, v === true ? '1' : String(v));
+    return call<DiffView>(`/diff?${p}`);
+  },
+  design: (goal: string, rev?: string) => call<DesignView>(`/design?goal=${encodeURIComponent(goal)}${rev ? `&rev=${encodeURIComponent(rev)}` : ''}`),
+  designCompare: (goal: string, from: string, to: string) =>
+    call<DesignChange>(`/design/compare?goal=${encodeURIComponent(goal)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
   command: <T = { result?: string }>(body: Record<string, unknown>) => call<T & Record<string, unknown>>('/commands', { method: 'POST', body: JSON.stringify(body) }),
 };
 
