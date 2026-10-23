@@ -30,6 +30,10 @@ const HELP = `mh: run a team of AI agents from different providers on one goal
   mh end [<goal>]                    Stop every agent on a goal and clean up its worktrees
   mh spawn <role> <brief> [--parent <agent>] [--name <n>] [--worktree] [--goal <id>]
                                      Start an agent yourself; its result comes to you (or to --parent)
+  mh respawn <agent> [<note>] [--fresh] [--on <harness/model>] [--goal <id>]
+                                     Start a crashed agent again under its name: its session resumes,
+                                     or with --fresh (or --on another of its role's routes) starts over
+                                     from a handoff. The crashed one is kept as <agent>-crashed
   mh open <agent> [--goal <id>]      The command that opens an agent's session in its own harness
   mh clean [<goal>] [--force]        Worktrees and merged branches go when a goal's lead finishes; this
                                      retries for finished goals. What was kept (uncommitted or
@@ -290,6 +294,12 @@ async function main(): Promise<void> {
       const [role, ...words] = pos;
       if (!role || !words.length) die('Usage: mh spawn <role> <brief> [--parent <agent>] [--name <n>] [--worktree]');
       const r = await command({ cmd: 'agent.spawn', role, brief: words.join(' '), parent: s('parent'), name: s('name'), worktree: opt.worktree === true ? true : undefined, goal: s('goal') });
+      console.log(r.result);
+      return;
+    }
+    case 'respawn': {
+      if (!pos[0]) die('Usage: mh respawn <agent> [--fresh] [--on <harness/model>] [<note>]');
+      const r = await command({ cmd: 'agent.respawn', agent: pos[0], fresh: opt.fresh === true, on: s('on'), note: pos.slice(1).join(' ') || undefined, goal: s('goal') });
       console.log(r.result);
       return;
     }

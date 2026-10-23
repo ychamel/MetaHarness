@@ -126,6 +126,10 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
         if (wt) g.refs.set(wt.branch, wt.base);
         break;
       }
+      case 'agent.renamed':
+        // A crashed lead's events were renamed in the log; its name, and the lead, passed to its replacement.
+        if (g.lead === str(x.to)) g.lead = str(x.from);
+        break;
       case 'agent.session':
         if (!a) break;
         // A later session starts its cost from zero (see the daemon's restart and move).

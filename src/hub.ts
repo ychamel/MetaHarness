@@ -2,7 +2,7 @@ import { resolveName } from './fuzzy.ts';
 import { skillList, skillPart, skillSummary } from './skills.ts';
 import type { AgentRec, Daemon, InboxEntry } from './daemon.ts';
 
-export const TOOL_NAMES = ['team', 'spawn', 'send', 'wait', 'status', 'done', 'workflow', 'skill'] as const;
+export const TOOL_NAMES = ['team', 'spawn', 'respawn', 'send', 'wait', 'status', 'done', 'workflow', 'skill'] as const;
 
 /** Descriptions the MCP layer will publish. Written for the agents that read them. */
 export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: string; params: Record<string, string> }> = {
@@ -16,6 +16,15 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
       name: 'Optional name',
       worktree: "true to give them their own git worktree and branch, for code written in parallel with others. Default: they work in the shared folder, like everyone else",
       from: "Optional: a teammate (or branch) whose latest commit their own worktree starts from, e.g. the implementer whose code a reviewer checks. Implies worktree",
+    },
+  },
+  respawn: {
+    description: "Start a crashed teammate again under its name. By default its session resumes where it stopped. The crashed one stays on the team as <name>-crashed, with its history.",
+    params: {
+      name: 'The crashed teammate',
+      fresh: 'true to start it over in a new session, from a handoff of where it got to (e.g. when resuming crashes again)',
+      on: "Optional: another harness/model from its role to run it on, e.g. after its harness crashed twice. Implies fresh",
+      note: 'Optional: what to tell it, e.g. messages it missed or what changed',
     },
   },
   send: {
@@ -140,6 +149,14 @@ export class Hub {
         const where = r.rec.worktree ? ` in its own worktree on branch ${r.rec.worktree.branch}, from ${r.rec.worktree.base.slice(0, 7)}` : ' in the shared folder';
         const backup = r.note ? ` ${r.note}` : '';
         return `${guessed}Started ${r.name} (${r.rec.harness} · ${r.rec.model})${where}.${backup} Its result will reach you when it calls done; use wait to block until then.`;
+      }
+
+      case 'respawn': {
+        const name = str(pick(a, 'name', 'agent', 'who', 'teammate', 'to'));
+        if (!name) return 'respawn needs the name of a crashed teammate.';
+        const fresh = truthy(pick(a, 'fresh', 'new', 'restart'));
+        const r = d.respawnAgent(rec.goal, name, { by: rec.name, fresh, on: str(pick(a, 'on', 'harness', 'model', 'route')), note: str(pick(a, 'note', 'text', 'message', 'brief')) });
+        return r.ok ? r.text : r.error;
       }
 
       case 'send': {

@@ -36,7 +36,22 @@ export function useGoal(goalId: string | undefined) {
       frame = 0;
       const add = buffer.current;
       buffer.current = [];
-      if (add.length) setEvents(prev => prev.concat(add));
+      if (!add.length) return;
+      // A respawned agent's name passed to its replacement: its events so far, and messages sent to it, go by the new name (as in the log).
+      const renames = add.filter(e => e.type === 'agent.renamed');
+      setEvents(prev => {
+        let all = prev.concat(add);
+        for (const r of renames) {
+          const { from, to } = r.data as { from: string; to: string };
+          all = all.map(e =>
+            e.seq > r.seq ? e
+            : e.agent === from ? { ...e, agent: to }
+            : e.type === 'message.sent' && e.data.to === from ? { ...e, data: { ...e.data, to } }
+            : e,
+          );
+        }
+        return all;
+      });
     };
     const stop = followEvents(
       goalId,

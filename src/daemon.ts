@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, normalize, sep } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -610,7 +610,7 @@ export class Daemon {
         if (rec.gen !== gen || FINISHED.includes(rec.state)) return;
         this.setState(rec, 'crashed');
         this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.crashed', data: { reason: `Couldn't start: ${err.message}` } });
-        this.finish(rec, `${rec.name} couldn't start: ${err.message}`, 'crashed');
+        this.reportCrash(rec, `${rec.name} couldn't start: ${err.message}`);
       });
   }
 
@@ -824,8 +824,10 @@ export class Daemon {
         this.setState(rec, state);
         this.emit({ ...base, type: `agent.${state}`, data: { reason: detail ?? reason } });
         if (rec.doneNote === undefined) {
-          const note = rec.lastText ? `${rec.name} ${state} before calling done. Its last message: ${rec.lastText}` : `${rec.name} ${state} before calling done.`;
-          this.finish(rec, note, state);
+          const why = state === 'crashed' && detail ? ` (${detail})` : '';
+          const note = `${rec.name} ${state} before calling done${why}.` + (rec.lastText ? ` Its last message: ${rec.lastText}` : '');
+          if (state === 'crashed') this.reportCrash(rec, note);
+          else this.finish(rec, note, state);
         }
       },
       approval: (tool, detail) => (live() ? this.requestApproval(rec, tool, detail) : Promise.resolve({ allow: false, message: 'This session was replaced.' })),
@@ -1108,6 +1110,123 @@ export class Daemon {
     const parent = g.agents.get(rec.parent);
     if (!parent) return;
     this.enqueue(parent, { id: randomUUID(), kind: 'done', from: rec.name, text: note, urgent: false, ts: new Date().toISOString() });
+  }
+
+  /**
+   * A crash goes to whoever spawned the agent, with what they can do about it: they decide
+   * (design §8). The lead hears about crashes further down the team too, and either may respawn.
+   */
+  private reportCrash(rec: AgentRec, note: string): void {
+    if (rec.quick) return this.finish(rec, note, 'crashed');
+    const g = this.goals.get(rec.goal)!;
+    const others = this.routes(rec.role)
+      .filter(r => this.adapters[r.harness] && !(r.harness === rec.harness && r.model === rec.model))
+      .map(r => `${r.harness}/${r.model}`);
+    const elsewhere = others.length ? `, or on: ${others.join(' or ')} to run it there` : '';
+    const hint =
+      rec.parent === 'human'
+        ? `Respawn it from its page in the app, or with mh respawn ${rec.name} (--fresh to start it over from a handoff${others.length ? `, --on ${others[0]} to run it elsewhere` : ''}).`
+        : `To carry on, call respawn with name: ${rec.name}. Its session resumes where it stopped; add fresh: true to start it over from a handoff instead${elsewhere}. ` +
+          `The crashed one then stays on the team as ${rec.name}-crashed. Or give its work to someone else. Until then, messages to ${rec.name} come to you.`;
+    this.finish(rec, `${note}\n\n${hint}`, 'crashed');
+    const lead = g.agents.get(g.lead);
+    if (lead && lead !== rec && lead.name !== rec.parent && !FINISHED.includes(lead.state)) {
+      this.notice(lead, `${rec.name} (spawned by ${rec.parent}) crashed. ${rec.parent} has been told and can respawn it; so can you (respawn with name: ${rec.name}).`);
+    }
+  }
+
+  /**
+   * Starts a crashed agent again under its name. The crashed one stays on the team, with its
+   * history, as <name>-crashed; the new one takes its role, brief, spawner, worktree and waiting
+   * messages. It resumes the crashed session, unless `fresh` or `on` (another of the role's routes)
+   * asks for a new one, which starts from a handoff. `by` is the human, the agent's spawner or the lead.
+   */
+  respawnAgent(goalId: string, name: string, o: { by: string; fresh?: boolean; on?: string; note?: string }): { ok: true; text: string } | { ok: false; error: string } {
+    const g = this.goals.get(goalId);
+    if (!g) return { ok: false, error: `There's no goal ${goalId} running here.` };
+    const rec = g.agents.get(name);
+    if (!rec) {
+      const crashed = [...g.agents.values()].filter(a => a.state === 'crashed' && !a.quick).map(a => a.name);
+      return { ok: false, error: `There's no agent called ${name}. Crashed teammates: ${crashed.join(', ') || 'none'}.` };
+    }
+    if (rec.state !== 'crashed') return { ok: false, error: `${name} hasn't crashed (it's ${rec.state}), so there's nothing to respawn.` };
+    if (rec.quick) return { ok: false, error: `${name} was a quick helper: spawn a new one instead.` };
+    const caller = g.agents.get(o.by);
+    if (o.by !== 'human' && !caller?.isLead && rec.parent !== o.by) return { ok: false, error: `Only ${rec.parent} (who spawned ${name}) or the lead can respawn it.` };
+
+    const runnable = this.routes(rec.role).filter(r => this.adapters[r.harness]);
+    let route: Route = { harness: rec.harness, model: rec.model, ...(rec.effort ? { effort: rec.effort } : {}) };
+    if (o.on) {
+      const want = o.on.trim().toLowerCase();
+      const found =
+        runnable.find(r => `${r.harness}/${r.model}`.toLowerCase() === want) ?? runnable.find(r => r.model.toLowerCase() === want) ?? runnable.find(r => r.harness.toLowerCase() === want);
+      if (!found) return { ok: false, error: `${rec.role.name} runs on ${runnable.map(r => `${r.harness}/${r.model}`).join(', ') || 'nothing MetaHarness can start here'}; "${o.on}" isn't one of them.` };
+      route = found;
+    }
+    if (!this.adapters[route.harness]) return { ok: false, error: `MetaHarness can't run ${route.harness} here. Pick another with on: ${runnable.map(r => `${r.harness}/${r.model}`).join(', ') || '(none)'}.` };
+    const same = route.harness === rec.harness && route.model === rec.model;
+    const nativeId = rec.session?.nativeId ?? rec.resumeId;
+    const resume = !o.fresh && same && this.adapters[route.harness].manifest.resume && nativeId ? nativeId : undefined;
+    const reason = String(this.store.since(goalId).filter(e => e.agent === name && e.type === 'agent.crashed').at(-1)?.data.reason ?? 'it crashed');
+    const by = o.by === 'human' ? 'the human' : o.by;
+
+    // The first message is built from the crashed agent's history, before that history is renamed.
+    const entries = rec.inbox.splice(0);
+    const news = [o.note ? `From ${by}: ${o.note}` : '', this.forAgent(rec, entries)].filter(Boolean).join('\n\n');
+    const first = resume
+      ? [`[MetaHarness] Your session crashed (${reason}), and ${by} started it again. A command or tool call you were in may not have finished. Check where your work stands (files, git status), then carry on.`, news]
+          .filter(Boolean).join('\n\n')
+      : this.handoff(rec, { harness: rec.harness, model: rec.model }, `it crashed (${reason})`, { fresh: same, news: news || undefined });
+
+    let old = `${name}-crashed`;
+    for (let n = 2; g.agents.has(old); n++) old = `${name}-crashed-${n}`;
+    this.store.renameAgent(goalId, name, old);
+    // A new session gets a folder of its own; a resumed one may keep what its harness left there.
+    const dir = join(this.home, 'goals', goalId, 'agents', name);
+    if (!resume && existsSync(dir)) {
+      try {
+        renameSync(dir, join(this.home, 'goals', goalId, 'agents', old));
+      } catch {
+        // It keeps the folder.
+      }
+    }
+    g.agents.set(old, { ...rec, name: old, isLead: false, worktree: undefined, session: undefined, inbox: [], waiters: [], doneWaiters: [], fileNotes: new Map(), ruleNotes: [], pause: undefined, refresh: undefined, limitTimer: undefined });
+    for (const i of this.humanInbox) if (i.goal === goalId && i.agent === name) i.agent = old;
+    this.emit({ goal: goalId, agent: old, type: 'agent.renamed', data: { from: name, to: old, by: o.by } });
+    for (const i of this.humanInbox.filter(i => i.goal === goalId && i.agent === old && i.kind === 'crash')) this.resolveInbox(i.id, 'dismiss');
+
+    // The same record carries on as the new agent, so its credential and its place on the team stay.
+    const s = rec.session;
+    rec.gen++;
+    rec.session = undefined;
+    void s?.stop().catch(() => {});
+    clearTimeout(rec.limitTimer);
+    this.endPause(rec);
+    this.clearRefresh(rec);
+    Object.assign(rec, {
+      harness: route.harness, model: route.model, effort: route.effort, adapter: this.adapters[route.harness], state: 'starting', status: '', lastText: '',
+      cost: undefined, costBefore: undefined, costSource: undefined, tokens: undefined, tokensBefore: undefined, costSplit: undefined, splitBefore: undefined,
+      lastCallAt: undefined, cacheMinutes: undefined, cacheReminded: undefined, contextTokens: undefined, contextPct: undefined, pendingBrief: undefined,
+      limitedUntil: undefined, interrupting: false, toolsRunning: 0, lastToolEnd: 0, held: undefined, waiters: [], doneWaiters: [], doneNote: undefined,
+      pendingApprovals: 0, settledAt: undefined, progressAt: Date.now(), stallReported: undefined, resumeId: resume,
+    } satisfies Partial<AgentRec>);
+    const wt = rec.worktree;
+    this.emit({
+      goal: goalId, agent: name, parent: rec.parent, type: 'agent.spawned',
+      data: {
+        role: rec.role.name, harness: rec.harness, model: rec.model, ...(rec.effort ? { effort: rec.effort } : {}), brief: rec.brief, quick: false, cwd: rec.cwd,
+        worktree: wt?.path ?? null, branch: wt?.branch ?? null, base: wt?.base ?? null, ...(wt?.deps?.length ? { deps: wt.deps } : {}),
+        replaces: old, by: o.by, resumed: !!resume,
+      },
+    });
+    this.markDelivered(rec, entries, resume ? 'resume' : 'handoff');
+    if (this.accountLimited(rec.harness, rec.model)) {
+      rec.pendingBrief = first;
+      this.hitLimit(rec);
+    } else this.startSession(rec, first);
+    const how = resume ? 'resuming its session' : same ? 'in a fresh session, from a handoff' : 'from a handoff';
+    const to = rec.parent === o.by ? 'you' : rec.parent === 'human' ? 'the human' : rec.parent;
+    return { ok: true, text: `Started ${name} again on ${rec.harness} · ${rec.model}, ${how}. The crashed one is kept as ${old}. ${name} reports to ${to} when it calls done, as before.` };
   }
 
   /** For the human: where the team's work is, and which branches haven't been merged into it. */
@@ -2940,6 +3059,14 @@ export class Daemon {
         const r = this.spawnAgent(goal, { role, brief, parent, name: s('name'), worktree: typeof b.worktree === 'boolean' ? b.worktree : undefined, from: s('from') });
         if (!r.ok) throw new Error(r.error);
         return { goal, agent: r.name, result: `Started ${r.name} (${r.rec.harness} · ${r.rec.model})${r.note ? `. ${r.note}` : '.'}` };
+      }
+      case 'agent.respawn': {
+        const agent = s('agent');
+        if (!agent) throw new Error('agent.respawn needs "agent".');
+        const goal = goalOrLatest();
+        const r = this.respawnAgent(goal, agent, { by: 'human', fresh: b.fresh === true, on: s('on'), note: s('note') });
+        if (!r.ok) throw new Error(r.error);
+        return { goal, agent, result: r.text };
       }
       case 'agent.open_native': {
         const agent = s('agent');

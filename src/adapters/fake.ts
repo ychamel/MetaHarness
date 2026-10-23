@@ -28,6 +28,8 @@ export interface FakeCtx {
   run(command: string, ms: number): Promise<boolean>;
   /** Reports how full the context window is, as a real harness would after a model call. */
   context(pct: number, tokens?: number): void;
+  /** Dies as a harness process can: the session exits as crashed. The script should return after it. */
+  crash(detail?: string): void;
 }
 
 /** A role's later turns: each message that starts a new turn, after the first script. */
@@ -172,6 +174,11 @@ class FakeSession implements Session {
         this.ev.usage({ costUsd: Number(this.cost.toFixed(4)), contextPct: pct, ...(tokens ? { contextTokens: tokens } : {}) });
       },
       stopped: () => this.stopped,
+      crash: detail => {
+        this.stopped = true;
+        this.running = false;
+        this.ev.exited('crashed', detail);
+      },
       run: (command, ms) => {
         if (this.interruptedTurn) return Promise.resolve(false);
         this.ev.toolCall('Bash', command, { kind: 'shell' });

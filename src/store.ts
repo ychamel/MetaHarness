@@ -67,9 +67,20 @@ export class EventStore {
     });
   }
 
-  /** Forgets a goal: every event it had. The one thing that isn't append-only, at the human's request. */
+  /** Forgets a goal: every event it had. Not append-only, at the human's request (renameAgent is the other exception). */
   deleteGoal(goal: string): number {
     return Number(this.db.prepare('DELETE FROM events WHERE goal = ?').run(goal).changes);
+  }
+
+  /**
+   * Gives an agent's events so far, and the messages sent to it, another name, so its name can
+   * pass to a replacement: a crashed agent's history stays its own. The other exception to
+   * append-only; an `agent.renamed` event tells clients holding the old events.
+   */
+  renameAgent(goal: string, from: string, to: string): void {
+    this.db.prepare('UPDATE events SET agent = ? WHERE goal = ? AND agent = ?').run(to, goal, from);
+    // Messages sent to it, too, so its conversation stays whole.
+    this.db.prepare("UPDATE events SET data = json_set(data, '$.to', ?) WHERE goal = ? AND type = 'message.sent' AND json_extract(data, '$.to') = ?").run(to, goal, from);
   }
 
   subscribe(fn: Listener): () => void {

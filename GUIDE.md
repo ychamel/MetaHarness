@@ -239,6 +239,7 @@ of a command) and deliver the message at once.
 |---|---|
 | Pause / Resume | It stops after its current step, and messages wait. Resume tells it to carry on |
 | Stop | Ends the agent; whoever spawned it is told |
+| Respawn, Start over | On a crashed agent: starts it again under its name, resuming its session or (Start over) from a handoff. The crashed one stays as `<name>-crashed`. The lead does this for its teammates; you'll mostly need it when the lead crashes |
 | Open in harness | The command to open its session in the harness itself, e.g. `claude --resume …` (pause it first) |
 | + Helper, + Agent | Start an agent yourself; its result comes to you, or to the agent you pick |
 | Message | To the lead, everyone, every agent in a role, or one agent |
@@ -252,6 +253,7 @@ The terminal can do all of this too:
 - `mh approve <id> [note]`, `mh deny <id> [reason]`
 - `mh pause|resume [agent]`, `mh stop <agent>`, `mh end`
 - `mh spawn <role> "<brief>"`, `mh open <agent>`
+- `mh respawn <agent> [note] [--fresh] [--on <harness/model>]`
 
 ## 7. What agents can and can't do
 
@@ -443,6 +445,7 @@ Finished goals stay in the app's goal list, rebuilt from the log.
 | Lots of approvals for harmless commands | Use the gatekeeper (Settings), or add them to the role's `allow:` list |
 | Costs show "—" for Codex or Antigravity | Give the model's prices on the Harnesses page |
 | An agent seems stuck | Its stream in the app shows its last command. Message it, mark it urgent, or pause and resume it |
+| An agent crashed (red) | Its spawner was told and decides: usually it respawns it. If the lead crashed, it's in your Inbox: Respawn on its page, or Start over if resuming crashes again |
 | A rule's note is noisy or wrong for this repository | Turn it off on the Rules page, or save an edited copy into the repository |
 | A harness misbehaves | `mh test <harness>` says which part works and which doesn't |
 

@@ -76,6 +76,7 @@ function streamOf(events: MhEvent[], name: string): Item[] {
       case 'agent.crashed':
       case 'agent.ended':
       case 'agent.idle':
+      case 'agent.renamed':
       case 'git.commit':
       case 'git.merge':
       case 'git.conflict':
@@ -104,6 +105,7 @@ function noteText(e: MhEvent): string {
     case 'agent.crashed': return `crashed: ${d.reason}`;
     case 'agent.ended': return `ended: ${d.reason}`;
     case 'agent.idle': return 'stopped without calling done';
+    case 'agent.renamed': return `${d.by === 'human' ? 'you' : d.by} respawned ${d.from}: this one, the crashed one, is kept as ${d.to}`;
     case 'git.commit': return `committed ${String(d.sha).slice(0, 7)} on ${d.branch}: ${d.summary}`;
     case 'git.merge': return `merged ${d.from} into ${d.into}`;
     case 'git.conflict': return `${d.op} conflict on ${d.branch}: ${(d.files as string[]).join(', ')}`;
@@ -238,6 +240,16 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
               }}
             >
               Stop
+            </button>
+          </div>
+        )}
+        {goalLive && agent.state === 'crashed' && !agent.quick && (
+          <div className="row actions">
+            <button className="btn small" onClick={() => onCommand({ cmd: 'agent.respawn', goal: goal.id, agent: agent.name })} title={`Resumes its session under the name ${agent.name}; the crashed one is kept as ${agent.name}-crashed`}>
+              ↻ Respawn
+            </button>
+            <button className="btn small" onClick={() => onCommand({ cmd: 'agent.respawn', goal: goal.id, agent: agent.name, fresh: true })} title="A new session under its name, from a handoff of where it got to">
+              ↻ Start over
             </button>
           </div>
         )}

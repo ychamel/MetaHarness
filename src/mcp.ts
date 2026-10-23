@@ -17,6 +17,7 @@ const flexible = z.union([z.string(), z.number(), z.boolean()]);
 const SCHEMAS: Record<(typeof TOOL_NAMES)[number], z.ZodType> = {
   team: z.looseObject({}),
   spawn: z.looseObject({ role: z.string().optional(), brief: z.string().optional(), quick: flexible.optional(), name: z.string().optional(), worktree: flexible.optional(), from: z.string().optional() }),
+  respawn: z.looseObject({ name: z.string().optional(), fresh: flexible.optional(), on: z.string().optional(), note: z.string().optional() }),
   send: z.looseObject({ to: z.string().optional(), text: z.string().optional(), urgent: flexible.optional(), decision: flexible.optional() }),
   wait: z.looseObject({ timeout: flexible.optional() }),
   status: z.looseObject({ text: z.string().optional() }),

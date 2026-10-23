@@ -234,7 +234,17 @@ Findings from the run:
       at a skill* and a hint when a rule's text grows long. Re-run live on the same three: a
       skill only the Claude role names was listed for it alone, and a `skill:` rule on `src/**`
       led each agent to the skill's summary and the right section
-- [ ] An agent that goes quiet mid-turn for a long time (no tool calls, no text): not detected
+- [x] **Crashed agents respawned by their spawner** (2026-10-23, from use: an Antigravity agent
+      crashed and the lead had to be told to spawn a replacement by hand). The spawner gets the
+      reason, the last message and its options, the lead hears about crashes further down, and
+      `respawn` (tool, `agent.respawn`, `mh respawn`, Respawn / Start over in the app) starts it
+      again under its name: its session resumes, or `fresh` / `on: <harness/model>` starts a new
+      one from a handoff. The crashed one stays as `<name>-crashed` with its history (its events
+      and the messages to it are renamed in the log, `agent.renamed`); the replacement takes its
+      role, brief, spawner, worktree and waiting messages. A crashed lead goes to the human's
+      Inbox. The daemon never respawns by itself: the user wants the lead to decide
+- [ ] An agent that goes quiet mid-turn for a long time (no tool calls, no text): not detected.
+      Dropped unless it shows up in use (2026-10-23): it never has; crashes did
 - [ ] Test each workflow on its own, once more workflows and roles exist (quality, cost, time,
       interventions). A single-model baseline comparison is dropped for now (2026-10-18)
 
@@ -359,7 +369,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 108 tests, about half a minute, no model calls
+npm install && npm test        # 111 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

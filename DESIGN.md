@@ -280,9 +280,9 @@ there are new messages or file changes, so an agent nobody is messaging sees not
 | `send` to a name that doesn't exist | Matches by role or close name; otherwise tells the sender who's available |
 | Agent ends its session without calling `done` | Marked *ended*; its last message is forwarded to the spawner as the note |
 | `done()` with no note | Fine; its last message is used |
-| Agent goes quiet for a long time | A gentle nudge ("still working? post a status"). Still silent → tell the spawner and you |
 | The daemon stops or restarts | The log keeps each agent's state and native session. The next daemon, started in the same repository, rebuilds the goals whose lead hasn't finished: agents cut off mid-turn resume their sessions with a note about the restart, how their team stands and any messages they missed; finished or idle agents resume when a message reaches them. Approvals the old sessions were waiting on are dropped (the agent asks again); the human's open questions stay in the Inbox |
-| Session crashes | Resume it. If that fails, start a fresh agent with the same role, the original brief, and "you're continuing X's work, see shared/ and the worktree" |
+| Session crashes | Its spawner decides, not the daemon: it's told the reason, the agent's last message, and its options (the lead hears about crashes further down the team too). `respawn` starts it again under its name: its session resumes by default; `fresh` starts a new session from a handoff, and `on` runs it on another of its role's routes. The crashed one stays on the team as `<name>-crashed` (then `-crashed-2`…) with its history, renamed in the log; the replacement takes its role, brief, spawner, worktree and waiting messages. Or the spawner gives the work to someone else. A crashed lead goes to your Inbox, and you respawn it from the app or `mh respawn` |
+| Agent goes quiet mid-turn for a long time | Not detected: it hasn't happened in use. Crashes are what happened |
 | Handoff written in an odd place or shape | Nothing breaks; the reader is an agent and the message says where to look |
 | Lots of spawns or a messaging ping-pong | Shown in the UI. You can set an optional alert. It is never blocked automatically |
 | Agents stuck waiting | After `stallMinutes` (10) of nothing but `wait`, when what they'd wait for can't come (the teammate they last dealt with is waiting too or has finished, or nobody on the team is doing anything), the lead is told who is stuck, since how long, and their last exchange: a stall usually means the plan left a gap, and that's the lead's to fix. Agents waiting on you, on an approval, or on helpers of their own that still work aren't stuck. If the lead has finished, or the whole team, lead included, stays stuck another `stallMinutes` after the lead was told, you get an Inbox item whose reply goes to the lead |
@@ -508,7 +508,7 @@ type Event = {
 | Group | Events | Feeds |
 |---|---|---|
 | Goal | `goal.started` · `goal.paused` · `goal.resumed` · `goal.recovered` {resumed, later} · `goal.ended` · `goal.cleaned` {removed, deleted, kept} | Header, goal list |
-| Agent lifecycle | `agent.spawned` {role, harness, model, parent, brief, quick, worktree, branch, native_session} · `agent.state` · `agent.status` {text} · `agent.done` {note} · `agent.ended` · `agent.crashed` · `agent.resumed` · `agent.respawned` | Team tree, cards |
+| Agent lifecycle | `agent.spawned` {role, harness, model, parent, brief, quick, worktree, branch, native_session} · `agent.state` · `agent.status` {text} · `agent.done` {note} · `agent.ended` · `agent.crashed` · `agent.resumed` · `agent.renamed` {from, to, by} (a crashed agent's events so far, and messages to it, now go by `to`; the `agent.spawned` that follows, with `replaces` and `resumed`, is its replacement) | Team tree, cards |
 | Activity | `agent.text` (streamed) · `agent.tool_call` {tool, summary} · `agent.tool_result` {summary, ok} · `agent.file_edit` {path, diff} · `agent.paused_between_steps` {urgent, waitedMs, cut} | Agent detail stream |
 | Messages | `message.sent` {from, to, text, urgent} · `message.delivered` {via: hook \| tool \| turn \| interrupt} · `message.read` | Graph, sequence view |
 | Shared folder | `shared.write` {path, version, by, history} · `shared.delete` {path, by} · `shared.clash` {path, owner, by, previous} · `shared.read` {path} (not yet) | Graph file nodes, folder browser |
@@ -529,6 +529,7 @@ Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended
 | `agent.message` | to (agent \| role \| `lead` \| `all`), text, urgent? |
 | `agent.pause` · `agent.resume` · `agent.stop` | agent |
 | `agent.spawn` | role, brief, parent? (none = spawned by you; its result comes to your Inbox), name?, worktree?, from? |
+| `agent.respawn` | agent (a crashed one), fresh?, on? (harness/model from its role), note? |
 | `inbox.resolve` | item, decision (approve \| deny \| dismiss), reply? |
 | `agent.open_native` | agent → the command to open its session in its own harness from its folder (e.g. `claude --resume <id>`), and a warning if it's still running |
 | `harness.test` | harness, model? |
@@ -537,7 +538,7 @@ Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended
 A pause takes effect at once for messages (they wait) and at the next step boundary for a
 running turn, like every pause (§7): natively, or by ending the process and keeping the session
 to resume. Resuming tells an agent stopped mid-turn to carry on. The CLI has each of these
-(`mh pause`, `mh resume`, `mh end`, `mh spawn`, `mh open`).
+(`mh pause`, `mh resume`, `mh end`, `mh spawn`, `mh respawn`, `mh open`).
 
 ### What adapters must capture
 
