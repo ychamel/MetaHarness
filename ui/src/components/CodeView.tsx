@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api.ts';
 import type { DiffFile, Highlights } from '../types.ts';
 import { marksOf } from '../designData.ts';
 import { DocTip, useDocs } from './DocTip.tsx';
+import { useCodeLinks, type Wrap } from './CodeLinks.tsx';
 
 type Source = { text: string; highlights?: Highlights };
 const sources = new Map<string, Promise<Source>>();
@@ -31,10 +32,10 @@ export function useSource(goal: string, rev: string | undefined, path: string | 
   return t?.k === k ? t.src : undefined;
 }
 
-/** A line's text in its colours: each span a `tk-<kind>`, the rest plain; `hot` wraps the columns from s to e (a definition's name). */
-function coloured(line: string, spans: number[] | undefined, kinds: string[], hot?: { s: number; e: number; wrap: (inner: ReactNode) => ReactNode }): ReactNode {
+/** A line's text in its colours: each span a `tk-<kind>`, the rest plain; each wrap puts its columns from s to e in something of its own (a definition's name, a linked call). */
+function coloured(line: string, spans: number[] | undefined, kinds: string[], wraps: Wrap[] = []): ReactNode {
   if (!line) return ' ';
-  if (!spans?.length && !hot) return line;
+  if (!spans?.length && !wraps.length) return line;
   const segs: [number, number, number][] = [];
   let at = 0;
   for (let i = 0; i < (spans?.length ?? 0); i += 3) {
@@ -52,16 +53,22 @@ function coloured(line: string, spans: number[] | undefined, kinds: string[], ho
         {line.slice(s, e)}
       </span>
     );
-  if (!hot) return segs.map(([s, e, k]) => piece(s, e, k));
-  const before: ReactNode[] = [];
-  const inside: ReactNode[] = [];
-  const after: ReactNode[] = [];
+  if (!wraps.length) return segs.map(([s, e, k]) => piece(s, e, k));
+  // Pieces cut where wraps start and end, then gathered: those in a wrap go in it.
+  const ws = [...wraps].sort((a, b) => a.s - b.s);
+  const groups: { w: number; kids: ReactNode[] }[] = [];
   for (const [s, e, k] of segs) {
-    for (const [a, b, into] of [[s, Math.min(e, hot.s), before], [Math.max(s, hot.s), Math.min(e, hot.e), inside], [Math.max(s, hot.e), e, after]] as const) {
-      if (b > a) into.push(piece(a, b, k));
+    for (let a = s; a < e; ) {
+      const i = ws.findIndex(x => x.e > a);
+      const w = i >= 0 && ws[i].s <= a ? i : -1;
+      const b = Math.min(e, w >= 0 ? ws[w].e : i >= 0 ? ws[i].s : e);
+      const last = groups.at(-1);
+      if (last?.w === w) last.kids.push(piece(a, b, k));
+      else groups.push({ w, kids: [piece(a, b, k)] });
+      a = b;
     }
   }
-  return [...before, hot.wrap(inside), ...after];
+  return groups.map((g, j) => (g.w < 0 ? g.kids : <Fragment key={`w${j}`}>{ws[g.w].wrap(g.kids)}</Fragment>));
 }
 
 /** Where a definition's name sits on its line: [start, end) columns. */
@@ -96,9 +103,10 @@ export function useFileDiff(goal: string, from: string | undefined, to: string |
 /**
  * Code as it is, with the edits marked on it: added lines green, changed ones yellow (hover one for
  * what it was), and a red line where lines were removed (hover it for them). `gone`: the code shown
- * was removed, all of it. Opens scrolled to the first edit.
+ * was removed, all of it. Opens scrolled to the first edit, or to `at`. Inside a CodeLinksContext,
+ * the names the code graph knows (calls, signals, objects made, other classes' state) link on.
  */
-export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineClass, extra }: {
+export function MarkedCode({ goal, rev, path, range, lines, gone, label, at, lineClass, extra }: {
   goal: string;
   /** The revision whose text is shown. */
   rev: string | undefined;
@@ -110,6 +118,8 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
   gone?: boolean;
   /** Whose edits these are, in a few words. */
   label?: string;
+  /** A line to open at, marked. */
+  at?: number;
   lineClass?: (n: number) => string | undefined;
   extra?: (n: number) => ReactNode;
 }) {
@@ -118,17 +128,19 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
   // Each definition's name, hovered, says what it's for.
   const docs = useDocs(goal, rev, path);
   const defs = useMemo(() => new Map((docs?.symbols ?? []).map(s => [s.line, s] as const).reverse()), [docs]);
+  const links = useCodeLinks(rev, path);
   const diff = useFileDiff(goal, range?.from, range?.to, path, !!range && !gone);
   const marks = useMemo(() => (diff && !diff.binary ? marksOf(diff.patch) : undefined), [diff]);
   const box = useRef<HTMLPreElement>(null);
   const scrolled = useRef('');
   useLayoutEffect(() => {
     const el = box.current;
-    const k = `${rev}\n${path}\n${lines}`;
-    if (!el || !marks || scrolled.current === k) return;
+    const k = `${rev}\n${path}\n${lines}\n${at}`;
+    if (!el || scrolled.current === k) return;
+    const first = el.querySelector<HTMLElement>(at ? '.code-line.at' : '.code-line.add, .code-line.chg, .code-gap');
+    if (at ? !first : !marks) return;
     scrolled.current = k;
-    const first = el.querySelector<HTMLElement>('.code-line.add, .code-line.chg, .code-gap');
-    if (first) el.scrollTop = Math.max(0, first.offsetTop - 48);
+    if (first) el.scrollTop = Math.max(0, el.scrollTop + first.getBoundingClientRect().top - el.getBoundingClientRect().top - 48);
   });
   if (src === undefined) return <div className="muted small">Reading the code…</div>;
   if (src === null) return <div className="muted small">Couldn't read {path}{rev ? ` at ${rev.slice(0, 7)}` : ''}.</div>;
@@ -146,13 +158,19 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
     removed += marks?.gone.get(n)?.length ?? 0;
   }
   const tail = !lines || z === all.length ? marks?.gone.get(z + 1) : undefined;
-  const hotName = (n: number) => {
+  /** A line's wraps: the name of a definition on it (hovered, what it's for), and the names that link on. */
+  const wrapsOf = (n: number): Wrap[] => {
+    const own = defName(n);
+    const refs = links?.(n, all[n - 1]) ?? [];
+    return own ? [own, ...refs.filter(r => r.e <= own.s || r.s >= own.e)] : refs;
+  };
+  const defName = (n: number): Wrap | undefined => {
     const d = defs.get(n);
-    const at = d && nameAt(all[n - 1], d.name);
-    if (!d || !at) return undefined;
+    const pos = d && nameAt(all[n - 1], d.name);
+    if (!d || !pos) return undefined;
     return {
-      s: at[0],
-      e: at[1],
+      s: pos[0],
+      e: pos[1],
       wrap: (inner: ReactNode) => (
         <DocTip key="doc" goal={goal} rev={rev} path={path} name={d.name} parent={d.parent} line={d.line} kind={d.kind} doc={d.doc ?? ''} inline>
           {inner}
@@ -200,9 +218,9 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
           const g = marks?.gone.get(n);
           return [
             g && gap(n, g),
-            <div key={n} className={['code-line', gone ? 'del' : m?.kind, lineClass?.(n)].filter(Boolean).join(' ')} tabIndex={m?.kind === 'chg' ? 0 : undefined}>
+            <div key={n} className={['code-line', gone ? 'del' : m?.kind, n === at && 'at', lineClass?.(n)].filter(Boolean).join(' ')} tabIndex={m?.kind === 'chg' ? 0 : undefined}>
               <span className="code-n">{n}</span>
-              <span className="code-t">{coloured(all[n - 1], hl?.lines[n - 1], hl?.kinds ?? [], hotName(n))}</span>
+              <span className="code-t">{coloured(all[n - 1], hl?.lines[n - 1], hl?.kinds ?? [], wrapsOf(n))}</span>
               {extra?.(n)}
               {m?.kind === 'chg' && (
                 <span className="code-was" role="tooltip">

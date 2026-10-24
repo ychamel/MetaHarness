@@ -12,6 +12,7 @@ import { areaLabel, symbolEnd } from '../designData.ts';
 import { Splitter } from '../components/Splitter.tsx';
 import { ChangedFiles, PanelButton, SymbolCode, ToggleMenu, useCommitChange, type CommitDef, type Peek } from './Design.tsx';
 import { MarkedCode } from '../components/CodeView.tsx';
+import { CodeLinksContext, indexOf, useGraph, type CodeLinks } from '../components/CodeLinks.tsx';
 import { KIND_STYLE, SystemsCanvas, type Act } from './SystemsCanvas.tsx';
 
 /** Where the Systems lens is: what's looked at and how it's split, what's selected and traced, and a connection opened. */
@@ -88,32 +89,6 @@ interface Props {
   onCommitPanel: (open: boolean) => void;
 }
 
-const graphs = new Map<string, Promise<CodeGraph>>();
-
-/** The code graph at a commit or tree, fetched once. */
-function useGraph(goal: string, rev: string | undefined): { g?: CodeGraph; error?: string } {
-  const [s, setS] = useState<{ g?: CodeGraph; error?: string; rev?: string }>({});
-  useEffect(() => {
-    if (!rev) return;
-    let alive = true;
-    const k = `${goal}\n${rev}`;
-    let p = graphs.get(k);
-    if (!p) {
-      p = api.designCode(goal, rev).then(r => r.graph);
-      p.catch(() => graphs.delete(k));
-      graphs.set(k, p);
-    }
-    p.then(
-      g => alive && setS({ g, rev }),
-      e => alive && setS({ error: (e as Error).message, rev }),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [goal, rev]);
-  return s.rev === rev ? s : {};
-}
-
 /**
  * The graphs before and after the scope, and the scope's change, kept as they were until the new
  * ones have all arrived: the canvas changes once, in place, instead of blanking while they load.
@@ -180,9 +155,14 @@ export default function Systems({ goal, view, snap, nav, onNav, lens, scopeBar, 
   const [kinds, setKind] = useKinds();
   const [showChange, setShowChange] = useState(true);
   const [hl, setHl] = useState<string>();
+  /** A variable a class's code opens at, from a name followed. */
+  const [at, setAt] = useState<{ cls: string; line: number }>();
+  useEffect(() => {
+    if (at && nav.sel !== at.cls) setAt(undefined);
+  }, [nav.sel]); // eslint-disable-line react-hooks/exhaustive-deps
   const gs = useGraphs(goal.id, view.scope?.to, showChange && view.scope ? view.scope.from : undefined, view.change);
-  const ix = useMemo(() => (gs.after ? indexGraph(gs.after) : undefined), [gs.after]);
-  const bix = useMemo(() => (gs.before ? indexGraph(gs.before) : undefined), [gs.before]);
+  const ix = useMemo(() => (gs.after ? indexOf(gs.after) : undefined), [gs.after]);
+  const bix = useMemo(() => (gs.before ? indexOf(gs.before) : undefined), [gs.before]);
   const links = useMemo(() => (ix ? classLinks(ix) : []), [ix]);
   const chg = useMemo(() => (ix && showChange && bix ? codeChange(bix, ix, gs.change) : undefined), [ix, bix, showChange, gs.change]);
   // The functions lit: the definitions hovered, what the commit changed in its files, or what the scope changed in a file hovered.
@@ -325,6 +305,26 @@ export default function Systems({ goal, view, snap, nav, onNav, lens, scopeBar, 
     const w = canvas.where.get(c);
     if (!w || w.startsWith('chip:') || w.startsWith('rail:')) go({ focus: plus(nav.focus, c), sel: nav.sel });
   };
+  /** A class opened in the panel: on the canvas as it is when it's drawn in full, else looked at. */
+  const openClass = (c: string) => {
+    if (canvas && !canvas.units.some(u => u.id === canvas.where.get(c) && (u.role === 'focus' || u.parent))) go({ focus: [c], changes: false, sel: c, def: undefined });
+    else set({ sel: c, link: undefined, def: undefined });
+  };
+  // A name in the code followed: a function's panel, a signal's, or the class made or whose state it is (opened at that variable).
+  // The code may be at another revision than the canvas: what's gone since isn't followed.
+  const codeLinks: CodeLinks = {
+    goal: goal.id,
+    onFollow: r => {
+      if (!ix) return;
+      if (r.kind === 'call' || r.kind === 'handler') return ix.fn.has(r.id) && lookAt(r.id);
+      if (r.kind === 'emit' || r.kind === 'connect') return ix.sig.has(r.id) && set({ sel: r.id, link: undefined, def: undefined });
+      const c = r.kind === 'new' ? r.id : ix.field.get(r.id)?.cls;
+      if (!c || !ix.cls.has(c)) return;
+      setAt(r.kind === 'new' ? undefined : { cls: c, line: ix.field.get(r.id)!.line });
+      openClass(c);
+    },
+    onHover: r => setHl(r && ix ? (r.kind === 'call' || r.kind === 'handler' || r.kind === 'new' ? (ix.fn.has(r.id) || ix.cls.has(r.id) ? r.id : undefined) : ownerOf(ix, r.id)) : undefined),
+  };
 
   const toolbar = scopeBar(
     <>
@@ -374,16 +374,16 @@ export default function Systems({ goal, view, snap, nav, onNav, lens, scopeBar, 
     return (
       <MarkedCode
         key={`${id}\n${r?.to}`} goal={goal.id} rev={r?.to ?? view.scope?.to} path={c.file} range={r}
-        lines={inLock || c.kind !== 'inner' ? undefined : [c.line, c.end]} label={inLock ? lockLabel : 'what this scope changed'}
+        lines={inLock || c.kind !== 'inner' ? undefined : [c.line, c.end]} label={inLock ? lockLabel : 'what this scope changed'} at={!inLock && at?.cls === id ? at.line : undefined}
       />
     );
   };
-  /** A function's code the same way; at the scope's end its calls link on. */
+  /** A function's code the same way. */
   const fnCode = (id: string): FnCode => {
     const f = ix.fn.get(id)!;
     const s = lockChg && [...lockChg.symbols.changed, ...lockChg.symbols.added].find(x => x.file === f.file && x.name === f.name && (x.kind === 'function' || x.kind === 'method'));
-    if (lockRange && s?.line) return { rev: lock!, range: lockRange, lines: [s.line, symbolEnd(undefined, s)!], label: lockLabel, links: false };
-    return { rev: view.scope?.to, range: range && (chg?.edited.has(id) || chg?.newFns.has(id)) ? range : undefined, lines: [f.line, f.end], label: 'what this scope changed', links: true };
+    if (lockRange && s?.line) return { rev: lock!, range: lockRange, lines: [s.line, symbolEnd(undefined, s)!], label: lockLabel };
+    return { rev: view.scope?.to, range: range && (chg?.edited.has(id) || chg?.newFns.has(id)) ? range : undefined, lines: [f.line, f.end], label: 'what this scope changed' };
   };
   /** The files of some classes that the kept commit or the scope changed, each with its code a click away. */
   const unitFiles = (cs: string[]) => {
@@ -399,7 +399,7 @@ export default function Systems({ goal, view, snap, nav, onNav, lens, scopeBar, 
   const showGone = (f: CodeFn) =>
     range && set({ sel: undefined, link: undefined, def: { file: f.file, name: f.name, kind: 'function', line: f.line, end: f.end, side: 'old', ...range, label: 'Removed in this scope' } });
   return (
-    <>
+    <CodeLinksContext.Provider value={codeLinks}>
       {toolbar}
       <div className={`design-body${side ? '' : ' no-side'}`}>
         <div className="view">
@@ -467,7 +467,7 @@ export default function Systems({ goal, view, snap, nav, onNav, lens, scopeBar, 
         </aside>
         )}
       </div>
-    </>
+    </CodeLinksContext.Provider>
   );
 }
 
@@ -1567,7 +1567,7 @@ function SignalPanel({ ix, id, onNav, onFn }: { ix: CodeIndex; id: string; onNav
 
 /** A function: its doc, its trace (docked, synced with the canvas), how the engine gets there, what it touches, its code. */
 /** Which code a function's panel shows, and whose edits it marks. */
-type FnCode = { rev?: string; range?: Range; lines: [number, number]; label: string; links: boolean };
+type FnCode = { rev?: string; range?: Range; lines: [number, number]; label: string };
 
 function FnPanel({ goal, ix, bix, chg, id, up, docked, code, onNav, onAct, onStep, onHover }: {
   goal: Goal;
@@ -1588,8 +1588,6 @@ function FnPanel({ goal, ix, bix, chg, id, up, docked, code, onNav, onAct, onSte
   const c = ix.cls.get(f.cls)!;
   const stacks = useMemo(() => stacksTo(ix, id), [ix, id]);
   const st = stateOf(ix, id);
-  const byLine = new Map<number, CodeEdge[]>();
-  for (const e of ix.out.get(id) ?? []) if (e.k === 'call' || e.k === 'new' || e.k === 'emit') byLine.set(e.l, [...(byLine.get(e.l) ?? []), e]);
   const go = (to: string) => onNav({ trace: to, sel: to, up: false });
   const fieldName = (e: CodeEdge) => {
     const x = ix.field.get(e.t);
@@ -1616,21 +1614,6 @@ function FnPanel({ goal, ix, bix, chg, id, up, docked, code, onNav, onAct, onSte
       {f.doc && <p className="area-text doc-text">{f.doc}</p>}
       <MarkedCode
         key={`${id}\n${code.rev}`} goal={goal.id} rev={code.rev} path={f.file} range={code.range} lines={code.lines} label={code.label}
-        lineClass={n => (code.links && byLine.has(n) ? 'calls' : undefined)}
-        extra={n => {
-          const es = code.links ? byLine.get(n) : undefined;
-          return (
-            es && (
-              <span className="code-go">
-                {es.slice(0, 3).map(e => (
-                  <button key={e.t} className="text-link" onClick={() => go(e.t)} onMouseEnter={() => onHover(e.t)} onMouseLeave={() => onHover(undefined)} title={edgeSentence(ix, e)}>
-                    {e.k === 'emit' ? '⚡' : e.k === 'new' ? '✦' : '→'} {ix.fn.get(e.t)?.name ?? ix.sig.get(e.t)?.name ?? ix.cls.get(e.t)?.name ?? e.t}
-                  </button>
-                ))}
-              </span>
-            )
-          );
-        }}
       />
       <div className="row-wrap">
         <button className="btn ghost small" onClick={() => onAct('focus', c.id)}>

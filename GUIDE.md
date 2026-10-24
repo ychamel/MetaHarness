@@ -298,6 +298,13 @@ You review the result in your checkout like any other change, and push it yourse
           one, for what it was. In a kept commit's panel, **▸** opens a definition's or a file's
           code in place and **↗** goes to it. With a commit kept lit, the functions it changed
           listed under a card are links: click one for its panel.
+        - **Names in the code link on:** in the code a panel shows, what the lens follows is
+          coloured as its links on the canvas: calls (blue), signals emitted or connected and
+          their handlers (purple), objects made (green), and other classes' state read (amber)
+          or written (orange, bold). A call underlined with dots is a guess (its receiver has
+          no type). Hover a name for what it is and its doc, with its card lit on the canvas;
+          click it to follow: a function or signal opens its panel, an object made opens its
+          class, and a variable opens its class's code at that line.
         - **Whole game:** every area as a card, the engine at the head. Each card's rows are
           its pins: one per card it links to, with how many links go each way. Autoloads much
           of the game uses (global state, audio, tables of constants) are **rails** down the
@@ -356,8 +363,8 @@ You review the result in your checkout like any other change, and push it yourse
           clicking one brings its class onto the canvas if it isn't there; double-clicking
           traces from it. Its lines on the canvas are numbered in the order its code reaches
           them. Below are the shortest ways the engine gets to it (like a debugger's stack),
-          the state of other classes it reads and writes, and its code, each line that calls
-          into the project a link. **Trace it wide** puts the trace in the canvas's place.
+          the state of other classes it reads and writes, and its code, with the names it
+          calls, emits, makes and touches linked on. **Trace it wide** puts the trace in the canvas's place.
         - **Click a line** for every place in the code behind it, by pair of classes; **Draw
           it on its own** shows the classes on each side with an arrow per pair.
         - Tick the links to draw: **Calls**, **Signals**, **Creates**, **State**.

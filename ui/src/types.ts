@@ -617,6 +617,8 @@ export interface CodeEdge {
   t: string;
   k: CodeEdgeKind;
   l: number;
+  /** The other lines it's on. */
+  ls?: number[];
   n?: number;
   via?: string;
   g?: true;

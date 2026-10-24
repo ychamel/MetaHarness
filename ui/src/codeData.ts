@@ -412,6 +412,73 @@ export function searchCode(ix: CodeIndex, q: string, max = 30): { id: string; la
   return hits.sort((a, b) => a.score - b.score).slice(0, max);
 }
 
+/* ---------------- names in the code: what each one is in the graph ---------------- */
+
+/** A name in the code, as the graph sees it: a function called, a class made, a signal emitted or connected, a handler connected to one, another class's state read or written. */
+export type RefKind = 'call' | 'new' | 'emit' | 'connect' | 'handler' | 'read' | 'write';
+
+export interface RefTarget {
+  kind: RefKind;
+  /** What it's about: a function, class, signal or field id. */
+  id: string;
+  /** The words on the line that may stand for it, the likeliest first. */
+  names: string[];
+  edge: CodeEdge;
+}
+
+/** A name placed on its line: columns [s, e). */
+export interface Ref extends RefTarget {
+  s: number;
+  e: number;
+}
+
+/** What each line of a file links to in the graph, by line. */
+export function refsOf(ix: CodeIndex, file: string): Map<number, RefTarget[]> {
+  const out = new Map<number, RefTarget[]>();
+  const put = (e: CodeEdge, kind: RefKind, id: string, names: string[]) => {
+    for (const l of [e.l, ...(e.ls ?? [])]) push(out, l, { kind, id, names, edge: e });
+  };
+  for (const e of ix.g.edges) {
+    if (e.k === 'listen') {
+      // Its lines are where it's connected.
+      if (!e.via || ix.fn.get(e.via)?.file !== file) continue;
+      const s = ix.sig.get(e.f);
+      const h = ix.fn.get(e.t);
+      if (s) put(e, 'connect', s.id, [s.name]);
+      if (h && !e.lam) put(e, 'handler', h.id, [h.name]);
+      continue;
+    }
+    if (ix.fn.get(e.f)?.file !== file) continue;
+    if (e.k === 'new') {
+      const c = ix.cls.get(e.t);
+      if (c) put(e, 'new', c.id, [c.name.split('.').pop()!, 'new', 'instantiate']);
+      continue;
+    }
+    const name = (e.k === 'call' ? ix.fn.get(e.t) : e.k === 'emit' ? ix.sig.get(e.t) : ix.field.get(e.t))?.name;
+    if (name) put(e, e.k, e.t, [name]);
+  }
+  return out;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Where a line's names sit: each target at the first free place one of its words stands as a word (for a call, one followed by `(` first). */
+export function placeRefs(text: string, targets: RefTarget[]): Ref[] {
+  const placed: Ref[] = [];
+  const free = (s: number, e: number) => placed.every(r => e <= r.s || s >= r.e);
+  for (const t of targets) {
+    for (const name of t.names) {
+      const hits = [...text.matchAll(new RegExp(`(?<![\\w$])${escapeRe(name)}(?![\\w$])`, 'g'))].map(m => m.index).filter(s => free(s, s + name.length));
+      const called = (s: number) => /^\s*\(/.test(text.slice(s + name.length));
+      const s = (t.kind === 'call' ? hits.find(called) : t.kind === 'read' || t.kind === 'write' ? hits.find(h => !called(h)) : undefined) ?? hits[0];
+      if (s === undefined) continue;
+      placed.push({ ...t, s, e: s + name.length });
+      break;
+    }
+  }
+  return placed.sort((a, b) => a.s - b.s);
+}
+
 /* ---------------- groups: the level between an area and its classes ---------------- */
 
 /** An area with more classes than this splits into groups. */

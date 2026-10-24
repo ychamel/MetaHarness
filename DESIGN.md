@@ -774,8 +774,15 @@ panel, a step hovered or clicked lit on the canvas. Doc comments (`##` lines abo
 first member or a function) go into the graph and onto the cards. Every language pack reads doc
 comments too (the comments right above a definition, or a docstring; a pack's `doc:` marker,
 `##` for GDScript, limits them), served by `GET /design/docs`: hovering a file or a definition
-anywhere in the Design view shows its doc, the summary first. Comparing the graphs before
-and after the scope marks links, functions and classes added, edited and removed.
+anywhere in the Design view shows its doc, the summary first. In the Systems lens, the code
+shown links its names into the graph at that code's revision: each edge keeps every line it's on
+(`ls` beside `l`), and on a line its target's name is placed at the first free word that names
+it (a call's followed by `(`; an object made by its class's name, else `new`; a connect's signal
+and handler where it's connected). Names are coloured as the canvas's links (calls, signals,
+objects made, state read or written; a guessed call dotted); hovering one shows its target's doc
+and lights it on the canvas, clicking follows it (a function's or signal's panel, or the class,
+opened at the variable). Comparing the graphs before and after the scope marks links,
+functions and classes added, edited and removed.
 
 **Insights** come from the log alone, so later retrospectives can total them across goals:
 files edited by several agents, merge conflicts, files changed in three commits or more, how

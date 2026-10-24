@@ -369,14 +369,16 @@ export interface GraphField {
 /**
  * f → t. call: function → function; new: function → class; emit: function → signal;
  * listen: signal → the function that handles it, connected in `via`; read/write: function → field.
- * `l` is the line in the file of f (of `via`, for listen); `n` how many times; `g` a guess, by a
- * method name only one class defines, where the receiver's type isn't declared.
+ * `l` is the line in the file of f (of `via`, for listen), `ls` the other lines it's on; `n` how
+ * many times; `g` a guess, by a method name only one class defines, where the receiver's type
+ * isn't declared.
  */
 export interface GraphEdge {
   f: string;
   t: string;
   k: EdgeKind;
   l: number;
+  ls?: number[];
   n?: number;
   via?: string;
   g?: true;
@@ -414,7 +416,7 @@ export interface CodeSystem {
   text: string;
 }
 
-export const CODE_VERSION = 2;
+export const CODE_VERSION = 3;
 
 /** Engine callbacks: where the engine calls into a script. */
 export const ENGINE_CALLBACKS = new Set(['_ready', '_process', '_physics_process', '_input', '_unhandled_input', '_unhandled_key_input', '_shortcut_input', '_gui_input', '_draw', '_notification', '_enter_tree', '_exit_tree', '_init', '_integrate_forces']);
@@ -560,8 +562,10 @@ export function buildGraph(inputs: CodeInput[], project: GodotProject): CodeGrap
   const add = (e: GraphEdge) => {
     const k = `${e.k}\n${e.f}\n${e.t}`;
     const o = edges.get(k);
-    if (o) o.n = (o.n ?? 1) + 1;
-    else edges.set(k, e);
+    if (!o) return void edges.set(k, e);
+    o.n = (o.n ?? 1) + 1;
+    // Every line it's on, so the code can link each one; a listen's lines are in its first `via`'s file.
+    if (e.l !== o.l && !o.ls?.includes(e.l) && e.via === o.via) (o.ls ??= []).push(e.l);
   };
   const fieldId = (c: ClassInfo, n: string, v: VarFact, isConst: boolean) => {
     const id = `${c.id}.${n}`;

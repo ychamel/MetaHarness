@@ -991,10 +991,19 @@ details.more { display: grid; gap: 6px; }
 .stack-frame { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .code-view { margin: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; overflow: auto; max-height: 520px; padding: 4px 0; }
 .code-line { display: flex; gap: 8px; padding: 0 8px 0 0; min-width: max-content; }
-.code-line.calls { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.code-line.at { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .code-n { color: var(--text-3); width: 36px; text-align: right; flex: none; user-select: none; }
 .code-t { white-space: pre; tab-size: 4; }
-.code-go { display: inline-flex; gap: 6px; padding-left: 12px; font-family: inherit; }
+/* Names the code graph knows, in the canvas's link colours: calls, signals, objects made, other classes' state. */
+.code-ref { --ref: var(--syn-function); color: var(--ref); cursor: pointer; border-radius: 2px; text-decoration: underline solid color-mix(in srgb, var(--ref) 45%, transparent); text-underline-offset: 3px; }
+.code-ref [class^='tk-'] { color: inherit; }
+.code-ref:hover, .code-ref:focus-visible { background: color-mix(in srgb, var(--ref) 16%, transparent); outline: none; }
+.code-ref.guess { text-decoration-style: dotted; }
+.ref-emit, .ref-connect, .ref-handler { --ref: var(--paused); }
+.ref-new { --ref: var(--done); }
+.ref-read { --ref: var(--waiting); }
+.ref-write { --ref: var(--limited); font-weight: 600; }
+.doc-name:has(> .code-ref) { text-decoration: none; }
 .sys-reset { position: absolute; top: 8px; right: 10px; z-index: 5; background: var(--panel); }
 .picked { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 6px 8px; display: grid; gap: 4px; }
 .picked .row-wrap { justify-content: space-between; }

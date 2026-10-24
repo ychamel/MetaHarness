@@ -8,7 +8,7 @@ import { DesignTracker } from '../src/design.ts';
 import * as gitx from '../src/git.ts';
 import { git } from '../src/git.ts';
 import { loadLanguages, Outliner } from '../src/languages.ts';
-import { between, canvasOf, classLinks, collapseWires, groupClasses, indexGraph, makeTree, railClasses, stacksTo, stepsDown, type LinkKind } from '../ui/src/codeData.ts';
+import { between, canvasOf, classLinks, collapseWires, groupClasses, indexGraph, makeTree, placeRefs, railClasses, refsOf, stacksTo, stepsDown, type LinkKind } from '../ui/src/codeData.ts';
 import { marksOf } from '../ui/src/designData.ts';
 import { parseSystems } from '../src/design.ts';
 import { makeRepo } from './helpers.ts';
@@ -88,6 +88,27 @@ test('the code graph follows calls through declared types, signals through the b
   assert.deepEqual(g.entries[0], 'Main._ready', "the main scene's callbacks first");
   assert.ok(g.entries.includes('World._physics_process') && !g.entries.some(e => e.endsWith('._init')));
   assert.ok(g.stats.calls > 0 && g.stats.unresolved === 0, JSON.stringify(g.stats));
+});
+
+test('names in the code link into the graph: each on its own line, at its own place', async () => {
+  // World.step ticks the plants twice: one edge, both lines kept.
+  const files: Record<string, string> = { ...GAME, 'scripts/sim/world.gd': GAME['scripts/sim/world.gd'] + '\tplants.tick(delta)\n' };
+  const ix = indexGraph(await graphOf(files));
+  const tick = ix.g.edges.find(e => e.k === 'call' && e.f === 'World.step' && e.t === 'PlantField.tick')!;
+  assert.deepEqual([tick.l, tick.ls], [10, [15]]);
+  const at = (file: string, n: number) => {
+    const text = files[file].split('\n')[n - 1];
+    return placeRefs(text, refsOf(ix, file).get(n) ?? []).map(r => `${r.kind} ${r.id} ${text.slice(r.s, r.e)}@${r.s}`);
+  };
+  assert.deepEqual(at('scripts/sim/world.gd', 15), ['call PlantField.tick tick@8']);
+  assert.deepEqual(at('scripts/sim/world.gd', 6), ['new Creature Creature@18']);
+  assert.deepEqual(at('scripts/sim/world.gd', 14), ['emit Events.round_ended round_ended@9']);
+  assert.deepEqual(at('scripts/sim/creature.gd', 6), ['read Species.genome genome@18', 'call Genome.stats stats@25']);
+  assert.deepEqual(at('scripts/render/fx.gd', 4), ['connect Events.creature_died creature_died@8', 'handler FX._died _died@30']);
+  assert.deepEqual(at('scripts/render/fx.gd', 5), ['connect Events.creature_died creature_died@8'], 'a lambda handler has no name to link');
+  // A name that also stands as a variable: the call is the one followed by `(`.
+  const r = { kind: 'call' as const, id: 'X.size', names: ['size'], edge: tick };
+  assert.deepEqual(placeRefs('var size := grid.size()', [r]).map(x => x.s), [17]);
 });
 
 test('the Systems lens: steps in order, stacks from the engine, and where two systems meet', async () => {
