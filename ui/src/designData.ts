@@ -316,3 +316,46 @@ export function hunksFor(patch: string, from: number, to: number, side: 'new' | 
   }
   return out.join('\n');
 }
+
+/**
+ * What a patch did, on the new side's line numbers: lines added, lines changed (with what each
+ * was), and lines removed (kept with the line they sat before).
+ */
+export interface Marks {
+  line: Map<number, { kind: 'add' | 'chg'; was?: string }>;
+  gone: Map<number, string[]>;
+}
+
+export function marksOf(patch: string): Marks {
+  const m: Marks = { line: new Map(), gone: new Map() };
+  let b = 0;
+  let dels: string[] = [];
+  let adds: { n: number; text: string }[] = [];
+  // A run of removed lines then added ones: paired up as changes, what's left over as added or removed.
+  const flush = () => {
+    const k = Math.min(dels.length, adds.length);
+    adds.forEach((x, i) => m.line.set(x.n, i < k ? { kind: 'chg', was: dels[i] } : { kind: 'add' }));
+    if (dels.length > k) m.gone.set(adds.length ? adds.at(-1)!.n + 1 : b, dels.slice(k));
+    dels = [];
+    adds = [];
+  };
+  for (const l of patch.split('\n')) {
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(l);
+    if (h) {
+      flush();
+      b = Number(h[1]);
+      continue;
+    }
+    if (!b || l.startsWith('\\')) continue;
+    if (l.startsWith('+')) adds.push({ n: b++, text: l.slice(1) });
+    else if (l.startsWith('-')) {
+      if (adds.length) flush();
+      dels.push(l.slice(1));
+    } else {
+      flush();
+      b++;
+    }
+  }
+  flush();
+  return m;
+}

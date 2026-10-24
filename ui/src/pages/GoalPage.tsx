@@ -35,6 +35,33 @@ const TABS: [GoalTab, string, string][] = [
   ['log', 'Log', 'Every event, as it happened'],
 ];
 
+/**
+ * Parts of the goal page put away to give the tabs more room: the same on every tab, so switching
+ * tabs never moves the page. Kept in the browser. With the agent's column put away, an agent
+ * picked slides in over the page.
+ */
+type Room = { team?: boolean; header?: boolean; agent?: boolean };
+const ROOM_KEY = 'mh.goal.panes';
+
+function useRoom(): [Room, (r: Room) => void] {
+  const [room, setRoom] = useState<Room>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(ROOM_KEY) ?? '{}');
+    } catch {
+      return {};
+    }
+  });
+  const set = (r: Room) => {
+    setRoom(r);
+    try {
+      localStorage.setItem(ROOM_KEY, JSON.stringify(r));
+    } catch {
+      // Kept for this visit only.
+    }
+  };
+  return [room, set];
+}
+
 interface Props {
   goals: GoalSummary[];
   /** The goals list has loaded at least once. */
@@ -71,6 +98,25 @@ export function GoalPage(p: Props) {
   };
   // Where the Design view is (its scope, area and focus) outlasts switching tabs, not goals.
   const [designNav, setDesignNav] = useState<DesignNav>({});
+  const [room, setRoom] = useRoom();
+  // With its column put away, an agent picked slides in over the tab.
+  const [drawer, setDrawer] = useState(false);
+  const onAgent = (name?: string) => {
+    if (room.agent && name) setDrawer(true);
+    p.onAgent(name);
+  };
+  useEffect(() => setDrawer(false), [p.tab]);
+  useEffect(() => {
+    if (!drawer) return;
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || (e.target as HTMLElement)?.closest?.('input, textarea, select')) return;
+      e.stopImmediatePropagation();
+      setDrawer(false);
+    };
+    window.addEventListener('keydown', esc, true);
+    return () => window.removeEventListener('keydown', esc, true);
+  }, [drawer]);
+  const allAway = !!(room.team && room.header && room.agent);
   useEffect(() => setDesignNav({}), [goal?.id]);
   const openDesign = (nav: DesignNav) => {
     setDesignNav(nav);
@@ -96,29 +142,68 @@ export function GoalPage(p: Props) {
     );
   }
 
+  const agentDetail = agent ? (
+    <AgentDetail
+      key={`${goal.id}/${agent.name}`}
+      goal={goal}
+      agent={agent}
+      events={events}
+      manifest={snapshot?.harnesses[agent.harness]}
+      onCommand={p.onCommand}
+      onSpawnUnder={name => p.onSpawn(name)}
+      onEditRole={p.onEditRole}
+      onOpenGit={openGit}
+    />
+  ) : (
+    <div className="empty">Pick an agent to see what it's doing.</div>
+  );
+
   return (
-    <div className="goal-page">
-      <GoalHeader {...p} goal={goal} events={events} />
-      <div className="main">
+    <div className={`goal-page${room.header ? ' no-header' : ''}`}>
+      {!room.header && <GoalHeader {...p} goal={goal} events={events}  />}
+      <div className={`main${room.team ? ' no-team' : ''}${room.agent ? ' no-agent' : ''}`}>
+        {!room.team && (
+        <>
         <aside className="col">
           <div className="section-title">
             Team <span className="muted normal">{teamSummary(goal)}</span>
           </div>
           <div className="scroll">
-            <TeamTree goal={goal} selected={agent?.name} onSelect={p.onAgent} />
+            <TeamTree goal={goal} selected={agent?.name} onSelect={onAgent} />
           </div>
-          <Updates items={updates} onResolve={resolve} onSelectAgent={n => p.onAgent(n)} />
+          <Updates items={updates} onResolve={resolve} onSelectAgent={onAgent} />
         </aside>
         <Splitter pane="team" grow="right" min={200} max={560} label="Team column" />
+        </>
+        )}
 
         <section className="col center">
-          <NeedsYou items={needs} onResolve={resolve} onSelectAgent={n => p.onAgent(n)} />
+          <NeedsYou items={needs} onResolve={resolve} onSelectAgent={onAgent} />
           <nav className="tabs">
+            {room.header && (
+              <button className="tabs-goal ellipsis" onClick={() => setRoom({ ...room, header: false })} title={`${goal.request}\n\nShow the goal's header again`}>
+                <span className={`pill ${goal.status}`}>{goal.status}</span> {goal.request.split('\n')[0]}
+              </button>
+            )}
             {TABS.map(([t, label, title]) => (
               <button key={t} className={`tab${p.tab === t ? ' on' : ''}`} title={title} onClick={() => p.onTab(t)}>
                 {label}
               </button>
             ))}
+            <span className="grow" />
+            <span className="room-toggles" role="group" aria-label="Make room">
+              <RoomButton on={!room.team} label="team column" icon="team" onClick={() => setRoom({ ...room, team: !room.team })} />
+              <RoomButton on={!room.header} label="goal header" icon="header" onClick={() => setRoom({ ...room, header: !room.header })} />
+              <RoomButton on={!room.agent} label="agent column" icon="agent" onClick={() => setRoom({ ...room, agent: !room.agent })} />
+              <button
+                className={`room-btn${allAway ? ' on' : ''}`}
+                onClick={() => setRoom(allAway ? {} : { team: true, header: true, agent: true })}
+                title={allAway ? 'Bring the team, the header and the agent back' : 'Make room: put the team, the header and the agent away'}
+                aria-pressed={allAway}
+              >
+                {allAway ? '⤡' : '⤢'}
+              </button>
+            </span>
           </nav>
           <ErrorBoundary resetKey={`${goal.id}/${p.tab}`}>
           <Suspense fallback={<div className="empty">Loading…</div>}>
@@ -126,45 +211,63 @@ export function GoalPage(p: Props) {
               <Story
                 goal={goal}
                 events={events}
-                onSelectAgent={p.onAgent}
+                onSelectAgent={onAgent}
                 onOpenFile={f => {
                   p.onFile(f);
                   p.onTab('files');
                 }}
               />
             )}
-            {p.tab === 'design' && <Design goal={goal} events={events} nav={designNav} onNav={setDesignNav} onCommand={p.onCommand} onSelectAgent={p.onAgent} onOpenCommit={sha => openGit({ kind: 'commit', sha })} />}
-            {p.tab === 'git' && <Git goal={goal} events={events} sel={gitSel} onSel={setGitSel} onSelectAgent={p.onAgent} onOpenDesign={(sha, area) => openDesign({ scope: { kind: 'commit', sha }, area })} />}
-            {p.tab === 'files' && <Files goal={goal} events={events} selected={p.file} onSelect={p.onFile} onSelectAgent={p.onAgent} />}
-            {p.tab === 'graph' && <Graph goal={goal} events={events} selected={agent?.name} onSelect={p.onAgent} />}
-            {p.tab === 'sequence' && <Sequence goal={goal} events={events} onSelect={p.onAgent} />}
-            {p.tab === 'timeline' && <Timeline goal={goal} events={events} onSelect={p.onAgent} />}
-            {p.tab === 'costs' && <Costs goal={goal} onSelect={p.onAgent} onSetup={p.onHarnesses} />}
-            {p.tab === 'log' && <Activity events={events} agents={goal.agents.map(a => a.name)} onSelectAgent={p.onAgent} />}
+            {p.tab === 'design' && <Design goal={goal} events={events} nav={designNav} onNav={setDesignNav} onCommand={p.onCommand} onSelectAgent={onAgent} onOpenCommit={sha => openGit({ kind: 'commit', sha })} />}
+            {p.tab === 'git' && <Git goal={goal} events={events} sel={gitSel} onSel={setGitSel} onSelectAgent={onAgent} onOpenDesign={(sha, area) => openDesign({ scope: { kind: 'commit', sha }, area })} />}
+            {p.tab === 'files' && <Files goal={goal} events={events} selected={p.file} onSelect={p.onFile} onSelectAgent={onAgent} />}
+            {p.tab === 'graph' && <Graph goal={goal} events={events} selected={agent?.name} onSelect={onAgent} />}
+            {p.tab === 'sequence' && <Sequence goal={goal} events={events} onSelect={onAgent} />}
+            {p.tab === 'timeline' && <Timeline goal={goal} events={events} onSelect={onAgent} />}
+            {p.tab === 'costs' && <Costs goal={goal} onSelect={onAgent} onSetup={p.onHarnesses} />}
+            {p.tab === 'log' && <Activity events={events} agents={goal.agents.map(a => a.name)} onSelectAgent={onAgent} />}
           </Suspense>
           </ErrorBoundary>
         </section>
+        {!room.agent && (
+        <>
         <Splitter pane="agent" grow="left" min={300} max={1000} label="Agent column" />
-
-        <aside className="col">
-          {agent ? (
-            <AgentDetail
-              key={`${goal.id}/${agent.name}`}
-              goal={goal}
-              agent={agent}
-              events={events}
-              manifest={snapshot?.harnesses[agent.harness]}
-              onCommand={p.onCommand}
-              onSpawnUnder={name => p.onSpawn(name)}
-              onEditRole={p.onEditRole}
-              onOpenGit={openGit}
-            />
-          ) : (
-            <div className="empty">Pick an agent to see what it's doing.</div>
-          )}
-        </aside>
+        <aside className="col">{agentDetail}</aside>
+        </>
+        )}
+        {room.agent && drawer && (
+          <aside className="col agent-drawer" aria-label="Agent">
+            <div className="drawer-head">
+              <span className="muted small">Esc closes it</span>
+              <button className="btn ghost small" onClick={() => setRoom({ ...room, agent: false })} title="Keep the agent beside the tab instead">
+                Pin as a column
+              </button>
+              <button className="drawer-x" onClick={() => setDrawer(false)} title="Close (Esc)" aria-label="Close the agent">
+                ×
+              </button>
+            </div>
+            {agentDetail}
+          </aside>
+        )}
       </div>
     </div>
+  );
+}
+
+const ROOM_ICONS: Record<'team' | 'header' | 'agent', string> = {
+  team: 'M4 5h16v14H4zM9 5v14',
+  header: 'M4 5h16v14H4zM4 10h16',
+  agent: 'M4 5h16v14H4zM15 5v14',
+};
+
+/** Shows or puts away one part of the goal page. */
+function RoomButton({ on, label, icon, onClick }: { on: boolean; label: string; icon: keyof typeof ROOM_ICONS; onClick: () => void }) {
+  return (
+    <button className={`room-btn${on ? '' : ' away'}`} onClick={onClick} title={on ? `Hide the ${label}` : `Show the ${label}`} aria-pressed={on} aria-label={on ? `Hide the ${label}` : `Show the ${label}`}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden>
+        <path d={ROOM_ICONS[icon]} />
+      </svg>
+    </button>
   );
 }
 
@@ -177,6 +280,7 @@ function teamSummary(goal: Goal): string {
 function GoalHeader({ goals, goal, events, snapshot, connected, onGoal, onCommand, onSpawn, onNewGoal, onTab, onFile }: Props & { goal: Goal }) {
   const confirm = useConfirm();
   const [messaging, setMessaging] = useState(false);
+  const [outcome, setOutcome] = useState(false);
   const agents = goal.agents;
   const live = goal.live && goal.status !== 'ended';
   const paused = agents.filter(a => a.state === 'paused' || a.pausing).length;
@@ -190,10 +294,37 @@ function GoalHeader({ goals, goal, events, snapshot, connected, onGoal, onComman
     return paths.find(p => /(^|\/)report\.md$/i.test(p)) ?? paths.find(p => /(^|\/)design\.md$/i.test(p));
   }, [events]);
 
+  const hasOutcome = goal.status !== 'running' && !!lead?.doneNote;
+  const meta = (
+    <div className="goal-meta">
+      <span className={`pill ${goal.status}`}>{goal.status === 'running' ? 'running' : goal.status}</span>
+      <span>{took}</span>
+      {goal.cost != null && <span title="Cost reported by the harnesses">{money(goal.cost)}</span>}
+      <span>
+        {agents.length} agent{agents.length === 1 ? '' : 's'}
+      </span>
+      {goal.workflow && <span>workflow: {goal.workflow}</span>}
+      {goal.branch && <span className="mono">{goal.branch}</span>}
+      {goal.status === 'running' && snapshot && <AccountChips accounts={snapshot.accounts.filter(a => agents.some(x => x.harness === harnessOf(a.id)))} />}
+      {!connected && goal.live && <span className="warn-text">reconnecting…</span>}
+      {goal.notice && (
+        <span className="help-dot" title={goal.notice}>
+          i
+        </span>
+      )}
+      {hasOutcome && (
+        <button className={`btn ghost small${outcome ? ' on' : ''}`} onClick={() => setOutcome(o => !o)} aria-expanded={outcome}>
+          Outcome {outcome ? '▴' : '▾'}
+        </button>
+      )}
+    </div>
+  );
+
   return (
-    <header className="goal-header">
+    <header className="goal-header compact">
       <div className="goal-title-row">
         <GoalSwitcher goals={goals} goal={goal} onGoal={onGoal} onNewGoal={onNewGoal} />
+        {meta}
         <div className="goal-actions">
           {live && (
             <>
@@ -220,24 +351,7 @@ function GoalHeader({ goals, goal, events, snapshot, connected, onGoal, onComman
           {!live || goal.status !== 'running' ? <CleanButton goal={goal} onCommand={onCommand} /> : null}
         </div>
       </div>
-      <div className="goal-meta">
-        <span className={`pill ${goal.status}`}>{goal.status === 'running' ? 'running' : goal.status}</span>
-        <span>{took}</span>
-        {goal.cost != null && <span title="Cost reported by the harnesses">{money(goal.cost)}</span>}
-        <span>
-          {agents.length} agent{agents.length === 1 ? '' : 's'}
-        </span>
-        {goal.workflow && <span>workflow: {goal.workflow}</span>}
-        {goal.branch && <span className="mono">{goal.branch}</span>}
-        {goal.status === 'running' && snapshot && <AccountChips accounts={snapshot.accounts.filter(a => agents.some(x => x.harness === harnessOf(a.id)))} />}
-        {!connected && goal.live && <span className="warn-text">reconnecting…</span>}
-      </div>
-      {goal.notice && (
-        <div className="notice" title={goal.notice}>
-          {goal.notice}
-        </div>
-      )}
-      {goal.status !== 'running' && lead?.doneNote && (
+      {hasOutcome && outcome && lead?.doneNote && (
         <div className="outcome">
           <div className="kicker">
             Outcome

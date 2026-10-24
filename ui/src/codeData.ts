@@ -327,6 +327,13 @@ export interface CodeChange {
   touched: Set<string>;
 }
 
+/** The functions a change's definitions name (added or changed), in a graph. */
+export function fnsChanged(ix: CodeIndex, change: DesignChange): Set<string> {
+  const names = new Map<string, string[]>();
+  for (const s of [...change.symbols.changed, ...change.symbols.added]) if (s.kind === 'function' || s.kind === 'method') push(names, s.file, s.name);
+  return new Set(ix.g.fns.filter(f => names.get(f.file)?.includes(f.name)).map(f => f.id));
+}
+
 export const edgeKey = (e: CodeEdge) => `${e.k}\n${e.f}\n${e.t}`;
 
 export function codeChange(before: CodeIndex | undefined, after: CodeIndex, change?: DesignChange): CodeChange {
@@ -343,11 +350,7 @@ export function codeChange(before: CodeIndex | undefined, after: CodeIndex, chan
     edited: new Set(),
     touched: new Set(),
   };
-  if (change) {
-    const names = new Map<string, string[]>();
-    for (const s of [...change.symbols.changed, ...change.symbols.added]) if (s.kind === 'function' || s.kind === 'method') push(names, s.file, s.name);
-    for (const f of after.g.fns) if (names.get(f.file)?.includes(f.name)) c.edited.add(f.id);
-  }
+  if (change) for (const f of fnsChanged(after, change)) c.edited.add(f);
   for (const id of [...c.newFns, ...c.edited]) c.touched.add(after.fn.get(id)!.cls);
   for (const id of c.newClasses) c.touched.add(id);
   for (const e of c.added) {
@@ -560,6 +563,8 @@ export function makeTree(groups: Map<string, Group[]>): Tree {
 
 export const isAreaId = (id: string) => id.startsWith('area:');
 export const isGroupId = (id: string) => id.startsWith('group:');
+/** The card a frame's unpinned cards are folded onto. */
+export const isRestId = (id: string) => id.startsWith('rest:');
 
 /** A class's place: its area, its group if the area has groups, itself. */
 export function pathOf(ix: CodeIndex, t: Tree, cls: string): string[] {
@@ -604,6 +609,9 @@ export interface CanvasInput {
   hide: string[];
   /** Groups and areas opened in place: drawn as a frame around what they hold, nothing else changed. */
   open?: string[];
+  /** Cards pinned inside a frame, and frames whose unpinned cards are folded onto one (`rest:<frame>`). */
+  pins?: string[];
+  tuck?: string[];
   kinds: Set<LinkKind>;
   /** Classes to draw on their own (where two systems in focus meet). */
   single?: Set<string>;
@@ -684,6 +692,11 @@ export function canvasOf(ix: CodeIndex, t: Tree, links: Link[], rails: Set<strin
   const show = new Set(inp.show);
   const hide = new Set(inp.hide);
   const open = new Set(inp.open ?? []);
+  const tuck = new Set(inp.tuck ?? []);
+  // A card holding a pin stays out of the rest too.
+  const pinned = new Set((inp.pins ?? []).flatMap(p => (isAreaId(p) ? [p] : isGroupId(p) ? [`area:${t.group.get(p)?.area}`, p] : ix.cls.has(p) ? pathOf(ix, t, p) : [])));
+  /** In a frame whose unpinned cards are folded away, a card without a pin goes on the frame's rest. */
+  const tucked = (id: string, parent?: string) => (parent && tuck.has(parent) && !pinned.has(id) ? `rest:${parent}` : id);
   // Down the class's path as far as it's opened, back up to the highest fold (not above `min`, a frame's insides).
   const refine = (path: string[], i: number, min = 0) => {
     while (i < path.length - 1 && expand.has(path[i])) i++;
@@ -700,10 +713,11 @@ export function canvasOf(ix: CodeIndex, t: Tree, links: Link[], rails: Set<strin
   for (const f of focus) if (!ix.cls.has(f)) unit(f, 'frame');
   /** A card opened in place becomes a frame, and the class goes one level down inside it, as often as opened. */
   const nest = (path: string[], id: string, parent?: string): [string, string | undefined] => {
+    id = tucked(id, parent);
     for (let i = path.indexOf(id); open.has(id) && i >= 0 && i < path.length - 1; i = path.indexOf(id)) {
       unit(id, 'open', parent);
       parent = id;
-      id = refine(path, i + 1, i + 1);
+      id = tucked(refine(path, i + 1, i + 1), parent);
     }
     return [id, parent];
   };

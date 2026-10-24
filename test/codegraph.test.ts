@@ -9,6 +9,7 @@ import * as gitx from '../src/git.ts';
 import { git } from '../src/git.ts';
 import { loadLanguages, Outliner } from '../src/languages.ts';
 import { between, canvasOf, classLinks, collapseWires, groupClasses, indexGraph, makeTree, railClasses, stacksTo, stepsDown, type LinkKind } from '../ui/src/codeData.ts';
+import { marksOf } from '../ui/src/designData.ts';
 import { parseSystems } from '../src/design.ts';
 import { makeRepo } from './helpers.ts';
 
@@ -209,7 +210,25 @@ test('the canvas: groups in a large area, rails, and a focus with its neighbours
   const hud = canvasOf(ix, t, links, rails, { focus: ['Hud'], open: ['area:sim'], expand: [], fold: [], show: [], hide: [], kinds });
   assert.deepEqual(hud.units.map(u => `${u.role}:${u.id}${u.parent ? '<' + u.parent : ''}`).sort(), ['focus:Hud', `near:${ga}<area:sim`, 'open:area:sim'].sort(), 'only what was there, opened');
   assert.ok(hud.wires.some(w => w.from === 'Hud' && w.to === ga));
+  // Pinned inside, the rest folded: the pinned card stays, the others go on one card in the frame, their lines with them.
+  const tucked = canvasOf(ix, t, links, rails, { focus: [], open: ['area:sim', ga], pins: ['A0'], tuck: ['area:sim', ga], expand: [], fold: [], show: [], hide: [], kinds });
+  assert.deepEqual(tucked.units.filter(u => u.parent === ga).map(u => u.id).sort(), ['A0', `rest:${ga}`], 'the pin and the rest');
+  assert.equal(tucked.units.find(u => u.id === `rest:${ga}`)?.classes.length, 5);
+  assert.equal(tucked.where.get('B0'), `rest:area:sim`, 'a card holding no pin is folded too');
+  assert.ok(tucked.units.some(u => u.id === ga && u.role === 'open'), 'a card holding the pin stays open');
+  assert.ok(tucked.wires.some(w => w.from === 'A0' && w.to === `rest:${ga}`), 'lines reach the rest');
   // Too many lines to follow: they go to the card, but for the function kept.
   const merged = collapseWires(a2.wires, new Set(['A2']), () => false);
   assert.ok(merged.every(w => w.fromPin === '*' || w.from !== 'A2'));
+});
+
+test('edits marked on the code: added, changed with what each was, removed with where they sat', () => {
+  const patch = ['@@ -1,6 +1,6 @@', ' a', '-b', '+B', '+new', ' c', '-gone1', '-gone2', ' d', '+tail'].join('\n');
+  const m = marksOf(patch);
+  assert.deepEqual([...m.line].sort((x, y) => x[0] - y[0]), [[2, { kind: 'chg', was: 'b' }], [3, { kind: 'add' }], [6, { kind: 'add' }]]);
+  assert.deepEqual([...m.gone], [[5, ['gone1', 'gone2']]], 'removed lines sit before the line that follows them');
+  const changedMore = marksOf(['@@ -3,3 +3,1 @@', '-x', '-y', '-z', '+X', ' w'].join('\n'));
+  assert.deepEqual([...changedMore.line], [[3, { kind: 'chg', was: 'x' }]]);
+  assert.deepEqual([...changedMore.gone], [[4, ['y', 'z']]], 'what is left over after pairing is removed');
+  assert.equal(marksOf('diff --git a/x b/x\n+++ b/x\n@@ -0,0 +1,2 @@\n+one\n+two').line.size, 2, 'headers before the first hunk are not lines');
 });

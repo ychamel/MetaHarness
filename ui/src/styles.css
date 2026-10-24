@@ -839,6 +839,8 @@ body.resizing iframe, body.resizing .react-flow { pointer-events: none; }
 .hunk-row.add { background: color-mix(in srgb, var(--done) 13%, transparent); }
 .hunk-row.del { background: color-mix(in srgb, var(--crashed) 12%, transparent); }
 .hunk-row.hunk { background: var(--accent-soft); color: var(--text-2); }
+/* A diff's unchanged lines share their class with the context meter: they keep their own size. */
+.hunk-row.ctx { width: auto; height: auto; border-radius: 0; background: none; overflow: visible; flex: initial; }
 
 .design-toolbar { gap: 12px; }
 .snap-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
@@ -851,8 +853,8 @@ body.resizing iframe, body.resizing .react-flow { pointer-events: none; }
 .scope-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; min-width: 0; }
 .scope-head .btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .scope-head select { max-width: 280px; }
-.scope-title { font-weight: 600; flex: 1 1 200px; min-width: 0; }
-.lanes { display: flex; max-height: 200px; overflow-y: auto; }
+.scope-title { font-weight: 600; flex: 1 1 120px; min-width: 0; }
+.lanes { display: flex; min-height: 40px; overflow-y: auto; }
 .lane-labels { flex: none; width: 128px; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
 .lane-label { display: flex; align-items: center; gap: 5px; border: 0; background: none; padding: 0 6px; font-size: 12px; text-align: left; cursor: pointer; color: var(--text); border-radius: 4px 0 0 4px; min-width: 0; }
 .lane-label:hover { background: var(--panel-2); }
@@ -1100,3 +1102,111 @@ details.more { display: grid; gap: 6px; }
 .file-row .grow { min-width: 0; }
 .reading { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.4; } }
+/* Pins: a card or function kept when the rest is folded. */
+.card-acts button.pinned, .row-pin[aria-pressed='true'] { opacity: 1; filter: none; }
+.card-acts button:not(.pinned)[aria-label^='Pin'], .row-pin { filter: grayscale(1); }
+.card-acts button.pinned { background: var(--accent-soft); }
+.card-acts button.tuck { font-size: 11.5px; padding: 2px 6px; border: 1px solid var(--line-strong); }
+.card-acts button.on { color: var(--accent); background: var(--accent-soft); }
+.sys-node.pinned { border-color: var(--accent); }
+.sys-node.rest { border-style: dashed; background: var(--panel-2); opacity: 0.85; }
+.sys-node.rest:hover { opacity: 1; border-color: var(--accent); }
+.row-pin { flex: none; border: 0; background: none; padding: 0 2px; font-size: 10px; line-height: 1; cursor: pointer; opacity: 0; }
+.node-row:hover .row-pin { opacity: 0.55; }
+.node-row .row-pin:hover { opacity: 1; filter: none; }
+.node-row.pinned .row-pin { opacity: 1; filter: none; }
+.node-row.pinned .row-label { font-weight: 600; }
+/* Functions the hovered commit or file touched. */
+.node-row.peek { background: color-mix(in srgb, var(--peek) 16%, transparent); box-shadow: inset 3px 0 0 var(--peek); }
+.node-row.peek .row-label { color: var(--peek); font-weight: 600; }
+.node-peekfns { position: absolute; top: calc(100% + 4px); left: 0; z-index: 10; max-width: 100%; margin: 0; padding: 3px 8px; list-style: none; background: var(--panel); border: 1px solid var(--peek); border-radius: 6px; color: var(--peek); font-weight: 600; box-shadow: var(--shadow); pointer-events: none; }
+/* Room: the team column, the goal header and the agent column can be put away. */
+.main.no-team { grid-template-columns: minmax(0, 1fr) 0 clamp(300px, var(--pane-agent, 430px), 55vw); }
+.main.no-agent { grid-template-columns: clamp(200px, var(--pane-team, 290px), 38vw) 0 minmax(0, 1fr); }
+.main.no-team.no-agent { grid-template-columns: minmax(0, 1fr); }
+.main.no-agent > .col.center { border-right: 0; }
+.tabs { align-items: flex-end; }
+.tabs-goal { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; margin: 0 10px 4px 0; padding: 3px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; align-self: center; }
+.tabs-goal:hover { border-color: var(--accent); }
+.room-toggles { display: inline-flex; gap: 2px; align-self: center; margin-bottom: 4px; }
+.room-btn { display: grid; place-items: center; width: 26px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--text-2); cursor: pointer; font-size: 14px; }
+.room-btn svg { width: 16px; height: 16px; }
+.room-btn:hover { background: var(--panel-2); color: var(--text); }
+.room-btn.away { color: var(--text-3); opacity: 0.6; }
+.room-btn.on { color: var(--accent); background: var(--accent-soft); }
+/* Systems: the bars float over the canvas, so it keeps the whole height. */
+.sys-float { position: absolute; left: 8px; right: 8px; z-index: 5; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; pointer-events: none; }
+.sys-float.top { top: 8px; }
+.sys-float.bottom { bottom: 8px; right: 60px; }
+.sys-float > * { pointer-events: auto; max-width: 100%; box-sizing: border-box; border: 1px solid var(--line) !important; border-radius: 10px; background: color-mix(in srgb, var(--panel) 90%, transparent); backdrop-filter: blur(4px); box-shadow: var(--shadow); }
+.sys-float .sys-route { background: color-mix(in srgb, var(--accent) 8%, color-mix(in srgb, var(--panel) 90%, transparent)); }
+.sys-float.bottom .sys-chips { width: 100%; }
+.help-dot { display: inline-grid; place-items: center; width: 16px; height: 16px; border: 1px solid var(--line-strong); border-radius: 50%; font-size: 10.5px; font-weight: 700; cursor: help; flex: none; }
+/* Design: the scope bar carries the lens's tools; the lanes start short and can be dragged taller. */
+.scope-tools { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+.scope-head .scope-tools .btn.on { border-color: var(--accent); }
+.lane-row { display: flex; align-items: stretch; min-width: 0; }
+.lane-row .lane-label { flex: 1; }
+.lane-agent { flex: none; border: 0; background: none; color: var(--text-3); cursor: pointer; padding: 0 5px; font: inherit; font-size: 12px; opacity: 0; }
+.lane-row:hover .lane-agent { opacity: 1; }
+.lane-agent:hover { color: var(--accent); }
+.toggle-menu { position: relative; }
+.toggle-menu-list { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; min-width: 210px; padding: 4px; display: grid; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); }
+.toggle-menu-item { display: flex; gap: 8px; align-items: center; padding: 5px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.toggle-menu-item:hover { background: var(--panel-2); }
+.toggle-menu-item input { margin: 0; }
+.design-body.no-side { grid-template-columns: minmax(0, 1fr); }
+/* The goal page while studying the code: a one-line header, the agent sliding in over the tab. */
+.goal-header.compact { padding: 5px 14px; gap: 6px; }
+.goal-header.compact .goal-title-row { flex-wrap: nowrap; gap: 10px; }
+.goal-header.compact .goal-switcher { flex: 0 1 auto; min-width: 120px; max-width: 40%; }
+.goal-header.compact .goal-title { font-size: 14.5px; padding: 2px 6px; }
+.goal-header.compact .goal-meta { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; gap: 10px; font-size: 12.5px; }
+.goal-header.compact .goal-actions { flex-wrap: nowrap; gap: 6px; }
+.goal-header.compact .goal-actions .btn { padding: 3px 9px; font-size: 12.5px; }
+.goal-header.compact .outcome { max-height: 40vh; overflow: auto; }
+.main { position: relative; }
+.agent-drawer { position: absolute; top: 0; right: 0; bottom: 0; z-index: 30; width: clamp(300px, var(--pane-agent, 430px), 55vw); border-left: 1px solid var(--line-strong); box-shadow: -12px 0 32px rgba(0, 0, 0, 0.25); animation: drawer-in 0.18s ease-out; }
+.drawer-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 14px; border-bottom: 1px solid var(--line); }
+.drawer-head .muted { flex: 1; }
+.drawer-x { border: 0; background: none; color: var(--text-2); font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.drawer-x:hover { background: var(--panel-2); color: var(--text); }
+@keyframes drawer-in { from { transform: translateX(24px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .agent-drawer { animation: none; } }
+/* A commit kept lit: the rest dims less, so the map stays usable while you move around it. */
+.sys-canvas.locked .sys-node.peek-off { opacity: 0.55; }
+.lanes-grip { height: 7px; margin: 0 -12px -4px; cursor: ns-resize; position: relative; }
+.lanes-grip::after { content: ''; position: absolute; left: 50%; top: 2px; width: 36px; height: 3px; margin-left: -18px; border-radius: 2px; background: var(--line-strong); }
+.lanes-grip:hover::after { background: var(--accent); }
+.lock-chip { display: inline-flex; align-items: center; gap: 2px; max-width: 320px; padding: 1px 2px 1px 8px; border-radius: 99px; border: 1.5px solid var(--peek); background: color-mix(in srgb, var(--peek) 12%, var(--panel)); font-size: 12px; }
+.lock-chip .text-link { display: inline-flex; gap: 5px; align-items: center; min-width: 0; color: var(--text); font-size: 12px; }
+.lock-chip .x { border: 0; background: none; color: var(--text-2); cursor: pointer; padding: 0 5px; font: inherit; }
+.commit-panel { display: grid; gap: 6px; }
+.commit-panel .kicker { margin-bottom: 0; }
+.commit-panel .peek-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.commit-msg { font-weight: 600; white-space: pre-line; }
+.row-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.def-change .def-sign { flex: none; width: 12px; font-weight: 700; text-align: center; }
+.def-sign.chg { color: var(--chg-edit); }
+.goal-page.no-header { grid-template-rows: minmax(0, 1fr); }
+.diff-set { margin-bottom: 6px; }
+/* The functions a change touched, under a card: each opens its panel. */
+.node-peekfns { pointer-events: auto; }
+.node-peekfns button { display: block; max-width: 100%; border: 0; background: none; padding: 1px 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.node-peekfns button:hover { text-decoration: underline; }
+/* Code with its edits marked: green added, yellow changed, a red line where lines were removed; hover a mark for what was there. */
+.marked-code { display: grid; gap: 4px; }
+.code-head { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; min-height: 16px; }
+.mk { font-weight: 650; }
+.mk.add { color: var(--chg-new); }
+.mk.chg { color: var(--chg-edit); }
+.mk.del { color: var(--chg-gone); }
+.code-line { position: relative; }
+.code-line.add { background: color-mix(in srgb, var(--chg-new) 16%, transparent); box-shadow: inset 3px 0 0 var(--chg-new); }
+.code-line.chg { background: color-mix(in srgb, var(--chg-edit) 18%, transparent); box-shadow: inset 3px 0 0 var(--chg-edit); cursor: help; }
+.code-line.del { background: color-mix(in srgb, var(--chg-gone) 14%, transparent); box-shadow: inset 3px 0 0 var(--chg-gone); }
+.code-gap { position: relative; height: 3px; margin: 1px 0 1px 44px; background: var(--chg-gone); border-radius: 2px; cursor: help; }
+.code-gap::before { content: ''; position: absolute; inset: -4px 0; }
+.code-was { display: none; position: absolute; left: 44px; top: calc(100% + 2px); z-index: 6; min-width: 200px; padding: 3px 8px; white-space: pre; tab-size: 4; background: color-mix(in srgb, var(--chg-gone) 14%, var(--panel)); border: 1px solid color-mix(in srgb, var(--chg-gone) 55%, var(--line)); border-radius: 6px; box-shadow: var(--shadow); color: var(--text); pointer-events: none; }
+.code-was-sign { color: var(--chg-gone); font-weight: 700; margin-right: 8px; user-select: none; }
+.code-line.chg:hover .code-was, .code-line.chg:focus .code-was, .code-gap:hover .code-was, .code-gap:focus .code-was { display: block; }

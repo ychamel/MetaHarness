@@ -1,13 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { api } from '../api.ts';
 import { agentColors } from '../agentColors.ts';
 import { ago } from '../format.ts';
 import type { AreaChange, DesignArea, DesignChange, DesignFile, DesignReport, DesignScopeView, DesignSnapshot, DiffFile, FileChange, Goal, GitView, MhEvent, ScopeSel, SnapshotInfo, SymbolRef } from '../types.ts';
-import { activity, areaLabel, areaOf, hunksFor, insights, lanes, layers as layerRows, pinnedNotes, symbolEnd, treemap, type Activity, type Touch } from '../designData.ts';
+import { activity, areaLabel, areaOf, insights, lanes, layers as layerRows, pinnedNotes, symbolEnd, treemap, type Activity, type Touch } from '../designData.ts';
 import { MessageDialog } from '../components/Dialogs.tsx';
-import { Hunks } from '../components/Diff.tsx';
+import { MarkedCode } from '../components/CodeView.tsx';
 import { Splitter } from '../components/Splitter.tsx';
 import { useNow } from '../components/common.tsx';
 import Systems, { type SystemsNav } from './Systems.tsx';
@@ -93,9 +93,23 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
   const [error, setError] = useState<string>();
   const [layers, setLayer] = useLayers();
   const [lit, setLit] = useState<string[]>();
-  /** Files lit for a moment, from a commit or a file hovered: shown on the map without changing the scope. */
-  const [peek, setPeek] = useState<string[]>();
+  /** A commit clicked: kept lit on the map while you move around, its changes in the panel. */
+  const [lock, setLock] = useState<string>();
+  const [lockPanel, setLockPanel] = useState(false);
+  /** Lit for a moment (a commit, a file or a definition hovered), over what's kept lit; the scope stays. */
+  const [hoverPeek, setHoverPeek] = useState<Peek>();
+  const peekAt = (paths?: string[], sha?: string) => setHoverPeek(paths ? { paths, ...(sha ? { sha } : {}) } : undefined);
+  /** Keeps a commit lit (clicked again: lets it go); its panel takes the place of what was selected. */
+  const lockOn = (sha: string) => {
+    const off = lock === sha;
+    setLock(off ? undefined : sha);
+    setLockPanel(true);
+    setHoverPeek(undefined);
+    if (!off) (setFile(undefined), onNav({ ...nav, area: undefined, ...(nav.systems ? { systems: { ...nav.systems, sel: undefined, link: undefined, def: undefined } } : {}) }));
+  };
   const [flow, setFlow] = useState<string>();
+  /** The panel with nothing selected (what the scope changed), opened by hand: otherwise the panel shows only for a selection. */
+  const [panel, setPanel] = useState(false);
   const [file, setFile] = useState<string>();
   const [messaging, setMessaging] = useState<string>();
   const color = useMemo(() => agentColors(goal), [goal]);
@@ -131,9 +145,19 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
   const act = useMemo(() => activity(events, snap, since), [events, snap, since]);
   const notes = useMemo(() => pinnedNotes(events), [events]);
   const found = useMemo(() => insights(events, snap), [events, snap]);
-  const setScope = (s: ScopeSel) => (setFile(undefined), setPeek(undefined), onNav({ ...nav, scope: s }));
+  const lockPeek = useMemo<Peek | undefined>(() => (lock ? { paths: commitOf(events, view, lock)?.paths ?? [], sha: lock } : undefined), [lock, events, view]);
+  const peek = hoverPeek ?? lockPeek;
+  const setScope = (s: ScopeSel) => (setFile(undefined), setHoverPeek(undefined), setLock(undefined), onNav({ ...nav, scope: s }));
   const setArea = (a?: string) => (setFile(undefined), onNav({ ...nav, area: a }));
   const setFocus = (f?: string) => onNav({ ...nav, focus: f });
+  // Esc puts the Areas panel away (the Systems lens handles its own).
+  const closeRef = useRef<() => void>(undefined);
+  closeRef.current = nav.lens === 'systems' ? undefined : () => (nav.area !== undefined ? setArea(undefined) : lock ? setLock(undefined) : setPanel(false));
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !(e.target as HTMLElement)?.closest?.('input, textarea, select') && closeRef.current?.();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   if (error && !view) return <div className="empty warn-text">{error}</div>;
   if (view && !view.snapshot) return <div className="empty">{view.note}</div>;
@@ -149,60 +173,250 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
       </button>
     </div>
   );
-  const scopeBar = <ScopeBar goal={goal} events={events} gitv={gitv} view={view} scope={scope} color={color} focus={nav.focus} onScope={setScope} onFocus={setFocus} onPeek={setPeek} />;
+  const scopeBar = (tools: ReactNode) => (
+    <ScopeBar
+      goal={goal} events={events} gitv={gitv} view={view} scope={scope} color={color} focus={nav.focus} tools={tools} lock={lock}
+      onScope={setScope} onFocus={setFocus} onPeek={peekAt} onAgent={onSelectAgent} onLock={lockOn} onShowLock={() => setLockPanel(true)} onUnlock={() => setLock(undefined)}
+    />
+  );
+  const commitPanel = (h: { onDef: (d: CommitDef) => void; onFile: (path: string) => void }) =>
+    lock && (
+      <CommitPanel
+        goal={goal} events={events} view={view} sha={lock} color={color} onPeek={setHoverPeek} onScope={setScope} onOpenCommit={onOpenCommit} onUnlock={() => setLock(undefined)}
+        onDef={h.onDef} onFile={h.onFile}
+      />
+    );
   if (nav.lens === 'systems') {
     return (
-      <>
-        {scopeBar}
-        <Systems goal={goal} view={view} snap={snap} nav={nav.systems ?? {}} onNav={s => onNav({ ...nav, systems: s })} lens={lens} peek={peek} onPeek={setPeek} />
-      </>
+      <Systems
+        goal={goal} view={view} snap={snap} nav={nav.systems ?? {}} onNav={s => onNav({ ...nav, systems: s })} lens={lens} scopeBar={scopeBar} panel={panel} onPanel={setPanel}
+        peek={peek} lock={lock} onUnlock={() => setLock(undefined)} commit={lock && lockPanel ? commitPanel : undefined} onCommitPanel={setLockPanel} onPeek={peekAt}
+      />
     );
   }
+  const showLock = !!lock && lockPanel;
+  const side = area !== undefined || panel || showLock;
+  const openFile = (path: string) => (setFile(path), onNav({ ...nav, area: areaOf(snap.map.areas, path) }));
 
   return (
     <>
-      {scopeBar}
-      <div className="toolbar design-toolbar">
-        {lens}
-        <div className="layer-toggles" role="group" aria-label="Layers">
-          {LAYERS.map(([k, label, title]) => (
-            <label key={k} className={`layer-toggle${layers[k] ? ' on' : ''}`} title={title}>
-              <input type="checkbox" checked={layers[k]} onChange={e => setLayer(k, e.target.checked)} />
-              {k === 'live' && !running ? 'Activity (all)' : label}
-            </label>
-          ))}
-        </div>
-        <Legend goal={goal} color={color} act={act} report={view.report} focus={nav.focus} onFocus={setFocus} />
-      </div>
+      {scopeBar(
+        <>
+          {lens}
+          <ToggleMenu
+            label="Layers"
+            items={LAYERS.map(([k, label, title]) => ({ key: k, label: k === 'live' && !running ? 'Activity (all)' : label, title, on: layers[k], onChange: (v: boolean) => setLayer(k, v) }))}
+          />
+          <Legend goal={goal} color={color} act={act} report={view.report} focus={nav.focus} onFocus={setFocus} />
+          <PanelButton open={side} onToggle={() => (side ? (setPanel(false), setArea(undefined), setLockPanel(false)) : lock ? setLockPanel(true) : setPanel(true))} />
+        </>,
+      )}
       {error && <div className="notice-box warn">{error}</div>}
-      <div className="design-body">
+      <div className={`design-body${side ? '' : ' no-side'}`}>
         <div className="view">
           <AreaMap
-            snap={snap} view={view} act={act} notes={notes} color={color} layers={layers} selected={area} lit={lit} litFiles={peek} flow={flow} focus={nav.focus} now={now}
+            snap={snap} view={view} act={act} notes={notes} color={color} layers={layers} selected={area} lit={lit} litFiles={peek?.paths} flow={flow} focus={nav.focus} now={now}
             onSelect={setArea}
           />
         </div>
-        <Splitter pane="design-side" grow="left" min={280} max={820} label="Design panel" />
+        {side && <Splitter pane="design-side" grow="left" min={280} max={820} label="Design panel" />}
+        {side && (
         <aside className="design-side">
           {area !== undefined ? (
             <AreaPanel
               goal={goal} snap={snap} view={view} area={area} act={act} layers={layers} color={color} file={file} focus={nav.focus}
               notes={notes.filter(n => n.path === area || (n.path && area.startsWith(n.path + '/')) || n.path === '')}
-              onFile={setFile} onArea={setArea} onScope={setScope} onCommand={onCommand} onMessage={() => setMessaging(area)} onFocus={setFocus}
+              onFile={setFile} onArea={setArea} onScope={setScope} onLock={lockOn} onCommand={onCommand} onMessage={() => setMessaging(area)} onFocus={setFocus}
             />
+          ) : showLock ? (
+            <div className="area-panel scroll">{commitPanel({ onDef: d => openFile(d.file), onFile: openFile })}</div>
           ) : (
             <ScopeSummary
               goal={goal} events={events} snap={snap} view={view} found={found} color={color} focus={nav.focus} flow={flow}
-              onFlow={setFlow} onLit={setLit} onPeek={setPeek} onScope={setScope} onArea={setArea} onFile={(a, f) => (onNav({ ...nav, area: a }), setFile(f))} onFocus={setFocus}
+              onFlow={setFlow} onLit={setLit} onPeek={peekAt} onScope={setScope} onLock={lockOn} onArea={setArea} onFile={(a, f) => (onNav({ ...nav, area: a }), setFile(f))} onFocus={setFocus}
               onSelectAgent={onSelectAgent} onOpenCommit={onOpenCommit}
             />
           )}
         </aside>
+        )}
       </div>
       {messaging !== undefined && (
         <MessageDialog goal={goal} initial={`About ${areaLabel(messaging)}: `} onClose={() => setMessaging(undefined)} onSend={async b => !!(await onCommand(b))} />
       )}
     </>
+  );
+}
+
+/** A definition a commit added (+), changed (~) or removed (−). */
+export type CommitDef = SymbolRef & { sign: string };
+
+/** What's lit on the map without changing the scope: files, the commit they're from, and the definitions when one is hovered. */
+export interface Peek {
+  paths: string[];
+  sha?: string;
+  defs?: { file: string; name: string }[];
+}
+
+/** A commit's line: from the commit events, or the scope's report. */
+function commitOf(events: MhEvent[], view: DesignScopeView | undefined, sha: string): { sha: string; summary: string; agent?: string; added?: number; removed?: number; paths: string[]; at?: string } | undefined {
+  const e = events.find(x => x.type === 'git.commit' && x.data.sha === sha);
+  if (e) return { sha, summary: String(e.data.summary ?? ''), agent: e.agent, added: e.data.added as number, removed: e.data.removed as number, paths: (e.data.paths as string[]) ?? [], at: e.ts };
+  const c = view?.report?.commits.find(x => x.sha === sha);
+  return c && { sha, summary: c.summary, agent: c.agent, added: c.added, removed: c.removed, paths: c.paths, at: c.at };
+}
+
+const commitChanges = new Map<string, Promise<DesignChange | undefined>>();
+
+/** What one commit changed in the design (against its first parent), fetched once. */
+export function useCommitChange(goal: string, sha: string | undefined): DesignChange | undefined {
+  const [c, setC] = useState<{ sha: string; change?: DesignChange }>();
+  useEffect(() => {
+    if (!sha) return;
+    let alive = true;
+    const k = `${goal}\n${sha}`;
+    let p = commitChanges.get(k);
+    if (!p) {
+      p = api.designCompare(goal, `${sha}^1`, sha).catch(() => undefined);
+      commitChanges.set(k, p);
+    }
+    void p.then(change => alive && setC({ sha, change }));
+    return () => {
+      alive = false;
+    };
+  }, [goal, sha]);
+  return sha && c?.sha === sha ? c.change : undefined;
+}
+
+const commitDiffs = new Map<string, Promise<DiffFile[]>>();
+
+/**
+ * A commit kept lit, in the panel: who made it and why, the definitions and files it changed
+ * (hover one to light just that on the map, click a file for its diff), and ways on from it.
+ */
+function CommitPanel({ goal, events, view, sha, color, onPeek, onScope, onOpenCommit, onUnlock, onDef, onFile }: {
+  goal: Goal;
+  events: MhEvent[];
+  view: DesignScopeView;
+  sha: string;
+  color: (n?: string) => string;
+  onPeek: (p?: Peek) => void;
+  onScope: (s: ScopeSel) => void;
+  onOpenCommit: (sha: string) => void;
+  onUnlock: () => void;
+  onDef: (d: CommitDef) => void;
+  onFile: (path: string) => void;
+}) {
+  const c = commitOf(events, view, sha);
+  const [openDef, setOpenDef] = useState<string>();
+  const range = { from: `${sha}^1`, to: sha };
+  const change = useCommitChange(goal.id, sha);
+  const [files, setFiles] = useState<{ sha: string; files: DiffFile[] }>();
+  const [open, setOpen] = useState<string>();
+  useEffect(() => {
+    let alive = true;
+    const k = `${goal.id}\n${sha}`;
+    let p = commitDiffs.get(k);
+    if (!p) {
+      p = api.diff(goal.id, { sha }).then(d => d.files);
+      p.catch(() => commitDiffs.delete(k));
+      commitDiffs.set(k, p);
+    }
+    p.then(f => alive && setFiles({ sha, files: f }), () => alive && setFiles({ sha, files: [] }));
+    return () => {
+      alive = false;
+    };
+  }, [goal.id, sha]);
+  const diffs = files?.sha === sha ? files.files : undefined;
+  // Classes and the like count as changed whenever one of their members is: the members say more.
+  const defs: CommitDef[] | undefined = change
+    ? [
+        ...change.symbols.added.map(x => ({ ...x, sign: '+' })),
+        ...change.symbols.changed.map(x => ({ ...x, sign: '~' })),
+        ...change.symbols.removed.map(x => ({ ...x, sign: '−' })),
+      ].filter(d => d.parent || !BIG.includes(d.kind) || d.sign !== '~')
+    : undefined;
+  const rows: { path: string; added?: number; removed?: number; patch?: string; cut?: boolean }[] = diffs ?? c?.paths.map(path => ({ path })) ?? [];
+  return (
+    <div className="commit-panel">
+      <div className="kicker">
+        Commit, kept lit
+        <span className="grow" />
+        <button className="btn ghost small" onClick={onUnlock} title="Stop keeping it lit (Esc)">
+          ×
+        </button>
+      </div>
+      <div className="peek-head">
+        <span className="swatch" style={{ background: c?.agent ? color(c.agent) : 'var(--text-3)' }} />
+        <b>{c?.agent ?? 'unnamed (you?)'}</b>
+        <span className="mono muted small">{sha.slice(0, 7)}</span>
+        {c?.added !== undefined && (
+          <span className="small">
+            <span className="diff-add">+{c.added}</span> <span className="diff-del">−{c.removed}</span>
+          </span>
+        )}
+        {c?.at && <span className="muted small">{ago(c.at)}</span>}
+      </div>
+      <div className="commit-msg">{c?.summary}</div>
+      <div className="row-btns">
+        <button className="btn small" onClick={() => onScope({ kind: 'commit', sha })} title="Make this commit the scope: the map shows only what it changed">
+          Look at only this commit
+        </button>
+        <button className="btn ghost small" onClick={() => onOpenCommit(sha)} title="Open it in the Git tab">
+          Open in Git
+        </button>
+      </div>
+      <div className="section-title">
+        Definitions <span className="muted">{defs ? defs.length : '…'}</span>
+      </div>
+      <div onMouseLeave={() => onPeek(undefined)}>
+        {defs?.map(d => {
+          const k = `${d.sign}${d.file}${d.parent}${d.name}`;
+          return (
+            <div key={k}>
+              <div className="history-row def-change" onMouseEnter={() => onPeek({ paths: [d.file], sha, defs: [{ file: d.file, name: d.name }] })}>
+                <span className={`def-sign ${d.sign === '+' ? 'diff-add' : d.sign === '−' ? 'diff-del' : 'chg'}`}>{d.sign}</span>
+                <button className="text-link grow mono ellipsis" onClick={() => setOpenDef(o => (o === k ? undefined : k))} title="Its code here, the commit's edits marked; hover to light it on the map">
+                  {openDef === k ? '▾ ' : '▸ '}
+                  {d.parent ? `${d.parent}.` : ''}
+                  {d.name}
+                  {d.kind === 'function' || d.kind === 'method' ? '()' : ''}
+                </button>
+                <span className="muted small ellipsis def-file">{d.file.split('/').pop()}</span>
+                <button className="btn ghost small" onClick={() => onDef(d)} title="Go to it: on the map, with its own panel">
+                  ↗
+                </button>
+              </div>
+              {openDef === k && <SymbolCode goal={goal.id} range={range} path={d.file} lines={d.line ? [d.line, symbolEnd(undefined, d)!] : undefined} side={d.sign === '−' ? 'old' : 'new'} label={`what ${sha.slice(0, 7)} changed`} />}
+            </div>
+          );
+        })}
+        {defs && !defs.length && <div className="muted small">No definitions changed (comments, data, or files no language pack reads).</div>}
+      </div>
+      <div className="section-title">
+        Files <span className="muted">{rows.length}</span>
+      </div>
+      <div onMouseLeave={() => onPeek(undefined)}>
+        {rows.map(f => (
+          <div key={f.path}>
+            <div className="history-row file-row" onMouseEnter={() => onPeek({ paths: [f.path], sha })}>
+              <button className="text-link grow mono ellipsis" onClick={() => setOpen(o => (o === f.path ? undefined : f.path))} title="Its code here, the commit's edits marked">
+                {open === f.path ? '▾ ' : '▸ '}
+                {f.path}
+              </button>
+              {f.added !== undefined && (
+                <span className="small nowrap">
+                  <span className="diff-add">+{f.added}</span> <span className="diff-del">−{f.removed}</span>
+                </span>
+              )}
+              <button className="btn ghost small" onClick={() => onFile(f.path)} title="Go to it on the map">
+                ↗
+              </button>
+            </div>
+            {open === f.path && <SymbolCode goal={goal.id} range={range} path={f.path} label={`what ${sha.slice(0, 7)} changed`} />}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -220,7 +434,7 @@ function landingsOf(list: SnapshotInfo[]): { n: number; sel: ScopeSel; s: Snapsh
   }));
 }
 
-function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFocus, onPeek }: {
+function ScopeBar({ goal, events, gitv, view, scope, color, focus, tools, lock, onScope, onFocus, onPeek, onAgent, onLock, onShowLock, onUnlock }: {
   goal: Goal;
   events: MhEvent[];
   gitv?: GitView;
@@ -230,8 +444,18 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
   focus?: string;
   onScope: (s: ScopeSel) => void;
   onFocus: (f?: string) => void;
-  onPeek: (paths?: string[]) => void;
+  onPeek: (paths?: string[], sha?: string) => void;
+  /** The lens's own tools, on the same row. */
+  tools?: ReactNode;
+  onAgent: (name: string) => void;
+  /** The commit kept lit, and keeping one lit (clicked again: let go). */
+  lock?: string;
+  onLock: (sha: string) => void;
+  onShowLock: () => void;
+  onUnlock: () => void;
 }) {
+  const [lanesH, setLanesH] = useLanesHeight();
+  const lanesRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ sha: string; x: number; y: number }>();
   const pathsOf = useMemo(() => new Map(events.filter(e => e.type === 'git.commit' && Array.isArray(e.data.paths)).map(e => [String(e.data.sha), e.data.paths as string[]])), [events]);
   const branch = gitv?.git?.branch ?? goal.branch ?? 'goal branch';
@@ -247,14 +471,16 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
   const cols = Math.max(model.cols, 1);
   const width = x(cols) + 12;
   const height = LAND + model.lanes.length * LH + 4;
-  const anchor = scope.kind === 'commit' ? model.dots.find(d => d.sha === scope.sha) : undefined;
+  const anchor = model.dots.find(d => d.sha === lock) ?? (scope.kind === 'commit' ? model.dots.find(d => d.sha === scope.sha) : undefined);
+  /** A click keeps the commit lit (and its changes in the panel); shift-click a second one looks at everything between. */
   const pick = (sha: string, shift: boolean) => {
     const d = model.dots.find(x => x.sha === sha)!;
     if (shift && anchor && anchor.sha !== sha) {
       const [a, b] = anchor.col < d.col ? [anchor, d] : [d, anchor];
       onScope({ kind: 'range', from: `${a.sha}^1`, to: b.sha, title: `${a.sha.slice(0, 7)} to ${b.sha.slice(0, 7)}` });
-    } else onScope({ kind: 'commit', sha });
+    } else onLock(sha);
   };
+  const locked = lock ? model.dots.find(d => d.sha === lock) ?? commitOf(events, view, lock) : undefined;
   const landCol = (sha: string) => model.dots.find(d => d.sha === sha)?.col;
   const isGoal = scope.kind === 'goal';
   const landing = lands.find(l => sameScope(l.sel, scope));
@@ -287,23 +513,42 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
         <span className="scope-title ellipsis" title={view.scope?.title}>
           {view.scope?.title}
         </span>
-        <span className="muted small nowrap">click a commit · shift-click another for a range · a lane for its branch</span>
+        <span className="help-dot muted" title="Click a commit to keep it lit while you move around the map, its changes in the panel (click it again to let go); shift-click another to look at everything between. Click a lane for its branch (and to focus on its agent); its ⋯ opens the agent. Drag the bar under the lanes to see more of them.">
+          ?
+        </span>
+        {lock && (
+          <span className="lock-chip" title="Kept lit on the map while you move around. Click to see its changes; × lets it go (Esc).">
+            <button className="text-link" onClick={onShowLock}>
+              <span className="swatch" style={{ background: locked && 'agent' in locked && locked.agent ? color(locked.agent) : 'var(--text-3)' }} />
+              <span className="mono">{lock.slice(0, 7)}</span> <span className="ellipsis">{locked?.summary ?? ''}</span>
+            </button>
+            <button className="x" onClick={onUnlock} aria-label="Stop keeping it lit">
+              ×
+            </button>
+          </span>
+        )}
+        {tools && <span className="scope-tools">{tools}</span>}
       </div>
-      <div className="lanes">
+      <div className="lanes" ref={lanesRef} style={{ height: lanesH ?? Math.min(height + 2, LAND + 6 * LH + 6) }}>
         <div className="lane-labels" style={{ paddingTop: LAND }}>
           {model.lanes.map((l, i) => {
             const on = i === 0 ? isGoal : scope.kind === 'branch' && scope.agent === l.agent;
             return (
-              <button
-                key={l.branch}
-                className={`lane-label${on ? ' on' : ''}${focus && l.agent && focus !== l.agent ? ' faded' : ''}`}
-                style={{ height: LH }}
-                onClick={() => (i === 0 ? onScope({ kind: 'goal' }) : l.agent && (onScope({ kind: 'branch', agent: l.agent }), onFocus(l.agent)))}
-                title={i === 0 ? `${l.branch}: the goal branch` : `${l.agent}'s branch: what it changed, and focus on ${l.agent}`}
-              >
-                <span className="swatch" style={{ background: i === 0 ? 'var(--text-2)' : color(l.agent) }} />
-                <span className="ellipsis">{i === 0 ? l.branch : l.agent ?? l.branch.split('/').pop()}</span>
-              </button>
+              <div key={l.branch} className="lane-row" style={{ height: LH }}>
+                <button
+                  className={`lane-label${on ? ' on' : ''}${focus && l.agent && focus !== l.agent ? ' faded' : ''}`}
+                  onClick={() => (i === 0 ? onScope({ kind: 'goal' }) : l.agent && (onScope({ kind: 'branch', agent: l.agent }), onFocus(l.agent)))}
+                  title={i === 0 ? `${l.branch}: the goal branch` : `${l.agent}'s branch: what it changed, and focus on ${l.agent}`}
+                >
+                  <span className="swatch" style={{ background: i === 0 ? 'var(--text-2)' : color(l.agent) }} />
+                  <span className="ellipsis">{i === 0 ? l.branch : l.agent ?? l.branch.split('/').pop()}</span>
+                </button>
+                {i > 0 && l.agent && (
+                  <button className="lane-agent" onClick={() => onAgent(l.agent!)} title={`Open ${l.agent}: what it's doing and saying`} aria-label={`Open ${l.agent}`}>
+                    ⋯
+                  </button>
+                )}
+              </div>
             );
           })}
         </div>
@@ -343,6 +588,7 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
             })}
             {model.dots.map(d => {
               const on = (scope.kind === 'commit' && scope.sha === d.sha) || inScope.has(d.sha);
+              const held = lock === d.sha;
               const sel = scope.kind === 'commit' && scope.sha === d.sha;
               const dim = focus && d.agent !== focus;
               return (
@@ -351,10 +597,11 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
                   onMouseEnter={e => {
                     const r = (e.currentTarget as SVGGElement).getBoundingClientRect();
                     setHover({ sha: d.sha, x: r.left + r.width / 2, y: r.bottom });
-                    onPeek(pathsOf.get(d.sha) ?? []);
+                    onPeek(pathsOf.get(d.sha) ?? [], d.sha);
                   }}
                   onMouseLeave={() => (setHover(undefined), onPeek(undefined))}
                 >
+                  {held && <circle cx={x(d.col)} cy={y(d.lane)} r={9} fill="color-mix(in srgb, var(--peek) 25%, transparent)" stroke="var(--peek)" strokeWidth={2.5} />}
                   {on && <circle cx={x(d.col)} cy={y(d.lane)} r={sel ? 8 : 7} fill="none" stroke="var(--accent)" strokeWidth={sel ? 2.5 : 1.5} />}
                   <circle cx={x(d.col)} cy={y(d.lane)} r={5} fill={d.merge ? 'var(--panel)' : d.agent ? color(d.agent) : 'var(--text-3)'} stroke={d.agent ? color(d.agent) : 'var(--text-3)'} strokeWidth={2} />
                 </g>
@@ -364,6 +611,26 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
           {!model.dots.length && <div className="empty small">No commits yet. They show here as agents make them.</div>}
         </div>
       </div>
+      <div
+        className="lanes-grip" role="separator" aria-orientation="horizontal" aria-label="Lanes height" title="Drag to show more or fewer lanes; double-click to fit them again"
+        onDoubleClick={() => setLanesH(undefined)}
+        onPointerDown={e => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          const el = e.currentTarget;
+          const from = lanesRef.current?.getBoundingClientRect().height ?? 80;
+          const start = e.clientY;
+          el.setPointerCapture(e.pointerId);
+          let last = from;
+          const move = (m: PointerEvent) => {
+            last = Math.max(40, Math.min(window.innerHeight * 0.7, from + m.clientY - start));
+            if (lanesRef.current) lanesRef.current.style.height = `${last}px`;
+          };
+          const up = () => (el.removeEventListener('pointermove', move), el.removeEventListener('pointerup', up), setLanesH(last));
+          el.addEventListener('pointermove', move);
+          el.addEventListener('pointerup', up);
+        }}
+      />
       {hover && (() => {
         const d = model.dots.find(x => x.sha === hover.sha);
         if (!d) return null;
@@ -389,11 +656,74 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
                 {paths.length > 10 && <li className="muted">and {paths.length - 10} more</li>}
               </ul>
             )}
-            <div className="muted small">Lit on the map · click to look at it · shift-click another for a range</div>
+            <div className="muted small">Lit on the map · click to keep it lit and see its changes · shift-click another for everything between</div>
           </div>
         );
       })()}
     </div>
+  );
+}
+
+/** The lanes' height as dragged, kept in the browser; unset, they fit up to six lanes and scroll. */
+function useLanesHeight(): [number | undefined, (h?: number) => void] {
+  const [h, setH] = useState<number | undefined>(() => {
+    try {
+      return Number(localStorage.getItem(LANES_KEY)) || undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  const set = (n?: number) => {
+    setH(n);
+    try {
+      if (n) localStorage.setItem(LANES_KEY, String(Math.round(n)));
+      else localStorage.removeItem(LANES_KEY);
+    } catch {
+      // Kept for this visit only.
+    }
+  };
+  return [h, set];
+}
+const LANES_KEY = 'mh.design.lanes';
+
+/** A row of switches folded into one button: a menu of checkboxes, the count of those on beside its name. */
+export function ToggleMenu({ label, items }: { label: string; items: { key: string; label: ReactNode; title: string; on: boolean; onChange: (v: boolean) => void }[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => !ref.current?.contains(e.target as globalThis.Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && (e.stopImmediatePropagation(), setOpen(false));
+    window.addEventListener('pointerdown', close, true);
+    window.addEventListener('keydown', esc, true);
+    return () => (window.removeEventListener('pointerdown', close, true), window.removeEventListener('keydown', esc, true));
+  }, [open]);
+  const n = items.filter(i => i.on).length;
+  return (
+    <div className="toggle-menu" ref={ref}>
+      <button className={`btn small${open ? ' on' : ''}`} onClick={() => setOpen(o => !o)} aria-haspopup="true" aria-expanded={open} title={`${label}: ${n} of ${items.length} on`}>
+        {label} <span className="muted">{n}/{items.length}</span> ▾
+      </button>
+      {open && (
+        <div className="toggle-menu-list" role="group" aria-label={label}>
+          {items.map(i => (
+            <label key={i.key} className="toggle-menu-item" title={i.title}>
+              <input type="checkbox" checked={i.on} onChange={e => i.onChange(e.target.checked)} />
+              <span>{i.label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Opens the panel with nothing selected (what the scope changed), or puts the panel away. */
+export function PanelButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button className={`btn small${open ? ' on' : ''}`} onClick={onToggle} aria-pressed={open} title={open ? 'Put the panel away (Esc)' : 'What this scope changed: its commits, files and functions, in the panel'}>
+      ▤ Changes
+    </button>
   );
 }
 
@@ -696,44 +1026,16 @@ function handlesFor(a: { x: number; y: number }, b: { x: number; y: number }, fl
   return b.x > a.x ? { sourceHandle: 'r', targetHandle: 'l' } : { sourceHandle: 'fl', targetHandle: 'fr' };
 }
 
-/* ---------------- diffs, read when asked for ---------------- */
+/* ---------------- code, with its edits marked ---------------- */
 
-const diffs = new Map<string, Promise<DiffFile | undefined>>();
-
-/** One file's diff over the scope, fetched once. */
-function useFileDiff(goal: string, from: string | undefined, to: string | undefined, path: string, on: boolean): DiffFile | undefined | null {
-  const [f, setF] = useState<DiffFile | undefined | null>(null);
-  useEffect(() => {
-    if (!on || !from || !to) return;
-    let alive = true;
-    const k = `${goal}\n${from}\n${to}\n${path}`;
-    let p = diffs.get(k);
-    if (!p) {
-      p = api.diff(goal, { from, to, paths: [path] }).then(d => d.files.find(x => x.path === path) ?? d.files[0]);
-      p.catch(() => diffs.delete(k));
-      diffs.set(k, p);
-    }
-    p.then(x => alive && setF(x), () => alive && setF(undefined));
-    return () => {
-      alive = false;
-    };
-  }, [goal, from, to, path, on]);
-  return f;
-}
-
-/** The part of a file's diff inside one definition (or the whole file's, without lines). */
-function SymbolDiff({ goal, view, path, lines, side = 'new' }: { goal: string; view: DesignScopeView; path: string; lines?: [number, number]; side?: 'new' | 'old' }) {
-  const f = useFileDiff(goal, view.scope?.from, view.scope?.to, path, true);
-  if (f === null) return <div className="muted small">Reading the diff…</div>;
-  if (!f) return <div className="muted small">No changes to this file in this scope.</div>;
-  if (f.binary) return <div className="muted small">A binary file.</div>;
-  const patch = lines ? hunksFor(f.patch, lines[0], lines[1], side) : f.patch;
-  if (!patch) return <div className="muted small">Its lines didn't change here (it moved, or only what's around it did).</div>;
-  return (
-    <div className="inline-diff">
-      <Hunks patch={patch} cut={!lines && f.cut} />
-    </div>
-  );
+/**
+ * A definition's code (or a whole file's) as it is after the scope, or another range (a commit
+ * against its parent), its edits marked on it. A removed one shows as it was, all of it marked.
+ */
+export function SymbolCode({ goal, view, range, path, lines, side = 'new', label }: { goal: string; view?: DesignScopeView; range?: { from: string; to: string }; path: string; lines?: [number, number]; side?: 'new' | 'old'; label?: string }) {
+  const r = range ?? (view?.scope ? { from: view.scope.from, to: view.scope.to } : undefined);
+  if (!r) return null;
+  return side === 'old' ? <MarkedCode goal={goal} rev={r.from} path={path} lines={lines} gone /> : <MarkedCode goal={goal} rev={r.to} path={path} range={r} lines={lines} label={label ?? 'what this scope changed'} />;
 }
 
 /* ---------------- the inspector: an area ---------------- */
@@ -752,6 +1054,7 @@ function AreaPanel(p: {
   onFile: (f?: string) => void;
   onArea: (a?: string) => void;
   onScope: (s: ScopeSel) => void;
+  onLock: (sha: string) => void;
   onCommand: Props['onCommand'];
   onMessage: () => void;
   onFocus: (f?: string) => void;
@@ -853,7 +1156,7 @@ function AreaPanel(p: {
                   <span className="muted small ellipsis def-file">{s.file.split('/').pop()}</span>
                   <span className="muted">{openDef === k ? '▾' : '▸'}</span>
                 </button>
-                {openDef === k && <SymbolDiff goal={p.goal.id} view={view} path={s.file} lines={s.line && end ? [s.line, end] : undefined} side={sign === '−' ? 'old' : 'new'} />}
+                {openDef === k && <SymbolCode goal={p.goal.id} view={view} path={s.file} lines={s.line && end ? [s.line, end] : undefined} side={sign === '−' ? 'old' : 'new'} />}
               </li>
             );
           })}
@@ -864,7 +1167,7 @@ function AreaPanel(p: {
         <>
           <div className="section-title">Commits here</div>
           {commits.slice(0, 30).map(cm => (
-            <CommitRow key={cm.sha} c={cm} color={color} onClick={() => p.onScope({ kind: 'commit', sha: cm.sha })} />
+            <CommitRow key={cm.sha} c={cm} color={color} onClick={() => p.onLock(cm.sha)} />
           ))}
         </>
       )}
@@ -890,7 +1193,7 @@ function AreaPanel(p: {
         <div className="file-detail">
           <div className="mono small">{removedFile.path}</div>
           <div className="muted small">Removed in this scope.</div>
-          <SymbolDiff goal={p.goal.id} view={view} path={removedFile.path} />
+          <SymbolCode goal={p.goal.id} view={view} path={removedFile.path} side="old" />
         </div>
       )}
 
@@ -1033,10 +1336,10 @@ function FileDetail({ goal, snap, view, file, act, color, onFile }: { goal: stri
           {fc.reasons.length > 0 && <div className="warn-text">🔥 {fc.reasons.join('; ')}</div>}
           <div>
             <button className="text-link" onClick={() => setOpen(open === '*' ? undefined : '*')} aria-expanded={open === '*'}>
-              {open === '*' ? '▾' : '▸'} the file's diff
+              {open === '*' ? '▾' : '▸'} the file, its edits marked
             </button>
           </div>
-          {open === '*' && <SymbolDiff goal={goal} view={view} path={file.path} />}
+          {open === '*' && <SymbolCode goal={goal} view={view} path={file.path} />}
         </div>
       )}
       {!!file.symbols?.length && (
@@ -1059,7 +1362,7 @@ function FileDetail({ goal, snap, view, file, act, color, onFile }: { goal: stri
                     <span className="muted small"> :{s.line}</span>
                   </>
                 )}
-                {open === k && <SymbolDiff goal={goal} view={view} path={file.path} lines={[s.line, symbolEnd(file, s) ?? s.line]} />}
+                {open === k && <SymbolCode goal={goal} view={view} path={file.path} lines={[s.line, symbolEnd(file, s) ?? s.line]} />}
               </li>
             );
           })}
@@ -1071,7 +1374,7 @@ function FileDetail({ goal, snap, view, file, act, color, onFile }: { goal: stri
                   <span className="sym-kind">{s.kind}</span> <span className="mono">{s.name}</span> <span className="pill">removed</span>
                   <span className="muted">{open === k ? '▾' : '▸'}</span>
                 </button>
-                {open === k && <SymbolDiff goal={goal} view={view} path={file.path} lines={s.line ? [s.line, symbolEnd(undefined, s)!] : undefined} side="old" />}
+                {open === k && <SymbolCode goal={goal} view={view} path={file.path} lines={s.line ? [s.line, symbolEnd(undefined, s)!] : undefined} side="old" />}
               </li>
             );
           })}
@@ -1109,7 +1412,7 @@ function FileDetail({ goal, snap, view, file, act, color, onFile }: { goal: stri
 
 function CommitRow({ c, color, onClick, onHover }: { c: DesignReport['commits'][number]; color: (n?: string) => string; onClick: () => void; onHover?: (areas?: string[]) => void }) {
   return (
-    <button className="history-row" onClick={onClick} onMouseEnter={() => onHover?.(c.areas)} onMouseLeave={() => onHover?.(undefined)} onFocus={() => onHover?.(c.areas)} onBlur={() => onHover?.(undefined)} title="Look at this commit">
+    <button className="history-row" onClick={onClick} onMouseEnter={() => onHover?.(c.areas)} onMouseLeave={() => onHover?.(undefined)} onFocus={() => onHover?.(c.areas)} onBlur={() => onHover?.(undefined)} title="Keep it lit on the map, its changes in the panel">
       <span className="swatch" style={{ background: c.agent ? color(c.agent) : 'var(--text-3)' }} />
       <span className="grow">
         {c.merge && <span className="pill">merge</span>} {c.summary}
@@ -1150,7 +1453,7 @@ export function ChangedFiles({ files, onPeek, onFile, max = 14 }: { files: FileC
   );
 }
 
-function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onFlow, onLit, onPeek, onScope, onArea, onFile, onFocus, onSelectAgent, onOpenCommit }: {
+function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onFlow, onLit, onPeek, onScope, onLock, onArea, onFile, onFocus, onSelectAgent, onOpenCommit }: {
   goal: Goal;
   events: MhEvent[];
   snap: DesignSnapshot;
@@ -1161,8 +1464,9 @@ function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onF
   flow?: string;
   onFlow: (f?: string) => void;
   onLit: (a?: string[]) => void;
-  onPeek: (paths?: string[]) => void;
+  onPeek: (paths?: string[], sha?: string) => void;
   onScope: (s: ScopeSel) => void;
+  onLock: (sha: string) => void;
   onArea: (a: string) => void;
   onFile: (area: string, file: string) => void;
   onFocus: (f?: string) => void;
@@ -1229,7 +1533,7 @@ function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onF
       <ChangedFiles files={(r?.files ?? []).filter(f => mine(f.agents))} onPeek={onPeek} onFile={onFile} />
       <div className="section-title">Commits{focus && ` by ${focus}`}</div>
       {commits.slice(0, 60).map(c => (
-        <CommitRow key={c.sha} c={c} color={color} onHover={on => onPeek(on ? c.paths : undefined)} onClick={() => onScope({ kind: 'commit', sha: c.sha })} />
+        <CommitRow key={c.sha} c={c} color={color} onHover={on => onPeek(on ? c.paths : undefined, c.sha)} onClick={() => onLock(c.sha)} />
       ))}
       {commits.length > 60 && <div className="muted small">and {commits.length - 60} more</div>}
       {!commits.length && <div className="muted small">None in this scope.</div>}

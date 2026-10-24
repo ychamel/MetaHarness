@@ -192,14 +192,21 @@ You review the result in your checkout like any other change, and push it yourse
   a restart too. It reads only, unless you switch it to **Write**: then it may edit files
   and run any command in the repository, for a task you give it. A new conversation starts in
   read only again.
-- **Goal:** the request, status, time, cost and branch at the top, with the lead's final note
-  as **Outcome** once it's done. Below that:
+- **Goal:** the request, status, time, cost and branch in one line at the top, with the lead's
+  final note under **Outcome ▾** once it's done. Below that:
   - **Needs you** (center, highlighted): what an agent is waiting on.
     - **Approvals:** a command an agent wants to run. Approve, or deny (add a note if you like).
     - **Decisions:** "approve this design". Approve, or send it back saying what to change.
     - **Questions:** answer in the box.
   - **Team** (left): who spawned whom, with each agent's state, status line, cost and context
     use. **Updates** below it: results from agents that report to you; clear them, or follow up.
+  - **Make room:** the buttons at the right end of the tabs show or hide the team column, the
+    goal's header (its name and status move into the tab row; click it to bring the header
+    back) and the agent column; **⤢** puts all three away at once, **⤡** brings them back.
+    It's the same on every tab, so switching tabs never moves the page, and it's kept in your
+    browser. With the agent column put away, an agent you pick (in the team, a lane's **⋯**,
+    a name in the panel or in Git) slides in over the right side; **Esc** or **×** closes it,
+    **Pin as a column** brings the column back.
   - **Center tabs:**
     - **Story** (the default): what happened, the important parts first. Who started whom,
       messages, results, commits, problems and your answers are cards; the steps in between
@@ -213,9 +220,12 @@ You review the result in your checkout like any other change, and push it yourse
         merged as a picture (nothing in your checkout or their branches moves; files that would
         conflict are named). **Landings** lists each time work landed on the branch, with who
         and what. Below, each branch is a lane in its agent's colour and each commit a dot:
-        click a dot for that commit, shift-click a second one for everything in between, click
-        a lane's name for that agent's branch. The commits in what you're looking at are ringed.
-      - **Layers**, each on or off: **Change** tints each area by how much it changed and
+        click a dot to keep that commit lit (below), shift-click a second one to look at
+        everything in between, click a lane's name for that agent's branch (its **⋯** opens the
+        agent). The commits in what you're looking at are ringed. The lanes show up to six
+        rows and scroll; drag the bar under them for more or fewer (double-click it to fit them
+        again). The lens's own tools sit at the end of the same row.
+      - **Layers ▾**, each on or off: **Change** tints each area by how much it changed and
         names what changed on the card (`+ class`, `~ function`, `− removed`), with its lines
         added and removed, commits, and a bar of who made them; new areas are outlined, removed
         ones show faded. **Dependencies** draws which area imports which, new arrows in blue,
@@ -226,38 +236,68 @@ You review the result in your checkout like any other change, and push it yourse
         unchanged** dims what the scope left alone. Your choice of layers is remembered.
       - **Click an agent's name** (beside the layers, or in the panel) to focus on it: the
         map and the lanes fade everything it didn't touch, and the panel keeps to its commits.
-      - **With nothing selected**, the panel says what the scope holds: what changed in the
-        design, its commits (point at one to light up the areas it touched; click it to look at
-        it), hotspots, circular dependencies, the flows (click one to pick it out on the map;
+      - **The panel** on the right opens when you click something, or with **▤ Changes**;
+        **Esc** puts it away and the map takes its room. Opened with nothing selected, it says
+        what the scope holds: what changed in the
+        design, its commits (point at one to light up the areas it touched; click it to keep it
+        lit), hotspots, circular dependencies, the flows (click one to pick it out on the map;
         a step that names no area, or two steps with no import between them, is flagged), and
         under **The map, its history, and findings for next time**: the overview, the
         cartographer's commits, and files several agents edited, conflicts, rework, how widely
         each agent roamed and which rules fired.
       - **Click an area** for what the scope did there: its lines and commits, who made them,
-        and each definition added, changed or removed. Click a definition to see just its part
-        of the diff. Below are the area's files as a map, sized by how big they are and tinted
-        by how much they changed (and by whom); click a file for its definitions (a changed one
-        opens its diff), the whole file's diff, what it uses and what uses it. There you can
-        also **pin a note** for the agents working there (each gets it the first time it
+        and each definition added, changed or removed. Click a definition for its code, the
+        edits marked on it. Below are the area's files as a map, sized by how big they are and
+        tinted by how much they changed (and by whom); click a file for its definitions (a
+        changed one opens its code, its edits marked), the whole file with its edits marked,
+        what it uses and what uses it. There you can also **pin a note** for the agents working there (each gets it the first time it
         touches the area), **keep it for future goals** (it becomes a rule), or message the
         team about the area.
       - **Hover a commit** in the lanes (or in the panel's list) to preview it without
         changing the scope: a card says who made it, its message, +/− and its files, and what
         it touched lights up on the map (areas, or the classes, cards and chips on Systems)
-        while the rest dims. **Files changed** in the panel does the same for one file. Click
-        to look at it. Colours are the same everywhere: green new, amber changed, red removed,
-        blue selected, purple hovered.
+        while the rest dims. On Systems the functions it changed light up too: as rows on a
+        class you look at, or listed under any other card holding them. **Files changed** in
+        the panel does the same for one file (with the functions the scope changed in it).
+        Colours are the same everywhere: green new, amber changed, red removed, blue selected,
+        purple hovered or kept lit.
+      - **Click a commit** (a dot, or one in the panel's lists) to keep it lit while you move
+        around the map: look at other systems, open cards, go to the whole game, and what it
+        touched stays outlined in purple, the rest only a little dimmed. It's named beside the
+        scope (click the name to see it again, **×** to let it go), its dot is ringed, and the
+        panel shows it: who made it, its message, the definitions it added, changed or removed,
+        and its files with +/−. Hover a definition or a file there to light just that on the
+        map; click a definition or a file's name for its code with the commit's edits marked,
+        **↗** to go to it. **Look at only this commit** makes it the scope; **Open in Git** opens it there.
+        Click the dot again, or press **Esc**, to let it go.
       - Each landing leaves a **report** in the goal's `design/reports/` folder (JSON: the
         commits, each area's share, files ranked as hotspots, circular dependencies, coupling,
         the flows checked against the imports), for a later goal or a model to analyse.
-      - **Areas · Systems** (the switch at the start of the toolbar) changes lens. **Systems**
+      - **Areas · Systems** (the switch at the start of the lens's tools) changes lens. **Systems**
         shows how the code runs instead of which file imports which: what calls what, which
         signals reach which handlers (the event bus between them left out), what makes objects
         of what, and who reads or writes whose state. It reads GDScript for now, tests and
-        add-ons left out; the toolbar says how many of the calls it could follow (a call on a
+        add-ons left out; its tools say how many of the calls it could follow (a call on a
         variable with no declared type can't be, and the panel lists the ones to type).
-        It's one canvas, laid out left to right the way control flows, with the panel on the
-        right for whatever you click.
+        **Links ▾** picks which kinds of link are drawn, and whether the scope's changes are
+        marked. It's one canvas, laid out left to right the way control flows; what you look
+        at, the route from the engine and your changes to the view float over its top, the
+        chips and colours over its bottom. The panel opens for whatever you click; **▤ Changes**
+        opens it on what the scope changed (its functions and files first, then where two
+        systems you look at meet, then where the game starts). **Esc** puts the panel away
+        first, then goes back.
+        - **Code with its edits marked:** a class's panel shows its code (its whole file; an
+          inner class, its own lines), and a function's its own lines, as they are, with the
+          edits marked on them: green lines added, yellow lines changed (hover one for what it
+          was), and a red line where lines were removed (hover it for them). The code opens
+          scrolled to the first edit, and the head says how many of each. The edits are the kept
+          commit's when it touched that code (the code shown as that commit left it), else the
+          scope's. A group's or area's panel lists its changed files, each opening to its code
+          the same way. **Functions it changed** (under **▤ Changes**) lists the functions the
+          scope added (+), edited (~) and removed (−): click one for its panel, or, for a removed
+          one, for what it was. In a kept commit's panel, **▸** opens a definition's or a file's
+          code in place and **↗** goes to it. With a commit kept lit, the functions it changed
+          listed under a card are links: click one for its panel.
         - **Whole game:** every area as a card, the engine at the head. Each card's rows are
           its pins: one per card it links to, with how many links go each way. Autoloads much
           of the game uses (global state, audio, tables of constants) are **rails** down the
@@ -282,11 +322,16 @@ You review the result in your checkout like any other change, and push it yourse
           inside that makes them, and nothing else on the canvas changes, the view included.
           Cards inside open too. **▴** closes it. Opened as a neighbour, it holds only what
           links to what you look at; the rest stays in the chips.
+        - **Pin** the cards inside a frame you want to keep (their **📌**), then **⊖ fold the
+          rest** on the frame: what isn't pinned goes on one card ("26 more, not pinned"),
+          its lines with it; click that card or **⊕ show all** to bring them back. A class you
+          look at works the same way with its functions: pin rows (the **📌** at a row's end),
+          then **⊖** on the card draws only those.
         - **Right-click a card** (or its **⋯**) for its menu: the first line says why it's on
           the canvas ("One step from Creature (5 links)"), then what you can do with it: look
           at it, also look at it, split it into its groups or classes, fold it into what holds
-          it, hide it (it joins the chips), show it in the panel. What you open, split, fold, hide
-          or draw from the chips is listed in a strip above the canvas, each with **×** to undo
+          it, hide it (it joins the chips), pin it, show it in the panel. What you open, pin,
+          split, fold, hide or draw from the chips is listed in a strip above the canvas, each with **×** to undo
           it, and **Undo all**. Click a chip to draw it (and anything hidden in it). **←** or
           **Esc** goes back; **Whole game** clears what's looked at.
         - **Drag a card's bottom-right corner** to resize it: taller shows more of its pins,
