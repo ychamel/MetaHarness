@@ -443,6 +443,19 @@ Findings from the run:
     A focus opens centred on what's looked at, at a zoom you can read.
   Checked with tests (2 new) and in headless Chrome on Primordia (its last goal's commits).
   Not yet in a real run.
+- [x] **Documented code, read on hover** (2026-10-25), from the user: every file, class and
+      function should say what it's for, and the Design view should show it on hover.
+  - The cartographer owns the doc comments as well as the map, and the lead starts one for any
+    goal that changes code, even a small patch, map or not. It documents what landed without a
+    doc and rewrites one only when it has become wrong, describing the code as it is (no
+    history, length to fit the function). Teammates tell it what things are for.
+  - The `doc-bootstrap` workflow documents a repository part by part, in parallel.
+  - Language packs read doc comments (comments right above a definition, or a docstring; a
+    pack's `doc:` marker limits them, `##` in GDScript), served by `GET /design/docs`.
+  - One hover card (summary, then detail) on the canvas's class cards and function rows,
+    definition names in the code view, and file rows: the commit panel, changed files,
+    hotspots, the file map and a file's definitions.
+  Checked with tests (1 new) and a typecheck. Not yet in a real run.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search

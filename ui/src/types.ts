@@ -554,6 +554,12 @@ export interface DesignScopeView {
   note?: string;
 }
 
+/** What a file and its definitions say they're for: their doc comments (src/languages.ts). */
+export interface FileDocs {
+  doc?: string;
+  symbols: { kind: string; name: string; parent?: string; line: number; doc?: string }[];
+}
+
 /** A file's code as coloured spans (src/languages.ts): the kinds by name, and per line flat [start, end, kind] triples. */
 export interface Highlights {
   kinds: string[];

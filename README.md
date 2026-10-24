@@ -51,7 +51,7 @@ Milestone 1 in progress:
   is working, with snapshots as work lands and what changed between them (classes, functions,
   new dependencies); language packs read Python, TypeScript, JavaScript, GDScript and Godot
   scenes, and you can add more. The **Git** tab names who made each commit (git hooks record
-  it) and shows diffs. A built-in **cartographer** role keeps `ARCHITECTURE.md` as work lands.
+  it) and shows diffs. A built-in **cartographer** role keeps `ARCHITECTURE.md` and the code's doc comments as work lands.
 
 See [TRACKER.md](TRACKER.md).
 
@@ -121,7 +121,7 @@ Another harness on a transport MetaHarness already speaks is a profile, not code
 | `src/git.ts` | Worktrees and branches per agent, reading new commits for git events, and diffs |
 | `src/design.ts`, `src/languages.ts` | The Design view's snapshots (areas, imports, what changed) and the language packs that read code |
 | `src/rules.ts` | Rules: loading the layers, and which ones fire for a tool call, a commit or a done |
-| `defaults/` | The built-in rules, the `map-bootstrap` workflow, the cartographer role, and language packs (grammars in `defaults/languages/`) |
+| `defaults/` | The built-in rules, the `map-bootstrap` and `doc-bootstrap` workflows, the cartographer role, and language packs (grammars in `defaults/languages/`) |
 | `src/mcp.ts` | The tools as an MCP server, one identity per agent, plus the approval tool |
 | `src/cli.ts` | The `mh` command |
 | `src/adapters/` | `claude.ts` (Claude Code, stream-json), `codex.ts` (Codex app-server), `agy.ts` + `agy-hook.ts` (Antigravity CLI, stream-json and hooks), `fake.ts` (scripted agents for tests) |

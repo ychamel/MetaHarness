@@ -511,7 +511,7 @@ restarting the daemon. The pages write the same files described below.
   | `map-upkeep` | Committing new, moved or removed files without touching the map: update it |
   | `finish-clean` | Its first `done`, if it changed files: one look over the changes, then `done` again |
   | `map-missing` | The lead, when there's no map: it can offer you the `map-bootstrap` workflow |
-  | `cartographer` | The lead, when there is a map and several agents will change code: start a cartographer |
+  | `cartographer` | The lead, when the goal will change code: start a cartographer |
 
   **The map** is `ARCHITECTURE.md` at the repository root: an overview, then a short section
   per area whose heading is its path (`## src/api/`). Agents get the section for wherever they
@@ -520,10 +520,12 @@ restarting the daemon. The pages write the same files described below.
   a `CONVENTIONS.md` if the code has clear conventions), and you approve it before it's
   committed.
 
-  **The cartographer** keeps the map while a team works. It's a built-in role (edit or
-  replace it on the Roles page) and the only agent that edits `ARCHITECTURE.md`, so the map
-  never conflicts when branches merge. Teammates message it when their work changes the
-  design, and it can ask them back. MetaHarness wakes it when work lands on the goal branch
+  **The cartographer** keeps the code's documentation while a team works: the map, and the doc
+  comments that say what each file, class and function is for (the Design view shows them on
+  hover). It's a built-in role (edit or replace it on the Roles page) and the only agent that
+  edits them, so they never conflict when branches merge. It documents what lands without a
+  doc and rewrites a doc only when it has become wrong, never adding history to it. Teammates
+  message it when their work changes the design, and it can ask them back. MetaHarness wakes it when work lands on the goal branch
   (once the branch has been quiet for a minute), with the commits and files that came in; it
   updates the map and commits it alone, with a one-line message saying what changed in the
   design. Those lines are the design history in the Design view. It also keeps the map's
@@ -531,7 +533,8 @@ restarting the daemon. The pages write the same files described below.
   `- Checkout: src/api/ → src/orders/ → src/store/ — an order is placed and saved`; the Design
   view draws them. Turn the `cartographer` rule
   off to work without one. A workflow with a `roles:` line has to name `cartographer` for the
-  lead to start it.
+  lead to start it. To document a repository that has few doc comments, start a goal with the
+  **doc-bootstrap** workflow.
 
   To change a built-in rule, open it and save: the copy goes into the folder you pick and
   replaces it there. To add one, write `.metaharness/rules/<name>.md`:
@@ -608,7 +611,9 @@ restarting the daemon. The pages write the same files described below.
   is the only code reader so far. A `highlights.scm` beside the grammar colours the code the
   Design view shows: a grammar's own `queries/highlights.scm` works as is (later patterns win;
   ones the grammar doesn't know are left out), and its captures (`@keyword`, `@string`,
-  `@function`, `@type`, …) pick the colours. The built-in packs all have one.
+  `@function`, `@type`, …) pick the colours. The built-in packs all have one. Hovering a file
+  or a definition in the Design view shows its doc comment: the comments right above it, or a
+  docstring; `doc: ##` limits them to comments starting that way (GDScript's built-in pack does).
   `"design": false` in `settings.json` turns the snapshots off.
 - **MCP servers.** A role names what it needs, for example `mcp: blender`. Each name is looked
   up in `~/.metaharness/mcp.json`, in the format every harness uses

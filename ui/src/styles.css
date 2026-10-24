@@ -907,6 +907,7 @@ body.resizing iframe, body.resizing .react-flow { pointer-events: none; }
 .fm-name { font-family: var(--mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fm-by { font-size: 10.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-detail { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.file-detail .file-doc { color: var(--text-2); }
 .symbols { list-style: none; margin: 2px 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; font-size: 12.5px; max-height: 280px; overflow: auto; }
 .symbols li.added .mono, .symbols li.changed .mono { color: var(--accent); }
 .symbols li.removed { color: var(--text-3); text-decoration: line-through; }
@@ -1100,6 +1101,14 @@ details.more { display: grid; gap: 6px; }
 .commit-peek .peek-summary { font-weight: 600; }
 .commit-peek .peek-files { list-style: none; margin: 0; padding: 0; color: var(--text-2); }
 .file-row .grow { min-width: 0; }
+/* Doc comments on hover: a file's or a definition's. */
+.doc-wrap { display: contents; }
+.doc-name { text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 3px; }
+.doc-tip { position: fixed; z-index: 70; width: 380px; max-height: 340px; overflow: hidden; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); border-radius: 8px; box-shadow: var(--shadow); display: grid; gap: 5px; align-content: start; pointer-events: none; font-size: 13px; white-space: pre-line; }
+.doc-tip-head { font-weight: 600; overflow-wrap: anywhere; white-space: normal; }
+.doc-summary { font-weight: 500; }
+.doc-more { color: var(--text-2); }
+.doc-note { border-top: 1px solid var(--line); padding-top: 4px; }
 .reading { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.4; } }
 /* Pins: a card or function kept when the rest is folded. */

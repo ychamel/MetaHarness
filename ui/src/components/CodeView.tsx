@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { api } from '../api.ts';
 import type { DiffFile, Highlights } from '../types.ts';
 import { marksOf } from '../designData.ts';
+import { DocTip, useDocs } from './DocTip.tsx';
 
 type Source = { text: string; highlights?: Highlights };
 const sources = new Map<string, Promise<Source>>();
@@ -30,24 +31,43 @@ export function useSource(goal: string, rev: string | undefined, path: string | 
   return t?.k === k ? t.src : undefined;
 }
 
-/** A line's text in its colours: each span a `tk-<kind>`, the rest plain. */
-function coloured(line: string, spans: number[] | undefined, kinds: string[]): ReactNode {
+/** A line's text in its colours: each span a `tk-<kind>`, the rest plain; `hot` wraps the columns from s to e (a definition's name). */
+function coloured(line: string, spans: number[] | undefined, kinds: string[], hot?: { s: number; e: number; wrap: (inner: ReactNode) => ReactNode }): ReactNode {
   if (!line) return ' ';
-  if (!spans?.length) return line;
-  const out: ReactNode[] = [];
+  if (!spans?.length && !hot) return line;
+  const segs: [number, number, number][] = [];
   let at = 0;
-  for (let i = 0; i < spans.length; i += 3) {
-    const [s, e, k] = [spans[i], spans[i + 1], spans[i + 2]];
-    if (s > at) out.push(line.slice(at, s));
-    out.push(
-      <span key={i} className={`tk-${kinds[k]}`}>
-        {line.slice(s, e)}
-      </span>,
-    );
+  for (let i = 0; i < (spans?.length ?? 0); i += 3) {
+    const [s, e, k] = [spans![i], spans![i + 1], spans![i + 2]];
+    if (s > at) segs.push([at, s, -1]);
+    segs.push([s, e, k]);
     at = e;
   }
-  if (at < line.length) out.push(line.slice(at));
-  return out;
+  if (at < line.length) segs.push([at, line.length, -1]);
+  const piece = (s: number, e: number, k: number) =>
+    k < 0 ? (
+      line.slice(s, e)
+    ) : (
+      <span key={s} className={`tk-${kinds[k]}`}>
+        {line.slice(s, e)}
+      </span>
+    );
+  if (!hot) return segs.map(([s, e, k]) => piece(s, e, k));
+  const before: ReactNode[] = [];
+  const inside: ReactNode[] = [];
+  const after: ReactNode[] = [];
+  for (const [s, e, k] of segs) {
+    for (const [a, b, into] of [[s, Math.min(e, hot.s), before], [Math.max(s, hot.s), Math.min(e, hot.e), inside], [Math.max(s, hot.e), e, after]] as const) {
+      if (b > a) into.push(piece(a, b, k));
+    }
+  }
+  return [...before, hot.wrap(inside), ...after];
+}
+
+/** Where a definition's name sits on its line: [start, end) columns. */
+function nameAt(line: string, name: string): [number, number] | undefined {
+  const m = new RegExp(`(^|[^\\w$])(${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\\w$])`).exec(line);
+  return m ? [m.index + m[1].length, m.index + m[1].length + name.length] : undefined;
 }
 
 const diffs = new Map<string, Promise<DiffFile | undefined>>();
@@ -95,6 +115,9 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
 }) {
   const src = useSource(goal, rev, path);
   const hl = src?.highlights;
+  // Each definition's name, hovered, says what it's for.
+  const docs = useDocs(goal, rev, path);
+  const defs = useMemo(() => new Map((docs?.symbols ?? []).map(s => [s.line, s] as const).reverse()), [docs]);
   const diff = useFileDiff(goal, range?.from, range?.to, path, !!range && !gone);
   const marks = useMemo(() => (diff && !diff.binary ? marksOf(diff.patch) : undefined), [diff]);
   const box = useRef<HTMLPreElement>(null);
@@ -123,6 +146,20 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
     removed += marks?.gone.get(n)?.length ?? 0;
   }
   const tail = !lines || z === all.length ? marks?.gone.get(z + 1) : undefined;
+  const hotName = (n: number) => {
+    const d = defs.get(n);
+    const at = d && nameAt(all[n - 1], d.name);
+    if (!d || !at) return undefined;
+    return {
+      s: at[0],
+      e: at[1],
+      wrap: (inner: ReactNode) => (
+        <DocTip key="doc" goal={goal} rev={rev} path={path} name={d.name} parent={d.parent} line={d.line} kind={d.kind} doc={d.doc ?? ''} inline>
+          {inner}
+        </DocTip>
+      ),
+    };
+  };
   removed += tail?.length ?? 0;
   const gap = (n: number, ls: string[]) => (
     <div key={`g${n}`} className="code-gap" tabIndex={0} title="">
@@ -165,7 +202,7 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
             g && gap(n, g),
             <div key={n} className={['code-line', gone ? 'del' : m?.kind, lineClass?.(n)].filter(Boolean).join(' ')} tabIndex={m?.kind === 'chg' ? 0 : undefined}>
               <span className="code-n">{n}</span>
-              <span className="code-t">{coloured(all[n - 1], hl?.lines[n - 1], hl?.kinds ?? [])}</span>
+              <span className="code-t">{coloured(all[n - 1], hl?.lines[n - 1], hl?.kinds ?? [], hotName(n))}</span>
               {extra?.(n)}
               {m?.kind === 'chg' && (
                 <span className="code-was" role="tooltip">

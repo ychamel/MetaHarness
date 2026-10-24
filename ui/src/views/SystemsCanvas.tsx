@@ -7,6 +7,7 @@ import {
   type Canvas, type CodeChange, type CodeIndex, type LinkKind, type Tree, type Unit, type Wire,
 } from '../codeData.ts';
 import { areaLabel } from '../designData.ts';
+import { DocTip } from '../components/DocTip.tsx';
 import type { SystemsNav } from './Systems.tsx';
 
 /**
@@ -69,7 +70,7 @@ const DENSE = 40;
 /** Fitting leaves room for the bars floating over the canvas. */
 const FIT_PAD = { top: '100px', bottom: '56px', left: '24px', right: '24px' } as const;
 
-type Row = { pin: string; label: string; in: number; out: number; mark?: 'new' | 'edited'; engine?: string; on?: boolean; from?: string[]; to?: string[]; peek?: boolean; pinned?: boolean };
+type Row = { pin: string; label: string; in: number; out: number; mark?: 'new' | 'edited'; engine?: string; on?: boolean; from?: string[]; to?: string[]; peek?: boolean; pinned?: boolean; doc?: string };
 
 type CardData = {
   unit: string;
@@ -78,6 +79,8 @@ type CardData = {
   title: string;
   sub: string;
   text: string;
+  /** A class's doc comment, shown on hover. */
+  doc?: string;
   badges: string[];
   when: string[];
   rows: Row[];
@@ -128,7 +131,7 @@ type FrameData = {
   onAct: (a: Act) => void; onMenu: (e: ReactMouseEvent) => void;
 };
 
-type Info = { kind: CardData['kind']; title: string; sub: string; text: string; badges: string[]; when: string[] };
+type Info = { kind: CardData['kind']; title: string; sub: string; text: string; doc?: string; badges: string[]; when: string[] };
 
 const headHeight = (i: { text: string; badges: string[]; when: string[] }) => 50 + (i.text ? 30 : 0) + (i.badges.length || i.when.length ? 22 : 0);
 /** How many rows fit a card sized by the person (its footer kept). */
@@ -229,7 +232,7 @@ function CanvasInner(p: CanvasProps) {
     if (c.main) badges.push('main scene');
     if (c.kind === 'autoload') badges.push('autoload');
     if (c.base && c.base !== 'RefCounted') badges.push(c.base);
-    return { kind: 'class', title, sub: c.file, text: sentence(firstLine(c.doc)), badges, when: w };
+    return { kind: 'class', title, sub: c.file, text: sentence(firstLine(c.doc)), doc: c.doc ?? '', badges, when: w };
   };
   const routeUnits = useMemo(() => {
     const out: string[] = [];
@@ -266,7 +269,7 @@ function CanvasInner(p: CanvasProps) {
           if (end !== u || pin === '*') continue;
           const f = ix.fn.get(pin);
           let r = by.get(pin);
-          if (!r) by.set(pin, (r = { pin, label: f ? f.name : pin, in: 0, out: 0, from: [], to: [], ...(f?.engine ? { engine: engineWhen(f.name) } : {}), ...(chg?.newFns.has(pin) ? { mark: 'new' as const } : chg?.edited.has(pin) ? { mark: 'edited' as const } : {}) }));
+          if (!r) by.set(pin, (r = { pin, label: f ? f.name : pin, in: 0, out: 0, from: [], to: [], ...(f ? { doc: f.doc ?? '' } : {}), ...(f?.engine ? { engine: engineWhen(f.name) } : {}), ...(chg?.newFns.has(pin) ? { mark: 'new' as const } : chg?.edited.has(pin) ? { mark: 'edited' as const } : {}) }));
           r[dir] += w.edges.length;
           const other = unitName(dir === 'out' ? w.to : w.from);
           const list = dir === 'out' ? r.to! : r.from!;
@@ -401,7 +404,7 @@ function CanvasInner(p: CanvasProps) {
     const card = (u: Unit): CardData => {
       const focus = u.role === 'focus';
       const id = u.id;
-      const { kind, title, sub, text, badges, when } = info(u);
+      const { kind, title, sub, text, doc, badges, when } = info(u);
       const drawn = (focus ? model.fnRows.get(id) : model.nearRows.get(id)) ?? [];
       const lf = p.litFns;
       const rows = focus && lf?.size ? drawn.map(r => (lf.has(r.pin) ? { ...r, peek: true } : r)) : drawn;
@@ -412,7 +415,7 @@ function CanvasInner(p: CanvasProps) {
       const d = { text, badges, when, rows, more: model.more.get(id) ?? 0, beyond: u.beyond, outside: u.outside, taps };
       const size = sizes[id];
       return {
-        unit: id, role: focus ? 'focus' : 'near', kind, title, sub, ...d,
+        unit: id, role: focus ? 'focus' : 'near', kind, title, sub, ...(doc !== undefined ? { doc } : {}), ...d,
         changed: kind === 'class' ? (ix.fnsOf.get(id) ?? []).filter(f => chg?.edited.has(f.id) || chg?.newFns.has(f.id)).length : u.classes.filter(c => chg?.touched.has(c)).length,
         isNew: kind === 'class' && !!chg?.newClasses.has(id), on: selUnit === id, hl: hlUnit === id, peek: litUnits ? (litUnits.has(id) ? 'on' : 'off') : undefined, route: routeSet.has(id), inFrame: !!u.parent, why: why(u), sized: !!size, opens: (kind === 'area' || kind === 'group') && childrenOf(ix, t, id).length > 1,
         canPin: !!u.parent && !isRestId(id), pinned: pins.has(id), canTuck: focus && (tuck.has(id) || drawn.some(r => r.pinned)), tucked: model.more.get(`${id}:tucked`) ?? 0, peekFns,
@@ -793,14 +796,20 @@ function Card({ data: d }: NodeProps<Node<CardData>>) {
   const cls = ['sys-node', d.role, d.kind, d.on && 'on', d.hl && 'hl', d.route && 'route', d.isNew ? 'added' : d.changed > 0 && 'changed', d.peek && `peek-${d.peek}`, d.w >= 320 && 'wide', d.pinned && 'pinned', isRestId(d.unit) && 'rest'].filter(Boolean).join(' ');
   return (
     <>
-    <div className={cls} title={d.why}>
+    <div className={cls} title={d.doc === undefined ? d.why : undefined}>
       <Handle type="target" position={Position.Left} id="i:*" style={{ top: headerY }} />
       <Handle type="source" position={Position.Right} id="o:*" style={{ top: headerY }} />
       <div className="node-head">
-        <span className="node-title ellipsis">
-          {d.kind === 'group' ? '▣ ' : d.kind === 'area' ? '▤ ' : d.kind === 'engine' ? '⏵ ' : ''}
-          {d.title}
-        </span>
+        {d.doc !== undefined ? (
+          <DocTip name={d.title} path={d.sub} kind="class" doc={d.doc} note={d.why}>
+            <span className="node-title ellipsis">{d.title}</span>
+          </DocTip>
+        ) : (
+          <span className="node-title ellipsis">
+            {d.kind === 'group' ? '▣ ' : d.kind === 'area' ? '▤ ' : d.kind === 'engine' ? '⏵ ' : ''}
+            {d.title}
+          </span>
+        )}
         {d.isNew && <span className="pill done">new</span>}
         {d.changed > 0 && <span className="pill chg" title={d.kind === 'class' ? 'Functions added or edited in this scope' : 'Classes the scope changed'}>~{d.changed}</span>}
         {d.role !== 'engine' && <CardButtons d={d} />}
@@ -829,9 +838,10 @@ function Card({ data: d }: NodeProps<Node<CardData>>) {
             onClick={e => d.onRow(r.pin, e)}
             onMouseEnter={() => d.onRowHover(r.pin)}
             onMouseLeave={() => d.onRowHover(undefined)}
-            title={d.role === 'focus' ? `${r.label}(): ${r.in ? `reached ${r.in}×` : ''}${r.in && r.out ? ', ' : ''}${r.out ? `reaches out ${r.out}×` : ''}. Click to trace it.` : `Links with ${r.label}: ${r.in} in, ${r.out} out. Click to look at this card too.`}
+            title={d.role === 'focus' ? undefined : `Links with ${r.label}: ${r.in} in, ${r.out} out. Click to look at this card too.`}
           >
             <Handle type="target" position={Position.Left} id={`i:${r.pin}`} className={r.in ? 'pin' : 'pin off'} />
+            <DocTip name={r.label} path={d.sub} kind="function" doc={d.role === 'focus' ? r.doc ?? '' : undefined} off={d.role !== 'focus'} note={[r.in && `reached ${r.in}×`, r.out && `reaches out ${r.out}×`, 'click to trace it'].filter(Boolean).join(', ').replace(/^./, x => x.toUpperCase()) + '.'}>
             <span className="row-label ellipsis">
               {r.engine && <span className="row-engine" title={r.engine}>⏵</span>}
               {d.role === 'focus' ? <span className="mono">{r.label}()</span> : r.label}
@@ -842,6 +852,7 @@ function Card({ data: d }: NodeProps<Node<CardData>>) {
                 </span>
               ) : null}
             </span>
+            </DocTip>
             {r.mark && <span className={`row-mark ${r.mark}`} title={r.mark === 'new' ? 'New in this scope' : 'Edited in this scope'} />}
             {d.role === 'focus' && (
               <button className="row-pin" title={r.pinned ? 'Unpin it' : 'Pin it: it stays when you show only the pinned functions'} aria-label={r.pinned ? `Unpin ${r.label}` : `Pin ${r.label}`} aria-pressed={!!r.pinned} onClick={e => (e.stopPropagation(), d.onPinRow(r.pin, !r.pinned))}>

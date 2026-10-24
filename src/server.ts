@@ -89,6 +89,12 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
       if (!rev || !path) throw new Error('GET /design/source needs &rev=<commit>&path=<file>.');
       return json(res, 200, await d.designSource(goalOf(), rev, path));
     }
+    if (req.method === 'GET' && url.pathname === '/design/docs') {
+      const rev = q('rev');
+      const path = q('path');
+      if (!rev || !path) throw new Error('GET /design/docs needs &rev=<commit>&path=<file>.');
+      return json(res, 200, await d.designDocs(goalOf(), rev, path));
+    }
     if (req.method === 'GET' && url.pathname === '/design/compare') {
       const from = q('from'), to = q('to');
       if (!from || !to) throw new Error('GET /design/compare needs &from=<commit>&to=<commit>.');
@@ -123,7 +129,7 @@ function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse):
   });
 }
 
-const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/git', '/diff', '/design', '/design/scope', '/design/compare', '/design/code', '/design/source', '/commands']);
+const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/git', '/diff', '/design', '/design/scope', '/design/compare', '/design/code', '/design/source', '/design/docs', '/commands']);
 
 /** The built web app (ui/dist). */
 export const UI_DIR = join(import.meta.dirname, '..', 'ui', 'dist');

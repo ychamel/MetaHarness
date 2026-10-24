@@ -456,6 +456,10 @@ test('design scopes: the whole goal (with unmerged branches as a picture), a com
   // Diffs read against the picture, and narrowed to an area.
   const diff = d.diffView(goal, { from: all.scope!.from, to: all.scope!.to, paths: ['src/store'] });
   assert.deepEqual(diff.files.map(f => f.path), ['src/store/db.ts']);
+  // Doc comments read from the picture too, for the hover.
+  const docs = await d.designDocs(goal, all.scope!.to, 'src/api/orders.ts');
+  assert.deepEqual(docs.symbols.map(x => [x.name, x.line]), [['Orders', 2], ['list', 3], ['byDay', 6]]);
+  await assert.rejects(d.designDocs(goal, all.scope!.to, '../x.ts'), /isn't a path in the repository/);
 
   const branch = await d.designScope(goal, { kind: 'branch', agent: 'impl' });
   assert.equal(branch.scope!.title, "impl's branch");
@@ -501,4 +505,33 @@ test('code coloured by the language packs: GDScript, the patterns split apart, a
   const lenient = new Outliner(new Map([['gd', { ...packs.get('gdscript')!, name: 'gd', highlights: '(no_such_node) @keyword\n(comment) @comment' }]]));
   const c = (await lenient.highlight(lenient.packs.get('gd')!, '# hi\n'))!;
   assert.deepEqual(c.lines[0], [0, 4, c.kinds.indexOf('comment')], 'the pattern it knows still colours');
+});
+
+test('doc comments: above a definition or its docstring, a file header, and GDScript only with ##', async () => {
+  const packs = loadLanguages([]);
+  const o = new Outliner(packs);
+  const ts = (await o.docs(packs.get('typescript')!, [
+    "import x from './x';", '', '/**', ' * Rules: short notes.', ' *', ' * More detail.', ' */', '',
+    'export type A = 1;', '', '/** Reads a rule. */', 'export function parse(a: string) {}', '',
+    '// Small one.', '// Two lines.', 'export const go = () => 1;', '', 'class K {', '  m() {}', '}', '',
+  ].join('\n')))!;
+  assert.equal(ts.doc, 'Rules: short notes.\n\nMore detail.', 'the header, not the comment above a definition');
+  const doc = (d: typeof ts, name: string) => d.symbols.find(s => s.name === name)?.doc;
+  assert.equal(doc(ts, 'A'), undefined, 'a blank line parts a comment from what follows');
+  assert.equal(doc(ts, 'parse'), 'Reads a rule.');
+  assert.equal(doc(ts, 'go'), 'Small one.\nTwo lines.');
+  assert.equal(doc(ts, 'K'), undefined, "a file with more in it than its class keeps its doc to itself");
+
+  const py = (await o.docs(packs.get('python')!, [
+    '"""Module doc."""', 'class Herd:', '    """A herd.', '', '    More.', '    """', '', '    # Moves it.', '    @staticmethod', '    def move():', '        pass', '',
+  ].join('\n')))!;
+  assert.equal(py.doc, 'Module doc.');
+  assert.equal(doc(py, 'Herd'), 'A herd.\n\nMore.', 'a docstring, dedented');
+  assert.equal(doc(py, 'move'), 'Moves it.', 'decorators between are skipped');
+
+  const gd = (await o.docs(packs.get('gdscript')!, ['class_name Herd', 'extends Node', '## A herd.', '', '## Moves it.', 'func move():', '\tpass', '', '# plain', 'func stop():', '\tpass', ''].join('\n')))!;
+  assert.equal(gd.doc, 'A herd.');
+  assert.equal(doc(gd, 'Herd'), 'A herd.', 'a class_name file shares its doc with the class');
+  assert.equal(doc(gd, 'move'), 'Moves it.');
+  assert.equal(doc(gd, 'stop'), undefined, 'a plain # comment is no doc in GDScript');
 });

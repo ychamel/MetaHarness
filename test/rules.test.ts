@@ -185,7 +185,7 @@ test('rules in a run: the prompt, the map as an agent moves, new files, commits 
   await settle();
 
   const prompt = fake.started[0].spec.systemPrompt;
-  assert.match(prompt, /## Rules\n\n### cartographer\n\nWhen teammates will change code[\s\S]*spawn a `cartographer`[\s\S]*### conventions\n\nWrite code that's readable[\s\S]*CONVENTIONS.md:\n\nHandlers are named after their resource/, 'a lead with a map is told about the cartographer');
+  assert.match(prompt, /## Rules\n\n### cartographer\n\nWhen this goal will change code[\s\S]*spawn a `cartographer`[\s\S]*### conventions\n\nWrite code that's readable[\s\S]*CONVENTIONS.md:\n\nHandlers are named after their resource/, 'a lead with a map is told about the cartographer');
   assert.match(prompt, /- map, when you look at files: the part of ARCHITECTURE.md/);
   assert.match(prompt, /- no-duplicates, when you create a file \(\*\*, !\*\*\/\*test\*\/\*\*/);
   assert.doesNotMatch(prompt, /map-missing/, 'the repository has a map');
@@ -213,6 +213,8 @@ test('rules: a lead in a repository without a map is told it can have one; a swi
   await withTimeout(d.goals.get(goal)!.leadDone, 5000, 'lead done');
   const prompt = fake.started[0].spec.systemPrompt;
   assert.match(prompt, /### map-missing\n\nThis repository has no ARCHITECTURE.md[\s\S]*`map-bootstrap` workflow/);
+  assert.match(prompt, /### cartographer\n\nWhen this goal will change code/, 'the cartographer keeps the doc comments, map or not');
+  assert.match(prompt, /- doc-bootstrap: giving every file, class and function/, 'and the doc workflow is offered');
   assert.doesNotMatch(prompt, /### conventions/, 'turned off in the settings');
   assert.doesNotMatch(prompt, /- map, when you look at files/, "no map, so the map rule isn't listed");
   assert.match(prompt, /- map-bootstrap: creating ARCHITECTURE.md/, 'the built-in workflow is offered');

@@ -771,7 +771,10 @@ into B). The route from the engine is the shortest stack to a function the scope
 else one reached from outside. The trace (a function's steps in line order, down into what it
 does or up to who reaches it; the shortest stacks from an engine callback) is docked in the
 panel, a step hovered or clicked lit on the canvas. Doc comments (`##` lines above a class's
-first member or a function) go into the graph and onto the cards. Comparing the graphs before
+first member or a function) go into the graph and onto the cards. Every language pack reads doc
+comments too (the comments right above a definition, or a docstring; a pack's `doc:` marker,
+`##` for GDScript, limits them), served by `GET /design/docs`: hovering a file or a definition
+anywhere in the Design view shows its doc, the summary first. Comparing the graphs before
 and after the scope marks links, functions and classes added, edited and removed.
 
 **Insights** come from the log alone, so later retrospectives can total them across goals:
@@ -1179,14 +1182,17 @@ area under a path heading. It's a map, not documentation.
 | `map-upkeep` | commit | team | Files were added, moved or removed without a change to `ARCHITECTURE.md`: update its section |
 | `finish-clean` | done | team | Look over your changes once before finishing (`edited: true`) |
 | `map-missing` | start | lead | There's no `ARCHITECTURE.md`: offer the `map-bootstrap` workflow to the human; never run it unasked |
-| `cartographer` | start | lead | There is a map and teammates will change code: spawn a cartographer first, and tell the team to message it about design changes |
+| `cartographer` | start | lead | The goal will change code, even a small patch: spawn a cartographer first, and tell the team to message it about design changes |
 
 `map-upkeep` leaves out the cartographer (`roles: team, !cartographer`), and both it and `map`
 tell agents to message the cartographer, when the team has one, rather than edit the map.
 
 **The cartographer** (a built-in role, `defaults/roles/cartographer.md`; a folder's role of the
-same name replaces it) is the only one who edits `ARCHITECTURE.md`, so the map has one voice
-and never conflicts in a merge. Teammates message it about design changes, which leaves room
+same name replaces it) is the only one who edits `ARCHITECTURE.md` and the doc comments (what
+each file, class and function is for, shown on hover in the Design view), so they have one
+voice and never conflict in a merge. It documents what landed without a doc, and rewrites a
+doc only when it has become wrong (purpose, inputs, outputs, effects), as the code is now:
+rule text rather than a check, as an engineer would be guided. Teammates message it about design changes, which leaves room
 for questions back. It doesn't change the map on a message alone, since the work may still
 change: its role has `wake: landed`, so the daemon sends it each batch of landed work (§9),
 and it then reads the diff and updates the sections touched, committing the map alone with a
@@ -1196,7 +1202,9 @@ commits never wake it. Between batches it ends its turn without `done`, which fo
 
 The **`map-bootstrap`** workflow (built in) has explorers survey the code area by area, writes
 `ARCHITECTURE.md` (and a `CONVENTIONS.md` when the code has clear conventions), asks the human
-to approve both, and commits them. Linters and formatters are left out on purpose.
+to approve both, and commits them. The **`doc-bootstrap`** workflow (built in) splits the code
+into parts that share no files and has them documented in parallel, comments only. Linters and
+formatters are left out on purpose.
 
 ### A skill
 

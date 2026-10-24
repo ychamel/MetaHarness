@@ -458,6 +458,7 @@ export default function Systems({ goal, view, snap, nav, onNav, lens, scopeBar, 
               <LinkPanel ix={ix} t={tree} links={links} link={nav.link} pick={nav.pick} name={un} open={!!nav.linkOpen} onNav={set} onFn={lookAt} />
             ) : (
               <StartPanel
+                goal={goal.id}
                 ix={ix} bix={bix} chg={chg} view={view} onNav={set} onFn={lookAt} onGone={showGone} onAct={act} onPeek={onPeek} onHover={setHl}
                 between={meet && focus.length === 2 ? <BetweenPanel ix={ix} res={meet} a={focus[0]} b={focus[1]} bpick={nav.bpick} name={un} onNav={set} onFn={lookAt} /> : undefined}
               />
@@ -1114,7 +1115,8 @@ function UnitActs({ id, onAct, split }: { id: string; onAct: ActFn; split?: bool
 }
 
 /** The panel with nothing selected: what the scope changed first, where two systems looked at meet, then where the game starts. */
-function StartPanel({ ix, bix, chg, view, between, onNav, onFn, onGone, onAct, onPeek, onHover }: {
+function StartPanel({ goal, ix, bix, chg, view, between, onNav, onFn, onGone, onAct, onPeek, onHover }: {
+  goal: string;
   between?: ReactNode;
   onGone: (f: CodeFn) => void;
   ix: CodeIndex;
@@ -1141,7 +1143,7 @@ function StartPanel({ ix, bix, chg, view, between, onNav, onFn, onGone, onAct, o
     <>
       {chg && <CodeChanges ix={ix} bix={bix} chg={chg} title={view.scope?.title} onNav={onNav} onFn={onFn} onGone={onGone} onAct={onAct} onHover={onHover} />}
       <ChangedFiles
-        files={view.report?.files ?? []} onPeek={onPeek}
+        goal={goal} rev={view.scope?.to} files={view.report?.files ?? []} onPeek={onPeek}
         onFile={(_, path) => {
           // A file clicked: look at its classes.
           const cs = ix.g.classes.filter(c => c.file === path).map(c => c.id);

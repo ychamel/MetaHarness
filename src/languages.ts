@@ -40,6 +40,8 @@ export interface LanguagePack {
   roots: string[];
   /** Which reader finds the calls, signals and state in its files (src/codegraph.ts), if any. */
   code?: string;
+  /** What starts a doc comment (`##` in GDScript); without it, any comment right above a definition documents it. */
+  doc?: string;
   description: string;
   dir: string;
   builtIn: boolean;
@@ -79,6 +81,7 @@ export function loadLanguagePack(dir: string, builtIn = false): LanguagePack | u
     try: list(meta.try),
     roots: list(meta.roots).length ? list(meta.roots) : ['.'],
     ...(meta.code ? { code: meta.code.trim() } : {}),
+    ...(meta.doc ? { doc: meta.doc.trim() } : {}),
     description: body.trim().split('\n\n')[0]?.replace(/\s+/g, ' ') ?? '',
     dir,
     builtIn,
@@ -194,6 +197,12 @@ export class Outliner {
     } finally {
       tree.delete();
     }
+  }
+
+  /** What a file and its definitions say they're for, from their doc comments; undefined without a grammar. */
+  async docs(pack: LanguagePack, text: string): Promise<FileDocs | undefined> {
+    const l = pack.grammar && pack.queries ? await this.load(pack) : undefined;
+    return l ? treeDocs(l, text, pack.doc) : undefined;
   }
 
   private load(pack: LanguagePack): Promise<Loaded | undefined> {
@@ -410,6 +419,106 @@ function patternOutline(patterns: { kind: string; re: RegExp }[], text: string):
   }
   out.imports = [...new Set(out.imports)];
   out.references = [...new Set(out.references)];
+  return out;
+}
+
+/* ---------------- what the code says it's for ---------------- */
+
+/** A file's doc comment and its definitions', for the Design view to show on hover. */
+export interface FileDocs {
+  /** Its header comment or module docstring. */
+  doc?: string;
+  symbols: { kind: string; name: string; parent?: string; line: number; doc?: string }[];
+}
+
+const MAX_DOC = 4000;
+
+/** A comment's text without its markers: `//`, `#`, `##`, `/** … *\/` and the `*` down its side. */
+function uncomment(text: string): string {
+  return text
+    .replace(/^\/\*+|\*+\/$/g, '')
+    .split('\n')
+    .map(l => l.replace(/^\s*(\/\/+|#+|\*(?!\*))\s?/, '').trimEnd())
+    .join('\n')
+    .trim();
+}
+
+/** A docstring's text without its quotes, dedented. */
+function unquote(text: string): string {
+  const lines = text.replace(/^[rRuU]?("""|''')|("""|''')$/g, '').split('\n');
+  const indent = Math.min(...lines.slice(1).filter(l => l.trim()).map(l => l.length - l.trimStart().length));
+  return lines.map((l, i) => (i && Number.isFinite(indent) ? l.slice(indent) : l).trimEnd()).join('\n').trim();
+}
+
+/**
+ * Doc comments: the comments on lines of their own right above a definition (decorators between
+ * them skipped; only those starting with the pack's `doc` marker, when it has one), or a
+ * docstring opening its body. A file's is its module docstring, or the first comment at the
+ * margin before any function that isn't a definition's. A file that is one class (everything
+ * else inside it, or GDScript's `class_name`) shares its doc with it.
+ */
+function treeDocs(l: Loaded, text: string, marker?: string): FileDocs {
+  const out: FileDocs = { symbols: [] };
+  const outline = treeOutline(l, text);
+  const tree = l.parser.parse(text);
+  if (!tree) return out;
+  try {
+    const lines = text.split('\n');
+    const comments: { start: number; end: number; margin: boolean; text: string }[] = [];
+    for (const c of tree.rootNode.descendantsOfType(['comment', 'line_comment', 'block_comment'])) {
+      const row = c.startPosition.row;
+      if (lines[row].slice(0, c.startPosition.column).trim() || c.text.startsWith('#!')) continue;
+      if (marker && !(c.text.startsWith(marker) && !c.text.startsWith(marker + marker[0]))) continue;
+      comments.push({ start: row, end: c.endPosition.row, margin: c.startPosition.column === 0, text: uncomment(c.text) });
+    }
+    const byEnd = new Map(comments.map(c => [c.end, c]));
+    const used = new Set<(typeof comments)[number]>();
+    const above = (row: number) => {
+      const parts: string[] = [];
+      let r = row - 1;
+      while (r >= 0 && /^\s*@/.test(lines[r])) r--;
+      for (let c = byEnd.get(r); c && !used.has(c); c = byEnd.get(r)) {
+        used.add(c);
+        parts.unshift(c.text);
+        r = c.start - 1;
+      }
+      return parts.join('\n').trim();
+    };
+    const docstring = (body: import('web-tree-sitter').Node | null) => {
+      let s = body?.firstNamedChild;
+      while (s?.type.includes('comment')) s = s.nextNamedSibling;
+      const str = s?.type === 'expression_statement' ? s.firstNamedChild : undefined;
+      return str?.type === 'string' && /^[rRuU]?("""|''')/.test(str.text) ? unquote(str.text) : '';
+    };
+    const nodes = new Map<string, import('web-tree-sitter').Node>();
+    for (const m of l.query.matches(tree.rootNode)) {
+      const def = m.captures.find(c => c.name.startsWith('definition.'));
+      const name = m.captures.find(c => c.name === 'name');
+      if (def && name) nodes.set(`${def.node.startPosition.row + 1}:${name.node.text}`, def.node);
+    }
+    for (const s of outline.symbols) {
+      const n = nodes.get(`${s.line}:${s.name}`);
+      const doc = n ? above(n.startPosition.row) || docstring(n.childForFieldName('body')) : '';
+      out.symbols.push({ kind: s.kind, name: s.name, ...(s.parent ? { parent: s.parent } : {}), line: s.line, ...(doc ? { doc: doc.slice(0, MAX_DOC) } : {}) });
+    }
+    let doc = docstring(tree.rootNode);
+    if (!doc) {
+      const firstFn = Math.min(...out.symbols.filter(s => s.kind === 'function' || s.kind === 'method').map(s => s.line - 1));
+      const sorted = comments.filter(c => !used.has(c)).sort((a, b) => a.start - b.start);
+      const first = sorted.findIndex(c => c.margin && c.start < firstFn);
+      const parts: string[] = [];
+      for (let i = first, row = sorted[first]?.start; i >= 0 && sorted[i]?.start === row; row = sorted[i].end + 1, i++) parts.push(sorted[i].text);
+      doc = parts.join('\n').trim();
+    }
+    const top = outline.symbols.filter(s => !s.parent);
+    const one = top.length === 1 && top[0].kind === 'class' ? 0 : top.findIndex(s => s.kind === 'class' && s.end === s.line);
+    const cls = one >= 0 ? out.symbols.find(s => s.line === top[one].line && s.name === top[one].name) : undefined;
+    if (cls && !doc && cls.doc) doc = cls.doc;
+    else if (cls && doc && !cls.doc) cls.doc = doc.slice(0, MAX_DOC);
+    if (doc) out.doc = doc.slice(0, MAX_DOC);
+  } finally {
+    tree.delete();
+  }
   return out;
 }
 

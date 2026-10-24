@@ -22,7 +22,7 @@ import { HISTORY, SharedFolder } from './shared.ts';
 import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
 import { authorsDir, deniedCommandPrefixes, guardEnv, installGuard, readAuthors, refusedGitCommand, removeAuthors } from './guard.ts';
 import { DesignTracker, MAP_FILE, compareDesigns, designReport, type DesignReport, type SnapshotInfo } from './design.ts';
-import { Outliner, packFor, type Highlights } from './languages.ts';
+import { Outliner, packFor, type FileDocs, type Highlights } from './languages.ts';
 import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
 import { settle } from './procs.ts';
@@ -3781,6 +3781,28 @@ export class Daemon {
 
   /** Files coloured for the Design view, by commit and path. */
   private highlighted = new Map<string, Promise<Highlights | undefined>>();
+
+  /** What a file and its definitions say they're for at a commit or tree (their doc comments), for the Design view's hover. */
+  async designDocs(goalId: string, rev: string, path: string): Promise<{ path: string; sha: string } & FileDocs> {
+    const gg = this.goalGit(goalId);
+    if (!gg) throw new Error('No git repository for this goal.');
+    const sha = /^[\w./@^~-]+$/.test(rev) && !rev.startsWith('-') ? git.resolveTreeish(gg, rev) : undefined;
+    if (!sha) throw new Error(`There's no commit or branch "${rev}".`);
+    if (!path || path.startsWith('/') || path.split('/').includes('..')) throw new Error(`${path} isn't a path in the repository.`);
+    const key = `${sha}\n${path}`;
+    let docs = this.documented.get(key);
+    if (!docs) {
+      const text = git.showFile(gg, sha, path);
+      const pack = packFor(this.design.outliner.packs.values(), path);
+      docs = text !== undefined && pack ? this.design.outliner.docs(pack, text).catch(() => undefined) : Promise.resolve(undefined);
+      this.documented.set(key, docs);
+      if (this.documented.size > 500) this.documented.delete(this.documented.keys().next().value!);
+    }
+    return { path, sha, ...((await docs) ?? { symbols: [] }) };
+  }
+
+  /** Files' doc comments, by commit and path. */
+  private documented = new Map<string, Promise<FileDocs | undefined>>();
 
   /** Builds a scope's report (src/design.ts) and keeps it beside the snapshots. */
   private async scopeReport(goalId: string, gg: git.GoalGit, dir: string, scope: { kind: string; title: string; from: string; to: string; heads: string[] }) {

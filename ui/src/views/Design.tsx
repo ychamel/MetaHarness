@@ -8,6 +8,7 @@ import type { AreaChange, DesignArea, DesignChange, DesignFile, DesignReport, De
 import { activity, areaLabel, areaOf, insights, lanes, layers as layerRows, pinnedNotes, symbolEnd, treemap, type Activity, type Touch } from '../designData.ts';
 import { MessageDialog } from '../components/Dialogs.tsx';
 import { MarkedCode } from '../components/CodeView.tsx';
+import { DocTip, useDocs } from '../components/DocTip.tsx';
 import { Splitter } from '../components/Splitter.tsx';
 import { useNow } from '../components/common.tsx';
 import Systems, { type SystemsNav } from './Systems.tsx';
@@ -375,12 +376,14 @@ function CommitPanel({ goal, events, view, sha, color, onPeek, onScope, onOpenCo
             <div key={k}>
               <div className="history-row def-change" onMouseEnter={() => onPeek({ paths: [d.file], sha, defs: [{ file: d.file, name: d.name }] })}>
                 <span className={`def-sign ${d.sign === '+' ? 'diff-add' : d.sign === '−' ? 'diff-del' : 'chg'}`}>{d.sign}</span>
-                <button className="text-link grow mono ellipsis" onClick={() => setOpenDef(o => (o === k ? undefined : k))} title="Its code here, the commit's edits marked; hover to light it on the map">
-                  {openDef === k ? '▾ ' : '▸ '}
-                  {d.parent ? `${d.parent}.` : ''}
-                  {d.name}
-                  {d.kind === 'function' || d.kind === 'method' ? '()' : ''}
-                </button>
+                <DocTip goal={goal.id} rev={d.sign === '−' ? `${sha}^1` : sha} path={d.file} name={d.name} parent={d.parent} line={d.line} kind={d.kind} note="Click for its code here, the commit's edits marked">
+                  <button className="text-link grow mono ellipsis" onClick={() => setOpenDef(o => (o === k ? undefined : k))}>
+                    {openDef === k ? '▾ ' : '▸ '}
+                    {d.parent ? `${d.parent}.` : ''}
+                    {d.name}
+                    {d.kind === 'function' || d.kind === 'method' ? '()' : ''}
+                  </button>
+                </DocTip>
                 <span className="muted small ellipsis def-file">{d.file.split('/').pop()}</span>
                 <button className="btn ghost small" onClick={() => onDef(d)} title="Go to it: on the map, with its own panel">
                   ↗
@@ -399,10 +402,12 @@ function CommitPanel({ goal, events, view, sha, color, onPeek, onScope, onOpenCo
         {rows.map(f => (
           <div key={f.path}>
             <div className="history-row file-row" onMouseEnter={() => onPeek({ paths: [f.path], sha })}>
-              <button className="text-link grow mono ellipsis" onClick={() => setOpen(o => (o === f.path ? undefined : f.path))} title="Its code here, the commit's edits marked">
-                {open === f.path ? '▾ ' : '▸ '}
-                {f.path}
-              </button>
+              <DocTip goal={goal.id} rev={sha} path={f.path} note="Click for its code here, the commit's edits marked">
+                <button className="text-link grow mono ellipsis" onClick={() => setOpen(o => (o === f.path ? undefined : f.path))}>
+                  {open === f.path ? '▾ ' : '▸ '}
+                  {f.path}
+                </button>
+              </DocTip>
               {f.added !== undefined && (
                 <span className="small nowrap">
                   <span className="diff-add">+{f.added}</span> <span className="diff-del">−{f.removed}</span>
@@ -1187,7 +1192,7 @@ function AreaPanel(p: {
       )}
 
       <div className="section-title">Files</div>
-      <FileMap files={files} fresh={fresh} act={act} report={view.report} layers={p.layers} color={color} selected={p.file} onSelect={p.onFile} />
+      <FileMap goal={p.goal.id} rev={view.scope?.to} files={files} fresh={fresh} act={act} report={view.report} layers={p.layers} color={color} selected={p.file} onSelect={p.onFile} />
       {current && <FileDetail goal={p.goal.id} snap={snap} view={view} file={current} act={act} color={color} onFile={f => (p.onArea(areaOf(snap.map.areas, f) ?? ''), p.onFile(f))} />}
       {removedFile && (
         <div className="file-detail">
@@ -1246,7 +1251,7 @@ function AreaPanel(p: {
 }
 
 /** The area's files as a treemap, sized by bytes: tinted by how much the scope changed them (or who last edited them), ringed when hot. */
-function FileMap({ files, fresh, act, report, layers, color, selected, onSelect }: { files: DesignFile[]; fresh: string[]; act: Activity; report?: DesignReport; layers: Layers; color: (n?: string) => string; selected?: string; onSelect: (f?: string) => void }) {
+function FileMap({ goal, rev, files, fresh, act, report, layers, color, selected, onSelect }: { goal: string; rev?: string; files: DesignFile[]; fresh: string[]; act: Activity; report?: DesignReport; layers: Layers; color: (n?: string) => string; selected?: string; onSelect: (f?: string) => void }) {
   const box = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(300);
   useLayoutEffect(() => {
@@ -1277,13 +1282,12 @@ function FileMap({ files, fresh, act, report, layers, color, selected, onSelect 
         if (by) style.boxShadow = `inset 3px 0 0 ${color(by)}`;
         if (layers.hot && fc && fc.score > 0) style.outline = `${Math.round(1 + (fc.score / maxScore) * 3)}px solid var(--limited)`;
         return (
-          <button
+          <DocTip
             key={t.key}
-            className={`fm-tile${selected === t.key ? ' on' : ''}${isFresh ? ' fresh' : ''}`}
-            style={style}
-            onClick={() => onSelect(selected === t.key ? undefined : t.key)}
-            title={[
-              t.key,
+            goal={goal}
+            rev={isFresh ? undefined : rev}
+            path={t.key}
+            note={[
               isFresh ? 'new, not committed yet' : '',
               fc ? `+${fc.added} −${fc.removed} in this scope${fc.commits ? `, ${fc.commits} commit${fc.commits === 1 ? '' : 's'}` : ''}${fc.agents.length ? ` by ${fc.agents.join(', ')}` : ''}` : '',
               fc?.reasons.length ? `hot: ${fc.reasons.join('; ')}` : '',
@@ -1291,9 +1295,11 @@ function FileMap({ files, fresh, act, report, layers, color, selected, onSelect 
               touch && touch.edits.size > 1 ? `edited by ${[...touch.edits.keys()].join(', ')}` : '',
             ].filter(Boolean).join('\n')}
           >
-            {t.w > 46 && t.h > 18 && <span className="fm-name">{name}</span>}
-            {t.w > 60 && t.h > 34 && (fc ? <span className="fm-by">+{fc.added} −{fc.removed}</span> : by && <span className="fm-by">{by}</span>)}
-          </button>
+            <button className={`fm-tile${selected === t.key ? ' on' : ''}${isFresh ? ' fresh' : ''}`} style={style} onClick={() => onSelect(selected === t.key ? undefined : t.key)}>
+              {t.w > 46 && t.h > 18 && <span className="fm-name">{name}</span>}
+              {t.w > 60 && t.h > 34 && (fc ? <span className="fm-by">+{fc.added} −{fc.removed}</span> : by && <span className="fm-by">{by}</span>)}
+            </button>
+          </DocTip>
         );
       })}
       {!tiles.length && <div className="empty">No files.</div>}
@@ -1312,9 +1318,16 @@ function FileDetail({ goal, snap, view, file, act, color, onFile }: { goal: stri
   const t = act.files.get(file.path);
   const fc = view.report?.files.find(f => f.path === file.path);
   const [open, setOpen] = useState<string>();
+  const docs = useDocs(goal, view.scope?.to, file.path);
+  const name = (s: { name: string; kind: string; parent?: string; line?: number }, rev = view.scope?.to) => (
+    <DocTip goal={goal} rev={rev} path={file.path} name={s.name} parent={s.parent} line={s.line} kind={s.kind} inline>
+      <span className="mono">{s.name}</span>
+    </DocTip>
+  );
   return (
     <div className="file-detail">
       <div className="mono small">{file.path}</div>
+      {docs?.doc && <div className="small file-doc">{docs.doc.split(/\n\s*\n/)[0].replace(/\s+/g, ' ')}</div>}
       <div className="muted small">
         {file.lang ?? 'no language pack'} · {(file.size / 1024).toFixed(1)} KB
         {t && t.edits.size > 0 && (
@@ -1351,14 +1364,14 @@ function FileDetail({ goal, snap, view, file, act, color, onFile }: { goal: stri
               <li key={i} className={m} style={{ paddingLeft: s.parent ? 16 : 0 }}>
                 {m ? (
                   <button className="def-row" onClick={() => setOpen(open === k ? undefined : k)} aria-expanded={open === k}>
-                    <span className="sym-kind">{s.kind}</span> <span className="mono">{s.name}</span>
+                    <span className="sym-kind">{s.kind}</span> {name(s)}
                     <span className="pill decision">{m}</span>
                     <span className="muted small"> :{s.line}</span>
                     <span className="muted">{open === k ? '▾' : '▸'}</span>
                   </button>
                 ) : (
                   <>
-                    <span className="sym-kind">{s.kind}</span> <span className="mono">{s.name}</span>
+                    <span className="sym-kind">{s.kind}</span> {name(s)}
                     <span className="muted small"> :{s.line}</span>
                   </>
                 )}
@@ -1371,7 +1384,7 @@ function FileDetail({ goal, snap, view, file, act, color, onFile }: { goal: stri
             return (
               <li key={k} className="removed">
                 <button className="def-row" onClick={() => setOpen(open === k ? undefined : k)} aria-expanded={open === k}>
-                  <span className="sym-kind">{s.kind}</span> <span className="mono">{s.name}</span> <span className="pill">removed</span>
+                  <span className="sym-kind">{s.kind}</span> {name(s, view.scope?.from)} <span className="pill">removed</span>
                   <span className="muted">{open === k ? '▾' : '▸'}</span>
                 </button>
                 {open === k && <SymbolCode goal={goal} view={view} path={file.path} lines={s.line ? [s.line, symbolEnd(undefined, s)!] : undefined} side="old" />}
@@ -1427,7 +1440,7 @@ function CommitRow({ c, color, onClick, onHover }: { c: DesignReport['commits'][
 /* ---------------- the inspector: the scope ---------------- */
 
 /** The files a scope changed, most changed first; hovering one lights it on the map. */
-export function ChangedFiles({ files, onPeek, onFile, max = 14 }: { files: FileChange[]; onPeek: (paths?: string[]) => void; onFile: (area: string, file: string) => void; max?: number }) {
+export function ChangedFiles({ goal, rev, files, onPeek, onFile, max = 14 }: { goal: string; rev?: string; files: FileChange[]; onPeek: (paths?: string[]) => void; onFile: (area: string, file: string) => void; max?: number }) {
   const [all, setAll] = useState(false);
   if (!files.length) return null;
   const list = [...files].sort((a, b) => b.added + b.removed - (a.added + a.removed));
@@ -1436,12 +1449,14 @@ export function ChangedFiles({ files, onPeek, onFile, max = 14 }: { files: FileC
       <div className="section-title">Files changed <span className="muted">{files.length}</span></div>
       <div onMouseLeave={() => onPeek(undefined)}>
         {(all ? list : list.slice(0, max)).map(f => (
-          <button key={f.path} className="history-row file-row" onClick={() => onFile(f.area, f.path)} onMouseEnter={() => onPeek([f.path])} onFocus={() => onPeek([f.path])} title="Hover to light it on the map; click to open it">
-            <span className="grow mono ellipsis">{f.path}</span>
-            <span className="small nowrap">
-              <span className="diff-add">+{f.added}</span> <span className="diff-del">−{f.removed}</span>
-            </span>
-          </button>
+          <DocTip key={f.path} goal={goal} rev={rev} path={f.path} note="Hovering lights it on the map; click to open it">
+            <button className="history-row file-row" onClick={() => onFile(f.area, f.path)} onMouseEnter={() => onPeek([f.path])} onFocus={() => onPeek([f.path])}>
+              <span className="grow mono ellipsis">{f.path}</span>
+              <span className="small nowrap">
+                <span className="diff-add">+{f.added}</span> <span className="diff-del">−{f.removed}</span>
+              </span>
+            </button>
+          </DocTip>
         ))}
       </div>
       {list.length > max && (
@@ -1530,7 +1545,7 @@ function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onF
           <ChangeList change={view.change} keep={s => mine(files.get(s.file)?.agents ?? [])} onArea={onArea} />
         </>
       )}
-      <ChangedFiles files={(r?.files ?? []).filter(f => mine(f.agents))} onPeek={onPeek} onFile={onFile} />
+      <ChangedFiles goal={goal.id} rev={view.scope?.to} files={(r?.files ?? []).filter(f => mine(f.agents))} onPeek={onPeek} onFile={onFile} />
       <div className="section-title">Commits{focus && ` by ${focus}`}</div>
       {commits.slice(0, 60).map(c => (
         <CommitRow key={c.sha} c={c} color={color} onHover={on => onPeek(on ? c.paths : undefined, c.sha)} onClick={() => onLock(c.sha)} />
@@ -1544,16 +1559,18 @@ function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onF
       )}
       <div className="section-title">Hotspots</div>
       {hot.map(f => (
-        <button key={f.path} className="history-row" onClick={() => onFile(f.area, f.path)} onMouseEnter={() => onLit([f.area])} onMouseLeave={() => onLit(undefined)}>
-          <span className="pill urgent">🔥 {f.score}</span>
-          <span className="grow">
-            <span className="mono">{f.path}</span>
-            <span className="sub">
-              <span className="diff-add">+{f.added}</span> <span className="diff-del">−{f.removed}</span>
-              {f.reasons.length ? ` · ${f.reasons.join('; ')}` : ''}
+        <DocTip key={f.path} goal={goal.id} rev={view.scope?.to} path={f.path}>
+          <button className="history-row" onClick={() => onFile(f.area, f.path)} onMouseEnter={() => onLit([f.area])} onMouseLeave={() => onLit(undefined)}>
+            <span className="pill urgent">🔥 {f.score}</span>
+            <span className="grow">
+              <span className="mono">{f.path}</span>
+              <span className="sub">
+                <span className="diff-add">+{f.added}</span> <span className="diff-del">−{f.removed}</span>
+                {f.reasons.length ? ` · ${f.reasons.join('; ')}` : ''}
+              </span>
             </span>
-          </span>
-        </button>
+          </button>
+        </DocTip>
       ))}
       {!hot.length && <div className="muted small">Nothing stands out.</div>}
       {!!r?.cycles.length && (
