@@ -1,7 +1,7 @@
 # Tracker
 
 Where MetaHarness stands against the plan in [DESIGN.md §19](DESIGN.md). Update this file when a
-step lands. Last updated 2026-10-23.
+step lands. Last updated 2026-10-24.
 
 ## Milestone 0: a small team works ✅
 
@@ -413,6 +413,19 @@ Findings from the run:
   Checked with tests (2 new) and in headless Chrome against a scripted team (two merged
   implementers, one left unmerged that makes a circular dependency, the cartographer), light
   and dark. Not yet in a real run or on a large repository.
+- [x] **The Systems lens** (2026-10-24), from the user: the areas map shows which folders a
+      commit touched, not how the game's systems are built and connected.
+  - A GDScript code reader and resolver (`src/codegraph.ts`): calls, objects made, signals
+    emitted and handled, state read and written, entry points from the engine, the main scene
+    and the autoloads; kept per commit as `design/<sha>.code.json` (`GET /design/code`,
+    `GET /design/source`). Tests and add-ons left out.
+  - In the Design tab, **Areas · Systems**: a map from the engine down (areas open into classes,
+    isolate one), a trace (step by step in line order, down or up, with the stacks from the
+    engine and the code), and between (two systems and what joins them, by direction of
+    influence). Changes in the scope marked throughout.
+  Checked with tests (3 new) and in headless Chrome on a throwaway daemon reading Primordia
+  (99% of 5568 calls followed). Not yet in a real run. Later: other languages' readers,
+  layer rules (`sim -/-> ui`) checked per commit, mechanics named in the map.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search

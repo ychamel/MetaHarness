@@ -1,4 +1,4 @@
-import type { AgentDetail, ConfigView, DesignChange, DesignScopeView, DesignView, DiffView, GitView, GoalSummary, MhEvent, ScopeSel, SharedFileView, Snapshot } from './types.ts';
+import type { AgentDetail, CodeGraph, ConfigView, DesignChange, DesignScopeView, DesignView, DiffView, GitView, GoalSummary, MhEvent, ScopeSel, SharedFileView, Snapshot } from './types.ts';
 
 /**
  * The daemon's API (design §13). `mh ui` opens the app with ?token=…; it's kept in this
@@ -77,6 +77,10 @@ export const api = {
   design: (goal: string, rev?: string) => call<DesignView>(`/design?goal=${encodeURIComponent(goal)}${rev ? `&rev=${encodeURIComponent(rev)}` : ''}`),
   designCompare: (goal: string, from: string, to: string) =>
     call<DesignChange>(`/design/compare?goal=${encodeURIComponent(goal)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+  /** The code graph at a commit or tree (the Systems lens). */
+  designCode: (goal: string, rev: string) => call<{ sha: string; graph: CodeGraph }>(`/design/code?goal=${encodeURIComponent(goal)}&rev=${encodeURIComponent(rev)}`),
+  designSource: (goal: string, rev: string, path: string) =>
+    call<{ path: string; sha: string; text: string }>(`/design/source?goal=${encodeURIComponent(goal)}&rev=${encodeURIComponent(rev)}&path=${encodeURIComponent(path)}`),
   command: <T = { result?: string }>(body: Record<string, unknown>) => call<T & Record<string, unknown>>('/commands', { method: 'POST', body: JSON.stringify(body) }),
 };
 

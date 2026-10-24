@@ -10,6 +10,7 @@ import { MessageDialog } from '../components/Dialogs.tsx';
 import { Hunks } from '../components/Diff.tsx';
 import { Splitter } from '../components/Splitter.tsx';
 import { useNow } from '../components/common.tsx';
+import Systems, { type SystemsNav } from './Systems.tsx';
 
 const CW = 230;
 const CH = 180;
@@ -20,6 +21,9 @@ export interface DesignNav {
   scope?: ScopeSel;
   area?: string;
   focus?: string;
+  /** Areas: the files and what changed; Systems: how the code runs. */
+  lens?: 'areas' | 'systems';
+  systems?: SystemsNav;
 }
 
 interface Props {
@@ -133,11 +137,31 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
   if (view && !view.snapshot) return <div className="empty">{view.note}</div>;
   if (!snap || !view) return <div className="empty">Reading the code…</div>;
   const area = nav.area !== undefined && (snap.map.areas.some(a => a.path === nav.area) || view.removedAreas?.some(a => a.path === nav.area)) ? nav.area : undefined;
+  const lens = (
+    <div className="seg" role="group" aria-label="Lens">
+      <button className={`btn small${nav.lens !== 'systems' ? ' on' : ''}`} onClick={() => onNav({ ...nav, lens: 'areas' })} title="The code's areas and files, and what each scope changed in them">
+        Areas
+      </button>
+      <button className={`btn small${nav.lens === 'systems' ? ' on' : ''}`} onClick={() => onNav({ ...nav, lens: 'systems' })} title="How the code runs: what calls, signals, creates and changes what">
+        Systems
+      </button>
+    </div>
+  );
+  const scopeBar = <ScopeBar goal={goal} events={events} gitv={gitv} view={view} scope={scope} color={color} focus={nav.focus} onScope={setScope} onFocus={setFocus} />;
+  if (nav.lens === 'systems') {
+    return (
+      <>
+        {scopeBar}
+        <Systems goal={goal} view={view} snap={snap} nav={nav.systems ?? {}} onNav={s => onNav({ ...nav, systems: s })} lens={lens} />
+      </>
+    );
+  }
 
   return (
     <>
-      <ScopeBar goal={goal} events={events} gitv={gitv} view={view} scope={scope} color={color} focus={nav.focus} onScope={setScope} onFocus={setFocus} />
+      {scopeBar}
       <div className="toolbar design-toolbar">
+        {lens}
         <div className="layer-toggles" role="group" aria-label="Layers">
           {LAYERS.map(([k, label, title]) => (
             <label key={k} className={`layer-toggle${layers[k] ? ' on' : ''}`} title={title}>

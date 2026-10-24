@@ -553,3 +553,69 @@ export interface DesignScopeView {
   tip?: string;
   note?: string;
 }
+
+/* ---------------- the Systems lens: the code graph (src/codegraph.ts) ---------------- */
+
+export type CodeEdgeKind = 'call' | 'new' | 'emit' | 'listen' | 'read' | 'write';
+
+export interface CodeClass {
+  id: string;
+  name: string;
+  file: string;
+  area: string;
+  line: number;
+  end: number;
+  kind: 'class' | 'autoload' | 'script' | 'inner';
+  ext?: string;
+  base?: string;
+  main?: true;
+}
+
+export interface CodeFn {
+  id: string;
+  cls: string;
+  name: string;
+  file: string;
+  line: number;
+  end: number;
+  static?: true;
+  engine?: true;
+  mut?: true;
+}
+
+export interface CodeSignal {
+  id: string;
+  cls: string;
+  name: string;
+  line: number;
+}
+
+export interface CodeField {
+  id: string;
+  cls: string;
+  name: string;
+  line: number;
+  const?: true;
+}
+
+export interface CodeEdge {
+  f: string;
+  t: string;
+  k: CodeEdgeKind;
+  l: number;
+  n?: number;
+  via?: string;
+  g?: true;
+  lam?: true;
+}
+
+export interface CodeGraph {
+  version: number;
+  classes: CodeClass[];
+  fns: CodeFn[];
+  signals: CodeSignal[];
+  fields: CodeField[];
+  edges: CodeEdge[];
+  entries: string[];
+  stats: { files: number; calls: number; resolved: number; guessed: number; unresolved: number; missed: { chain: string; n: number }[] };
+}

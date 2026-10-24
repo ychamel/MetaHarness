@@ -3746,6 +3746,28 @@ export class Daemon {
     };
   }
 
+  /** The code graph at a commit or tree (the Systems lens; src/codegraph.ts), the goal branch now by default. */
+  async designCode(goalId: string, rev?: string) {
+    const gg = this.goalGit(goalId);
+    if (!gg) throw new Error('No git repository for this goal.');
+    const dir = this.goals.get(goalId)?.dir ?? gg.repo;
+    const sha = !rev ? (git.resolveCommit(gg, gg.branch) ?? gg.base) : /^[\w./@^~-]+$/.test(rev) && !rev.startsWith('-') ? git.resolveTreeish(gg, rev) : undefined;
+    if (!sha) throw new Error(`There's no commit or branch "${rev}".`);
+    return { sha, graph: await this.design.code(goalId, gg, dir, sha) };
+  }
+
+  /** A file's text at a commit or tree, for the Systems lens to show a function's code. */
+  designSource(goalId: string, rev: string, path: string) {
+    const gg = this.goalGit(goalId);
+    if (!gg) throw new Error('No git repository for this goal.');
+    const sha = /^[\w./@^~-]+$/.test(rev) && !rev.startsWith('-') ? git.resolveTreeish(gg, rev) : undefined;
+    if (!sha) throw new Error(`There's no commit or branch "${rev}".`);
+    if (!path || path.startsWith('/') || path.split('/').includes('..')) throw new Error(`${path} isn't a path in the repository.`);
+    const text = git.showFile(gg, sha, path);
+    if (text === undefined) throw new Error(`There's no ${path} at ${sha.slice(0, 7)}.`);
+    return { path, sha, text };
+  }
+
   /** Builds a scope's report (src/design.ts) and keeps it beside the snapshots. */
   private async scopeReport(goalId: string, gg: git.GoalGit, dir: string, scope: { kind: string; title: string; from: string; to: string; heads: string[] }) {
     const [before, after] = await Promise.all([this.design.get(goalId, gg, dir, scope.from), this.design.get(goalId, gg, dir, scope.to)]);

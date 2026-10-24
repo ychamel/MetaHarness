@@ -244,6 +244,31 @@ You review the result in your checkout like any other change, and push it yourse
       - Each landing leaves a **report** in the goal's `design/reports/` folder (JSON: the
         commits, each area's share, files ranked as hotspots, circular dependencies, coupling,
         the flows checked against the imports), for a later goal or a model to analyse.
+      - **Areas · Systems** (the switch at the start of the toolbar) changes lens. **Systems**
+        shows how the code runs instead of which file imports which: what calls what, which
+        signals reach which handlers (the event bus between them left out), what makes objects
+        of what, and who reads or writes whose state. It reads GDScript for now, tests and
+        add-ons left out; the toolbar says how many of the calls it could follow (a call on a
+        variable with no declared type can't be, and the panel lists the ones to type).
+        - **Map** starts at the engine: it runs the main scene and the autoloads, and the rest
+          hangs below in the order things are made and called. Each card says when the engine
+          calls into it (every frame, on input, when it redraws). Double-click an area to open
+          it into its classes, a class to isolate it with only what it's linked to. Tick the
+          links to draw: **Calls**, **Signals**, **Creates**, **State**.
+        - **Trace** follows one function (pick it from the search box, a class's functions, or
+          an entry point): **What it does** lists its calls, the objects it makes and the
+          signals it emits in the order its lines do them, a signal going on to its handlers,
+          each step opening into its own; **How it's reached** goes the other way. The panel
+          shows the shortest ways the engine gets there (like a debugger's stack), the state of
+          other classes it reads and writes, and its code, with each line that calls into the
+          project a link.
+        - **Between** puts two systems side by side (an area or a class each), with what joins
+          them: direct links, and the classes both touch, arrows running the way influence
+          does. When the ecosystem changes `Genome` and creatures read it, the ecosystem reaches
+          creatures through `Genome`, even though neither calls the other.
+        - **Changes in this scope** marks the links, functions and classes the scope added,
+          edited or removed, and the panel lists them as sentences ("World.step calls
+          FoodLeads.tick").
     - **Git:** the goal branch, each agent's branch (merged or not, uncommitted files), and
       every commit and merge with who made it, its size, and the areas of the design it
       touched (click one to open the Design tab there, at that commit). Click a commit for its
@@ -483,7 +508,9 @@ restarting the daemon. The pages write the same files described below.
   the name, or the path). How imports resolve: `relative` (`./x` next to the file), `dotted`
   (`a.b.c` under the `roots:` folders), `res` (Godot's `res://`), `name` (a class name defined
   anywhere, like GDScript's `class_name`), `suffix` (any file whose path ends the same way).
-  Files no pack reads still show in their area, sized but without definitions.
+  Files no pack reads still show in their area, sized but without definitions. A pack with
+  `code: gdscript` also feeds the Systems lens (calls, signals, objects made, state); GDScript
+  is the only code reader so far.
   `"design": false` in `settings.json` turns the snapshots off.
 - **MCP servers.** A role names what it needs, for example `mcp: blender`. Each name is looked
   up in `~/.metaharness/mcp.json`, in the format every harness uses

@@ -33,6 +33,8 @@ export interface LanguagePack {
   try: string[];
   /** Folders dotted names are found under. */
   roots: string[];
+  /** Which reader finds the calls, signals and state in its files (src/codegraph.ts), if any. */
+  code?: string;
   description: string;
   dir: string;
   builtIn: boolean;
@@ -69,6 +71,7 @@ export function loadLanguagePack(dir: string, builtIn = false): LanguagePack | u
     resolve: list(meta.resolve).filter((r): r is Resolve => (RESOLVES as string[]).includes(r)),
     try: list(meta.try),
     roots: list(meta.roots).length ? list(meta.roots) : ['.'],
+    ...(meta.code ? { code: meta.code.trim() } : {}),
     description: body.trim().split('\n\n')[0]?.replace(/\s+/g, ' ') ?? '',
     dir,
     builtIn,
@@ -150,6 +153,18 @@ export class Outliner {
       if (l) return treeOutline(l, text);
     }
     return pack.patterns ? patternOutline(pack.patterns, text) : undefined;
+  }
+
+  /** Parses a file with the pack's grammar and hands its root to `read`; undefined without a grammar. */
+  async parse<T>(pack: LanguagePack, text: string, read: (root: import('web-tree-sitter').Node) => T): Promise<T | undefined> {
+    const l = pack.grammar && pack.queries ? await this.load(pack) : undefined;
+    const tree = l?.parser.parse(text);
+    if (!tree) return undefined;
+    try {
+      return read(tree.rootNode);
+    } finally {
+      tree.delete();
+    }
   }
 
   private load(pack: LanguagePack): Promise<Loaded | undefined> {

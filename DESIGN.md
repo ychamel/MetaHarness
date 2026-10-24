@@ -563,8 +563,9 @@ commits or trees narrowed to paths, everything since the goal started, or an age
 uncommitted work: its worktree, or the shared checkout, flagged as anyone's), `GET
 /design/scope?goal&kind=goal[&branches=1] | commit&sha | branch&agent | range&from&to[&title]`
 (the design after the scope, what it changed, its report, and the timeline), `GET
-/design?goal&rev` (a snapshot and the timeline; `rev=now` reads the goal branch's tip) and `GET
-/design/compare?goal&from&to`.
+/design?goal&rev` (a snapshot and the timeline; `rev=now` reads the goal branch's tip), `GET
+/design/compare?goal&from&to`, `GET /design/code?goal&rev` (the code graph at a commit or tree,
+for the Systems lens) and `GET /design/source?goal&rev&path` (a file's text there).
 
 A pause takes effect at once for messages (they wait) and at the next step boundary for a
 running turn, like every pause (§7): natively, or by ending the process and keeping the session
@@ -697,8 +698,8 @@ any language or degrades gracefully:
 by an area's path or title, what moves after a dash (`- Checkout: src/api/ → src/orders/ →
 src/store/ — an order is placed and saved`). The cartographer keeps them; the view draws them
 and flags a step that names no area, or two steps with no import between them either way.
-Inferring flows from calls is left for later: calls in dynamic languages often can't be
-resolved.
+Inferring flows from calls is left for later; the Systems lens below follows calls where the
+code declares its types.
 
 **Snapshots** (`src/design.ts`): one when the goal starts and one at each landing, stored as
 `goals/<goal>/design/<sha>.json` with an index; outlines are cached by blob, so a snapshot only
@@ -731,6 +732,31 @@ commit by commit (so rewriting counts twice), raised for each extra commit and a
 that many import, and for large files. Each landing keeps two, `goals/<goal>/design/reports/
 <from>..<to>.json`: the landing, and the goal so far; any scope looked at is kept too. Nothing
 acts on them yet: analysing them and suggesting changes to the design is a goal of its own.
+
+**The Systems lens** (`src/codegraph.ts`, `ui/src/codeData.ts`) shows how the code runs, for
+languages with a code reader (a pack's `code:`; GDScript first, as the user's games are). The
+reader walks the syntax tree into facts per file: classes (`class_name`, inner classes, else the
+autoload's or the file's name), what each extends, members' and functions' declared types, signals,
+and per function every chain it evaluates as written (`w.grid.query(…)`), its locals and
+parameters, and the names it assigns. `buildGraph` resolves the chains through those types
+(members, `:=` from `X.new()` or a typed call, `Array[T]` elements in loops and subscripts,
+return types, inheritance, autoloads from `project.godot`, `preload` paths) into one graph:
+call, new (an object made), emit, listen (a signal's handler, a method, a bound method or a
+lambda, connected in some function), read and write (another class's member or constant). A
+receiver with no declared type is followed only when a single class defines a method of that
+name, marked a guess; engine types end a chain; the receivers missed most are kept, to say what
+to type. A function changes state when it, or a method of its own it calls, assigns its object's
+members. Entry points are the engine callbacks, the main scene's (its root script, from the
+`.tscn`) and the autoloads' first. Tests and add-ons are left out. The graph is built per commit
+or tree and kept as `design/<sha>.code.json` (facts cached by blob), served by `GET
+/design/code`; `GET /design/source` gives a file's text for the inspector. On Primordia (104
+files) 99% of 5568 calls resolve, in about a second. The view has three tools: a map from the
+engine down (areas, opened into classes on demand, links summed between what's shown; signals
+drawn from emitter to handler, the bus left out), a trace (a function's steps in line order,
+down into what it does or up to who reaches it; the shortest stacks from an engine callback),
+and between (two systems and the classes both touch: A reaches B through M when A changes M
+and B uses it, or A calls M and M calls into B). Comparing the graphs before and after the scope
+marks links, functions and classes added, edited and removed.
 
 **Insights** come from the log alone, so later retrospectives can total them across goals:
 files edited by several agents, merge conflicts, files changed in three commits or more, how

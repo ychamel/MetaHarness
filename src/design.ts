@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
+import { buildGraph, CODE_READERS, CODE_VERSION, godotProject, type CodeFacts, type CodeGraph } from './codegraph.ts';
 import * as git from './git.ts';
 import { packFor, resolveContext, resolveImport, type FileOutline, type LanguagePack, type Outliner, type Symbol } from './languages.ts';
 import { parseMap } from './rules.ts';
@@ -69,6 +70,8 @@ export interface SnapshotInfo {
 const MAX_FILES = 5000;
 const MAX_BYTES = 256 * 1024;
 const SKIP = /(^|\/)(node_modules|vendor|dist|build|\.git)\/|\.min\.(js|css)$|\.lock$|-lock\.json$/;
+/** Tests and add-ons: left out of the code graph, which is about how the game itself runs. */
+const NOT_CODE = /(^|\/)(tests?|specs?|__tests__|addons)\/|(^|\/)test_[^/]*$|_test\.[^/]+$/i;
 
 /* ---------------- areas ---------------- */
 
@@ -222,7 +225,9 @@ export function areaOf(areas: Area[], path: string): string | undefined {
 
 export class DesignTracker {
   private outlines = new Map<string, FileOutline | null>();
+  private facts = new Map<string, CodeFacts | null>();
   private building = new Map<string, Promise<DesignSnapshot>>();
+  private graphing = new Map<string, Promise<CodeGraph>>();
   readonly home: string;
   readonly outliner: Outliner;
 
@@ -251,6 +256,56 @@ export class DesignTracker {
       this.building.set(key, p);
     }
     return p;
+  }
+
+  /**
+   * The code graph at a commit (src/codegraph.ts): kept beside its snapshot as <sha>.code.json.
+   * Only files whose pack has a code reader are read, tests and add-ons left out.
+   */
+  async code(goal: string, gg: git.GoalGit, dir: string, sha: string): Promise<CodeGraph> {
+    const file = join(this.dir(goal), `${sha}.code.json`);
+    try {
+      const kept = JSON.parse(readFileSync(file, 'utf8')) as CodeGraph;
+      if (kept.version === CODE_VERSION) return kept;
+    } catch {
+      // Not built yet, or by an older reader.
+    }
+    const key = `${goal}/${sha}`;
+    let p = this.graphing.get(key);
+    if (!p) {
+      p = this.get(goal, gg, dir, sha).then(async snap => {
+        const g = await this.buildCode(gg, sha, snap);
+        mkdirSync(this.dir(goal), { recursive: true });
+        writeFileSync(file, JSON.stringify(g));
+        return g;
+      });
+      p.finally(() => this.graphing.delete(key)).catch(() => {});
+      this.graphing.set(key, p);
+    }
+    return p;
+  }
+
+  async buildCode(gg: git.GoalGit, sha: string, snap: DesignSnapshot): Promise<CodeGraph> {
+    const packs = this.outliner.packs;
+    const readable = snap.files.filter(f => f.lang && packs.get(f.lang)?.code && CODE_READERS[packs.get(f.lang)!.code!] && f.size <= MAX_BYTES && !NOT_CODE.test(f.path));
+    const scenes = snap.files.filter(f => f.path.endsWith('.tscn') && f.size <= MAX_BYTES && !NOT_CODE.test(f.path));
+    const need = [...new Set([...readable.filter(f => !this.facts.has(`${f.lang}:${f.blob}`)), ...scenes].map(f => f.blob))];
+    const texts = git.readBlobs(gg, need);
+    const inputs = [];
+    for (const f of readable) {
+      const key = `${f.lang}:${f.blob}`;
+      if (!this.facts.has(key)) {
+        const text = texts.get(f.blob);
+        const pack = packs.get(f.lang!)!;
+        this.facts.set(key, text === undefined ? null : ((await this.outliner.parse(pack, text, CODE_READERS[pack.code!])) ?? null));
+      }
+      const facts = this.facts.get(key);
+      if (facts) inputs.push({ path: f.path, area: f.area, facts });
+    }
+    const project = snap.files.filter(f => f.path.split('/').pop() === 'project.godot').sort((a, b) => a.path.length - b.path.length)[0];
+    const blobOf = new Map(scenes.map(f => [f.path, f.blob]));
+    const godot = godotProject(project ? git.showFile(gg, sha, project.path) : undefined, project?.path, p => (blobOf.has(p) ? texts.get(blobOf.get(p)!) : git.showFile(gg, sha, p)), scenes.map(f => f.path));
+    return buildGraph(inputs, godot);
   }
 
   /** A snapshot already taken, if there is one on disk. */
