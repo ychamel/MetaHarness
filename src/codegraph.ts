@@ -50,6 +50,8 @@ export interface FnFacts {
   chains: { segs: Seg[]; line: number; write?: true }[];
   /** Plain names it assigns (`x = …`, `x += …`): its own members, unless they're locals. */
   sets: string[];
+  /** Its doc comment (`##` lines right above it). */
+  doc?: string;
 }
 
 export interface ClassFacts {
@@ -64,6 +66,8 @@ export interface ClassFacts {
   consts: VarFact[];
   signals: { n: string; line: number }[];
   fns: FnFacts[];
+  /** Its doc comment: the `##` lines before its first member. */
+  doc?: string;
 }
 
 /** A file's facts: its script class first, then any inner classes. */
@@ -94,8 +98,27 @@ function gdExtends(c: ClassFacts, n: TSNode): void {
 
 function gdClass(body: TSNode, c: ClassFacts, out: ClassFacts[]): void {
   const fields: FnFacts = { name: '(fields)', line: 0, end: 0, params: [], locals: [], chains: [], sets: [] };
+  // `##` lines right above a function or inner class document it; before the first member, the rest document the class.
+  let doc: string[] = [];
+  let docEnd = -1;
+  let head: string[] | undefined = [];
   for (const n of body.namedChildren) {
     if (!n) continue;
+    if (n.type === 'comment') {
+      const t = n.text.match(/^##(?!#)\s?(.*)$/);
+      if (!t) continue;
+      if (n.startPosition.row !== docEnd + 1) (head?.push(...doc), (doc = []));
+      doc.push(t[1].trim());
+      docEnd = n.startPosition.row;
+      continue;
+    }
+    const above = docEnd === n.startPosition.row - 1 ? doc.join('\n').trim() : '';
+    if (head && n.type !== 'class_name_statement' && n.type !== 'extends_statement' && n.type !== 'annotation' && n.type !== 'annotations') {
+      const own = n.type === 'function_definition' || n.type === 'constructor_definition' || n.type === 'class_definition' || (above && head.length);
+      const all = [...head, ...(own ? [] : doc)].join('\n').trim();
+      if (all) c.doc = all;
+      head = undefined;
+    }
     switch (n.type) {
       case 'class_name_statement': {
         c.name = n.childForFieldName('name')?.text;
@@ -128,12 +151,13 @@ function gdClass(body: TSNode, c: ClassFacts, out: ClassFacts[]): void {
       case 'function_definition':
       case 'constructor_definition': {
         const f = gdFn(n);
+        if (f && above) f.doc = above;
         if (f) c.fns.push(f);
         break;
       }
       case 'class_definition': {
         const name = n.childForFieldName('name')?.text;
-        const inner: ClassFacts = { name, outer: out.indexOf(c), line: line(n), end: n.endPosition.row + 1, members: [], consts: [], signals: [], fns: [] };
+        const inner: ClassFacts = { name, outer: out.indexOf(c), line: line(n), end: n.endPosition.row + 1, members: [], consts: [], signals: [], fns: [], ...(above ? { doc: above } : {}) };
         const ext = n.childForFieldName('extends');
         if (ext) gdExtends(inner, ext);
         out.push(inner);
@@ -142,6 +166,9 @@ function gdClass(body: TSNode, c: ClassFacts, out: ClassFacts[]): void {
         break;
       }
     }
+    head?.push(...doc);
+    doc = [];
+    docEnd = -1;
   }
   if (fields.chains.length) c.fns.push(fields);
 }
@@ -305,6 +332,8 @@ export interface GraphClass {
   base?: string;
   /** The main scene's script. */
   main?: true;
+  /** Its doc comment. */
+  doc?: string;
 }
 
 export interface GraphFn {
@@ -319,6 +348,7 @@ export interface GraphFn {
   engine?: true;
   /** Changes its own object's state, itself or through its own methods. */
   mut?: true;
+  doc?: string;
 }
 
 export interface GraphSignal {
@@ -374,9 +404,17 @@ export interface CodeGraph {
   /** Functions the engine calls, the main scene's and the autoloads' first. */
   entries: string[];
   stats: CodeStats;
+  /** Groups of classes the map's Systems section names, with what each does. */
+  systems?: CodeSystem[];
 }
 
-export const CODE_VERSION = 1;
+export interface CodeSystem {
+  name: string;
+  classes: string[];
+  text: string;
+}
+
+export const CODE_VERSION = 2;
 
 /** Engine callbacks: where the engine calls into a script. */
 export const ENGINE_CALLBACKS = new Set(['_ready', '_process', '_physics_process', '_input', '_unhandled_input', '_unhandled_key_input', '_shortcut_input', '_gui_input', '_draw', '_notification', '_enter_tree', '_exit_tree', '_init', '_integrate_forces']);
@@ -761,7 +799,7 @@ export function buildGraph(inputs: CodeInput[], project: GodotProject): CodeGrap
       for (const n of f.sets) if (!ctx.vars.has(n) && findVar(ci, n)) mut.add(ctx.id);
       fns.push({
         id: ctx.id, cls: ci.id, name: f.name, file: ci.file, line: f.line, end: f.end,
-        ...(f.static ? { static: true as const } : {}), ...(ENGINE_CALLBACKS.has(f.name) ? { engine: true as const } : {}),
+        ...(f.static ? { static: true as const } : {}), ...(ENGINE_CALLBACKS.has(f.name) ? { engine: true as const } : {}), ...(f.doc ? { doc: f.doc } : {}),
       });
     }
   }
@@ -778,7 +816,7 @@ export function buildGraph(inputs: CodeInput[], project: GodotProject): CodeGrap
     const base = engineBase(ci);
     return {
       id: ci.id, name: ci.facts.name ?? ci.id, file: ci.file, area: ci.area, line: ci.facts.line, end: ci.facts.end, kind: ci.kind,
-      ...(ci.base ? { ext: ci.base.id } : {}), ...(base ? { base } : {}), ...(ci === mainClass ? { main: true as const } : {}),
+      ...(ci.base ? { ext: ci.base.id } : {}), ...(base ? { base } : {}), ...(ci === mainClass ? { main: true as const } : {}), ...(ci.facts.doc ? { doc: ci.facts.doc } : {}),
     };
   });
   const rank = (f: GraphFn) => (mainClass && f.cls === mainClass.id ? 0 : infos.find(i => i.id === f.cls)?.kind === 'autoload' ? 1 : 2);

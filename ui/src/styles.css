@@ -995,3 +995,82 @@ details.more { display: grid; gap: 6px; }
 .sys-reset { position: absolute; top: 8px; right: 10px; z-index: 5; background: var(--panel); }
 .picked { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 6px 8px; display: grid; gap: 4px; }
 .picked .row-wrap { justify-content: space-between; }
+/* The Systems canvas: cards with pins, frames, chips and rails (heights match SystemsCanvas's cardHeight). */
+.sys-focusbar { gap: 6px; }
+.focus-chip { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; padding: 1px 4px 1px 9px; border-radius: 99px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--text); cursor: pointer; }
+.focus-chip.on { border-color: var(--accent); background: var(--accent-soft); }
+.focus-chip.changes { padding-right: 9px; }
+.focus-chip.changes.on { padding-right: 4px; border-color: var(--accent); }
+.focus-chip .x { border: 0; background: none; color: var(--text-2); cursor: pointer; padding: 0 4px; font: inherit; }
+.focus-chip .text-link { font-size: 12px; }
+.sys-route { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 3px 10px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.sys-route .strong { font-weight: 700; }
+.sys-canvas-row { flex: 1; min-height: 0; display: flex; }
+.sys-canvas { position: relative; flex: 1; min-width: 0; }
+.sys-canvas > .react-flow { position: absolute; inset: 0; }
+.sys-canvas.anim .react-flow__node { transition: transform 0.35s ease; }
+.sys-node { position: relative; box-sizing: border-box; width: 100%; height: 100%; padding: 8px 0 0; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); box-shadow: var(--shadow); font-size: 12.5px; cursor: pointer; overflow: hidden; transition: opacity 0.2s, box-shadow 0.2s; }
+.sys-node.near.area { border-width: 2px; background: var(--panel-2); }
+.sys-node.near.group { border-style: dashed; border-width: 1.5px; }
+.sys-node.focus { border: 2px solid var(--accent); }
+.sys-node.engine { border-color: var(--accent); background: var(--accent-soft); }
+.sys-node.on { box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); border-color: var(--accent); }
+.sys-node.hl { box-shadow: 0 0 0 4px color-mix(in srgb, var(--paused) 45%, transparent), var(--shadow); }
+.sys-node.route { outline: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 3px; }
+.sys-node.added { border-color: var(--done); }
+.node-head { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px 0 10px; }
+.node-title { font-weight: 600; flex: 1; min-width: 0; }
+.node-sub { height: 16px; line-height: 16px; padding: 0 10px; font-size: 11px; }
+.node-text { height: 30px; line-height: 15px; padding: 0 10px; font-size: 11.5px; color: var(--text-2); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.node-chips { height: 22px; display: flex; gap: 4px; align-items: center; padding: 0 10px; overflow: hidden; }
+.node-rows { border-top: 1px solid var(--line); }
+.sys-node.engine .node-rows { border: 0; }
+.node-row { position: relative; height: 22px; display: flex; align-items: center; gap: 6px; padding: 0 12px; font-size: 12px; cursor: pointer; }
+.node-row:hover { background: var(--panel-2); }
+.node-row.on { background: var(--accent-soft); }
+.node-row .row-label { flex: 1; min-width: 0; }
+.node-row .row-n { font-size: 10.5px; flex: none; }
+.row-engine { color: var(--accent); margin-right: 3px; }
+.row-mark { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--accent); }
+.row-mark.new { background: var(--done); }
+.sys-node .react-flow__handle.pin { opacity: 1; width: 7px; height: 7px; min-width: 0; min-height: 0; border: 1.5px solid var(--panel); background: var(--text-3); }
+.sys-node .node-row:hover .react-flow__handle.pin, .sys-node .node-row.on .react-flow__handle.pin { background: var(--accent); }
+.sys-node .react-flow__handle.pin.off { opacity: 0; }
+.node-foot { height: 24px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-top: 1px solid var(--line); overflow: hidden; white-space: nowrap; }
+.node-foot .tap { color: var(--waiting); font-family: var(--mono); font-size: 10.5px; }
+.card-acts { display: inline-flex; gap: 1px; flex: none; opacity: 0.6; transition: opacity 0.15s; }
+.sys-node:hover .card-acts, .sys-frame:hover .card-acts, .sys-node.focus .card-acts { opacity: 1; }
+.card-acts button { border: 0; background: none; color: var(--text-2); cursor: pointer; font: inherit; font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px; }
+.card-acts button:hover { background: var(--panel-2); color: var(--accent); }
+.sys-frame { box-sizing: border-box; width: 100%; height: 100%; padding-top: 6px; border: 2px solid color-mix(in srgb, var(--accent) 55%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.sys-frame.on { border-color: var(--accent); }
+.sys-frame .node-head { gap: 8px; }
+.sys-frame .node-text { height: auto; max-width: 640px; }
+.sys-rails { flex: none; display: flex; gap: 4px; padding: 8px 8px 8px 0; }
+.sys-rail { writing-mode: vertical-rl; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 2px; border: 1px solid color-mix(in srgb, var(--waiting) 50%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--waiting) 9%, var(--panel)); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.sys-rail .rail-name { font-weight: 600; }
+.sys-rail:hover, .sys-rail.hl { border-color: var(--waiting); box-shadow: 0 0 0 3px color-mix(in srgb, var(--waiting) 25%, transparent); }
+.sys-chips { flex: none; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 5px 10px; border-top: 1px solid var(--line); background: var(--panel); }
+.sys-chip { font: inherit; font-size: 11.5px; padding: 1px 9px; border-radius: 99px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--text); cursor: pointer; }
+.sys-chip:hover { border-color: var(--accent); }
+.sys-chip.route { border: 1.5px dashed var(--accent); }
+.sys-chip.hl { box-shadow: 0 0 0 3px color-mix(in srgb, var(--paused) 45%, transparent); }
+.sys-chips .sys-hint { position: static; margin-left: auto; }
+.trace-view.docked { height: auto; border: 1px solid var(--line); border-radius: 8px; margin: 4px 0 8px; }
+.trace-view.docked .trace-head { flex-wrap: wrap; padding: 4px 6px; }
+.trace-view.docked .trace-rows { max-height: 340px; overflow: auto; padding-bottom: 6px; font-size: 12px; }
+.doc-text { white-space: pre-line; color: var(--text-2); }
+.row-ends { font-size: 10.5px; }
+.card-resize { background: none !important; border: 0 !important; width: 14px !important; height: 14px !important; transform: translate(-100%, -100%) !important; }
+.resize-grip { display: block; width: 14px; height: 14px; cursor: nwse-resize; opacity: 0; background: linear-gradient(135deg, transparent 50%, var(--text-3) 50%, var(--text-3) 60%, transparent 60%, transparent 72%, var(--text-3) 72%, var(--text-3) 82%, transparent 82%); border-bottom-right-radius: 9px; transition: opacity 0.15s; }
+.react-flow__node:hover .resize-grip, .react-flow__node.selected .resize-grip { opacity: 1; }
+.sys-menu { position: fixed; z-index: 50; min-width: 240px; max-width: 320px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; display: grid; }
+.sys-menu .menu-head { padding: 6px 8px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; display: grid; gap: 2px; }
+.sys-menu .menu-item { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; border: 0; background: none; font: inherit; font-size: 13px; color: var(--text); text-align: left; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+.sys-menu .menu-item:hover { background: var(--accent-soft); }
+.sys-adjust { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+.adjust-chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 8px; border-radius: 99px; border: 1px dashed var(--line-strong); background: var(--panel); }
+.adjust-chip .x { border: 0; background: none; color: var(--text-2); cursor: pointer; padding: 0 5px; font: inherit; }
+.adjust-chip .x:hover { color: var(--accent); }
+.card-resize { pointer-events: none; }
+.react-flow__node:hover .card-resize, .react-flow__node.selected .card-resize { pointer-events: auto; }

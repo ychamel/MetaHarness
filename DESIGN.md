@@ -750,13 +750,29 @@ members. Entry points are the engine callbacks, the main scene's (its root scrip
 `.tscn`) and the autoloads' first. Tests and add-ons are left out. The graph is built per commit
 or tree and kept as `design/<sha>.code.json` (facts cached by blob), served by `GET
 /design/code`; `GET /design/source` gives a file's text for the inspector. On Primordia (104
-files) 99% of 5568 calls resolve, in about a second. The view has three tools: a map from the
-engine down (areas, opened into classes on demand, links summed between what's shown; signals
-drawn from emitter to handler, the bus left out), a trace (a function's steps in line order,
-down into what it does or up to who reaches it; the shortest stacks from an engine callback),
-and between (two systems and the classes both touch: A reaches B through M when A changes M
-and B uses it, or A calls M and M calls into B). Comparing the graphs before and after the scope
-marks links, functions and classes added, edited and removed.
+files) 99% of 5568 calls resolve, in about a second. The view is one canvas (`ui/src/views/SystemsCanvas.tsx`), laid out by ELK (layered, left to
+right, ports fixed at each pin's row; loaded on first use). Between an area and its classes
+sits a level of groups: an area of more than nine classes splits into groups of at most nine,
+the map's `## Systems` section first (`- Name (ClassA, b.gd) — what it does`, read into the
+graph), the rest by greedy modularity over the links, a class left alone joining the group it
+links to most. Autoloads that a tenth of the classes (at least six) link into are rails, with a
+tap on each card instead of lines. With nothing looked at, the canvas draws the areas. A focus
+(classes, groups, areas; by default the classes the scope changed, or their groups or areas past
+twelve) is drawn in full: a class as a card whose pins are its functions, a group or area as a
+frame holding what it holds, lines leaving the frame from its edge. What's one step from the
+focus is summed at the coarsest level that still tells it apart from every focus (the child of
+their common ancestor; areas only, with more than five things looked at), split or folded on
+request; links between neighbours aren't drawn; the rest are chips per area. Other cards' pins
+are the cards they link to. Past forty lines, lines go to the focus card, but for a function
+hovered or selected; the layout uses the lines without those, so hovering never moves a card.
+With two systems looked at, the classes where they meet are drawn on their own and the panel
+shows between (A reaches B through M when A changes M and B uses it, or A calls M and M calls
+into B). The route from the engine is the shortest stack to a function the scope changed, or
+else one reached from outside. The trace (a function's steps in line order, down into what it
+does or up to who reaches it; the shortest stacks from an engine callback) is docked in the
+panel, a step hovered or clicked lit on the canvas. Doc comments (`##` lines above a class's
+first member or a function) go into the graph and onto the cards. Comparing the graphs before
+and after the scope marks links, functions and classes added, edited and removed.
 
 **Insights** come from the log alone, so later retrospectives can total them across goals:
 files edited by several agents, merge conflicts, files changed in three commits or more, how

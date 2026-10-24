@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { buildGraph, CODE_READERS, CODE_VERSION, godotProject, type CodeFacts, type CodeGraph } from './codegraph.ts';
+import { buildGraph, CODE_READERS, CODE_VERSION, godotProject, type CodeFacts, type CodeGraph, type CodeSystem } from './codegraph.ts';
 import * as git from './git.ts';
 import { packFor, resolveContext, resolveImport, type FileOutline, type LanguagePack, type Outliner, type Symbol } from './languages.ts';
 import { parseMap } from './rules.ts';
@@ -125,6 +125,43 @@ export function parseFlows(text: string, areas: Area[]): Flow[] {
     flows.push({ name: name.replace(/[*_`]/g, '').trim() || steps.map(st => st.label).join(' → '), steps, text: desc.join(' — ').trim() });
   }
   return flows;
+}
+
+const SYSTEMS_HEADING = /^(#{1,6})\s+systems\b/i;
+
+/**
+ * The map's Systems section: groups of classes that work together, one list item each, the
+ * classes (or their files) in brackets and what the group does after a dash or colon:
+ *   - Foraging (`FoodLeads`, `FoodLeadSenses`, food_lead_budget.gd) — finds food the herd can reach
+ * Names are matched to the graph's classes by name or file; the Systems lens groups the rest itself.
+ */
+export function parseSystems(text: string, classes: { id: string; name: string; file: string }[]): CodeSystem[] {
+  const byName = new Map<string, string>();
+  for (const c of classes) {
+    byName.set(c.name.toLowerCase(), c.id);
+    const file = c.file.split('/').pop()!.toLowerCase();
+    if (!byName.has(file)) byName.set(file, c.id);
+    if (!byName.has(file.replace(/\.[^.]*$/, ''))) byName.set(file.replace(/\.[^.]*$/, ''), c.id);
+  }
+  const out: CodeSystem[] = [];
+  let level = 0;
+  let fence = false;
+  for (const line of text.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    if (fence) continue;
+    const h = /^(#{1,6})\s/.exec(line);
+    if (h) {
+      if (SYSTEMS_HEADING.test(line)) level = h[1].length;
+      else if (level && h[1].length <= level) level = 0;
+      continue;
+    }
+    if (!level) continue;
+    const item = /^\s*(?:[-*+]|\d+[.)])\s+([^(]+?)\s*\(([^)]*)\)\s*(?:[:—–-]+\s*)?(.*)$/.exec(line);
+    if (!item) continue;
+    const ids = item[2].split(/[,;]/).map(x => byName.get(x.replace(/[`*_]/g, '').trim().toLowerCase())).filter((x): x is string => !!x);
+    if (ids.length) out.push({ name: item[1].replace(/[`*_]/g, '').trim(), classes: [...new Set(ids)], text: item[3].replace(/[*_]/g, '').trim() });
+  }
+  return out;
 }
 
 function stepArea(label: string, areas: Area[]): { area?: string } {
@@ -305,7 +342,10 @@ export class DesignTracker {
     const project = snap.files.filter(f => f.path.split('/').pop() === 'project.godot').sort((a, b) => a.path.length - b.path.length)[0];
     const blobOf = new Map(scenes.map(f => [f.path, f.blob]));
     const godot = godotProject(project ? git.showFile(gg, sha, project.path) : undefined, project?.path, p => (blobOf.has(p) ? texts.get(blobOf.get(p)!) : git.showFile(gg, sha, p)), scenes.map(f => f.path));
-    return buildGraph(inputs, godot);
+    const g = buildGraph(inputs, godot);
+    const map = snap.map.file ? git.showFile(gg, sha, MAP_FILE) : undefined;
+    const systems = map ? parseSystems(map, g.classes) : [];
+    return systems.length ? { ...g, systems } : g;
   }
 
   /** A snapshot already taken, if there is one on disk. */

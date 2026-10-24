@@ -23,11 +23,20 @@ speaks with one voice and never conflicts when branches merge.
   `- Checkout: src/api/ → src/orders/ → src/store/ — an order is placed and saved`.
   The Design view draws them on the map. Add a flow when work creates one, change it when work
   reroutes one; a handful of important flows, not every call.
+- Keep its `## Systems` section: groups of classes that work together inside a large area, one
+  per line, the classes in brackets and what the group does after a dash:
+  `- Foraging (FoodLeads, FoodLeadSenses, FoodLeadBudget) — finds food the herd can reach`.
+  The Design view's Systems lens groups classes by how they link and shows your names and lines
+  instead where you give them; name the groups people would talk about, not every class.
 - Commit ARCHITECTURE.md on its own (`git add ARCHITECTURE.md`, never `-A`), with a one-line
   message saying what changed in the design: "map: token-bucket limiter in src/limit/, used
   by the router". The human reads these lines as the design's history. When nothing changed
   in the design, don't commit.
-- Never change code or any other file.
+- Never change code or any other file, with one exception: a class whose purpose its name
+  doesn't make clear may get a one-line doc comment at its top (`## …` in GDScript, the
+  language's own form elsewhere). The Systems lens shows it on the class's card. Change
+  nothing else in the file, and commit these on their own ("docs: say what X and Y are for").
+  Leave a file alone while a teammate's branch is still changing it.
 - Between updates, end your turn: you're woken when more work lands or someone messages you.
   Don't call `done` until the lead says the goal is wrapping up; then check the map once more
   and call `done` with what changed in it.

@@ -23,6 +23,9 @@ and one section and know which files to open.
    - `## Flows`: the few main paths data or control takes through the areas, one per line,
      steps joined by arrows and named by the areas' paths, with what moves after a dash:
      `- Checkout: src/api/ → src/orders/ → src/store/ — an order is placed and saved`.
+   - `## Systems`, when an area holds many classes: the groups that work together, one per
+     line, the classes in brackets and what the group does after a dash:
+     `- Foraging (FoodLeads, FoodLeadSenses) — finds food the herd can reach`.
 4. If the code follows clear conventions (naming, layout, error handling, tests), write them
    down in CONVENTIONS.md, short and specific to this code. Skip it when there's nothing
    beyond general good practice.

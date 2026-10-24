@@ -426,6 +426,23 @@ Findings from the run:
   Checked with tests (3 new) and in headless Chrome on a throwaway daemon reading Primordia
   (99% of 5568 calls followed). Not yet in a real run. Later: other languages' readers,
   layer rules (`sim -/-> ui`) checked per commit, mechanics named in the map.
+- [x] **One Systems canvas you zoom by focus** (2026-10-24), from the user: the map was either
+      the high level or a mess of nodes once an area opened; they wanted to filter the noise
+      while still knowing it exists, stay on one screen, and see how a change plugs into the game.
+  - Look at classes, groups or areas: drawn in full (a class's functions as pins, a group or
+    area as a frame), one step out summed as cards with a pin per card they link to, the rest
+    as chips; autoloads used everywhere as rails. Split and fold cards, Back/Esc, ELK layout.
+  - Groups inside large areas: automatic (by how classes link), or named in ARCHITECTURE.md's
+    `## Systems` section; doc comments read into the graph and shown on cards.
+  - What the scope changed is the default focus, with the route from the engine to it; two
+    systems looked at replace Between; the trace is docked in the panel, synced with the canvas.
+  - The cartographer keeps `## Systems` and may add a one-line class doc comment.
+  - Follow-up (same day): cards resize from their corner (taller: more pins; wider: what each
+    pin links with); a card's menu (right-click or ⋯) says why it's there and names what can be
+    done; what was split, folded, hidden or drawn is listed above the canvas, each undoable.
+    A focus opens centred on what's looked at, at a zoom you can read.
+  Checked with tests (2 new) and in headless Chrome on Primordia (its last goal's commits).
+  Not yet in a real run.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search

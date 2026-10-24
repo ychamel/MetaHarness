@@ -569,6 +569,7 @@ export interface CodeClass {
   ext?: string;
   base?: string;
   main?: true;
+  doc?: string;
 }
 
 export interface CodeFn {
@@ -581,6 +582,7 @@ export interface CodeFn {
   static?: true;
   engine?: true;
   mut?: true;
+  doc?: string;
 }
 
 export interface CodeSignal {
@@ -618,4 +620,6 @@ export interface CodeGraph {
   edges: CodeEdge[];
   entries: string[];
   stats: { files: number; calls: number; resolved: number; guessed: number; unresolved: number; missed: { chain: string; n: number }[] };
+  /** Groups of classes the map's Systems section names. */
+  systems?: { name: string; classes: string[]; text: string }[];
 }

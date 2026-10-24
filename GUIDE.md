@@ -250,27 +250,61 @@ You review the result in your checkout like any other change, and push it yourse
         of what, and who reads or writes whose state. It reads GDScript for now, tests and
         add-ons left out; the toolbar says how many of the calls it could follow (a call on a
         variable with no declared type can't be, and the panel lists the ones to type).
-        - **Map** starts at the engine: it runs the main scene and the autoloads, and the rest
-          hangs below in the order things are made and called. Each card says when the engine
-          calls into it (every frame, on input, when it redraws). Double-click an area to open
-          it into its classes, a class to isolate it with only what it's linked to. Tick the
-          links to draw: **Calls**, **Signals**, **Creates**, **State**. Drag cards where you
-          like (kept per goal in your browser; **Reset layout** puts them back). **Click a
-          connection** to open it on its own: the classes on each side, an arrow per pair, and
-          in the panel every place in the code behind it with its file and line; click an
-          arrow to keep to that pair, a line to trace the function it's in. In **Between**,
-          clicking an arrow lists the same for that arrow.
-        - **Trace** follows one function (pick it from the search box, a class's functions, or
-          an entry point): **What it does** lists its calls, the objects it makes and the
-          signals it emits in the order its lines do them, a signal going on to its handlers,
-          each step opening into its own; **How it's reached** goes the other way. The panel
-          shows the shortest ways the engine gets there (like a debugger's stack), the state of
-          other classes it reads and writes, and its code, with each line that calls into the
-          project a link.
-        - **Between** puts two systems side by side (an area or a class each), with what joins
-          them: direct links, and the classes both touch, arrows running the way influence
-          does. When the ecosystem changes `Genome` and creatures read it, the ecosystem reaches
-          creatures through `Genome`, even though neither calls the other.
+        It's one canvas, laid out left to right the way control flows, with the panel on the
+        right for whatever you click.
+        - **Whole game:** every area as a card, the engine at the head. Each card's rows are
+          its pins: one per card it links to, with how many links go each way. Autoloads much
+          of the game uses (global state, audio, tables of constants) are **rails** down the
+          right side instead of lines from every card; a card notes how much it uses each.
+        - **Look at** something by double-clicking its card (or picking it in the search box,
+          or **Look at it** in the panel): it's drawn in full, what's one step from it as
+          cards, and everything else folds into **chips** along the bottom ("ui 17 · 148↔":
+          classes not drawn, and their links to what is). A class you look at shows its
+          functions as pins, and its lines leave from the function that makes the call or
+          emits the signal; when there are too many lines they go to the card, and hovering
+          or clicking a function draws its own. A group or area you look at becomes a
+          **frame** with what it holds inside; lines leaving the frame leave from its edge,
+          and each card inside says how many go out. Neighbours are summed as coarsely as
+          still tells them apart: a class beside it, another group of its area, another area.
+        - **Shift-click** (or **Add to what's looked at**) looks at several things at once.
+          With two, the panel shows where they meet: what runs straight between them, and
+          the classes both touch, by the way influence runs (when the ecosystem changes
+          `Genome` and creatures read it, the ecosystem reaches creatures through `Genome`).
+          Those classes are drawn on their own.
+        - **Right-click a card** (or its **⋯**) for its menu: the first line says why it's on
+          the canvas ("One step from Creature (5 links)"), then what you can do with it: look
+          at it, also look at it, split it into its groups or classes, fold it into what holds
+          it, hide it (it joins the chips), show it in the panel. What you split, fold, hide or
+          draw from the chips is listed in a strip above the canvas, each with **×** to undo
+          it, and **Undo all**. Click a chip to draw it (and anything hidden in it). **←** or
+          **Esc** goes back; **Whole game** clears what's looked at.
+        - **Drag a card's bottom-right corner** to resize it: taller shows more of its pins,
+          wider shows what each of them links with. Sizes are kept per goal in your browser
+          (**Back to its own size** in the menu). Drag cards where you like (kept per goal and
+          per what's looked at; **Reset layout** puts them back).
+        - **Groups:** an area with more than nine classes is split into groups of classes
+          that link to each other, named after the class most of them use ("Creature +6").
+          The cartographer can name them and say what each does in ARCHITECTURE.md's
+          `## Systems` section (`- Foraging (FoodLeads, FoodLeadSenses) — finds food the herd
+          can reach`), and a class's doc comment (`##` in GDScript) shows on its card.
+        - **What the scope changed** is looked at first when the scope changed any code: the
+          classes it changed (their groups or areas when there are many), each with its
+          changed functions and the ones joining it to the others. The chip at the top turns
+          it off. **Route from the engine** draws the shortest way the engine gets there,
+          through the cards, and spells it out above the canvas ("every physics tick:
+          World._physics_process → World.step → Creature.tick").
+        - **Click a function** (a pin, or in the panel) and the panel traces it: **What it
+          does** lists its calls, the objects it makes and the signals it emits in the order
+          its lines do them, a signal going on to its handlers, each step opening into its
+          own; **How it's reached** goes the other way. Hovering a step lights its card;
+          clicking one brings its class onto the canvas if it isn't there; double-clicking
+          traces from it. Its lines on the canvas are numbered in the order its code reaches
+          them. Below are the shortest ways the engine gets to it (like a debugger's stack),
+          the state of other classes it reads and writes, and its code, each line that calls
+          into the project a link. **Trace it wide** puts the trace in the canvas's place.
+        - **Click a line** for every place in the code behind it, by pair of classes; **Draw
+          it on its own** shows the classes on each side with an arrow per pair.
+        - Tick the links to draw: **Calls**, **Signals**, **Creates**, **State**.
         - **Changes in this scope** marks the links, functions and classes the scope added,
           edited or removed, and the panel lists them as sentences ("World.step calls
           FoodLeads.tick").

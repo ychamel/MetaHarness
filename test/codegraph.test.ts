@@ -8,7 +8,8 @@ import { DesignTracker } from '../src/design.ts';
 import * as gitx from '../src/git.ts';
 import { git } from '../src/git.ts';
 import { loadLanguages, Outliner } from '../src/languages.ts';
-import { between, classLinks, indexGraph, stacksTo, stepsDown } from '../ui/src/codeData.ts';
+import { between, canvasOf, classLinks, collapseWires, groupClasses, indexGraph, makeTree, railClasses, stacksTo, stepsDown, type LinkKind } from '../ui/src/codeData.ts';
+import { parseSystems } from '../src/design.ts';
 import { makeRepo } from './helpers.ts';
 
 /** A small game: a main scene, an event bus, a world that ticks creatures and plants, an ecosystem that evolves genomes. */
@@ -121,4 +122,85 @@ test("a scene's root script, and the code graph kept per commit by the tracker",
   const snap = await tracker.get('g', gg, repo, git(repo, 'rev-parse', 'HEAD'));
   assert.equal(g.classes.find(c => c.id === 'World')?.area, snap.files.find(f => f.path === 'game/scripts/sim/world.gd')?.area, 'areas from the snapshot');
   assert.deepEqual(await tracker.code('g', gg, repo, git(repo, 'rev-parse', 'HEAD')), g, 'kept, and read back');
+});
+
+test('doc comments, and the map naming groups of classes', async () => {
+  const g = await graphOf({
+    ...GAME,
+    'scripts/sim/creature.gd': '## One creature: moves, eats, dies.\nclass_name Creature\nextends Node2D\n## Whether it still lives.\nvar alive := true\n\n## Runs each tick.\nfunc tick(delta: float) -> void:\n\tpass\n',
+    'scripts/core/genome.gd': 'class_name Genome\nextends RefCounted\n## Heritable traits.\n\n## The stats.\nfunc stats() -> Dictionary:\n\treturn {}\n',
+  });
+  const cls = new Map(g.classes.map(c => [c.id, c]));
+  assert.equal(cls.get('Creature')?.doc, 'One creature: moves, eats, dies.', 'before class_name, the member doc kept apart');
+  assert.equal(cls.get('Genome')?.doc, 'Heritable traits.', "after extends, not the first function's");
+  assert.equal(g.fns.find(f => f.id === 'Creature.tick')?.doc, 'Runs each tick.');
+  assert.equal(g.fns.find(f => f.id === 'Genome.stats')?.doc, 'The stats.');
+  const map = '# Game\n\n## Systems\n\n- **Life** (`Creature`, world.gd) — creatures living in the world\n- Nothing (Missing) — no such class\n\n## Flows\n- A (Genome) — not a system\n';
+  assert.deepEqual(parseSystems(map, g.classes), [{ name: 'Life', classes: ['Creature', 'World'], text: 'creatures living in the world' }]);
+});
+
+test('the canvas: groups in a large area, rails, and a focus with its neighbours and chips', () => {
+  // An area of 12 classes in two tight clusters joined by one call, an autoload most of them use, another area.
+  const cls: { id: string; area: string; kind?: 'autoload' }[] = [];
+  const fns: { id: string; cls: string }[] = [];
+  const edges: { f: string; t: string; k: 'call'; l: number }[] = [];
+  const add = (id: string, area: string, kind?: 'autoload') => (cls.push({ id, area, ...(kind ? { kind } : {}) }), fns.push({ id: `${id}.f`, cls: id }));
+  for (let i = 0; i < 6; i++) add(`A${i}`, 'sim', undefined), add(`B${i}`, 'sim', undefined);
+  add('Hud', 'ui');
+  add('State', 'auto', 'autoload');
+  const call = (a: string, b: string) => edges.push({ f: `${a}.f`, t: `${b}.f`, k: 'call', l: 1 });
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) if (i !== j) (call(`A${i}`, `A${j}`), call(`B${i}`, `B${j}`));
+  call('A0', 'B0');
+  call('Hud', 'A1');
+  for (const c of cls) if (c.id !== 'State') call(c.id, 'State');
+  const g = {
+    version: 2, classes: cls.map(c => ({ id: c.id, name: c.id, file: `${c.area}/${c.id}.gd`, area: c.area, line: 1, end: 9, kind: c.kind ?? 'class' })),
+    fns: fns.map(f => ({ ...f, name: 'f', file: '', line: 1, end: 2 })), signals: [], fields: [], edges, entries: [],
+    stats: { files: 0, calls: 0, resolved: 0, guessed: 0, unresolved: 0, missed: [] },
+  };
+  const ix = indexGraph(g as never);
+  const links = classLinks(ix);
+  const groups = groupClasses(ix, links).get('sim')!;
+  assert.deepEqual(groups.map(x => x.classes.join()).sort(), ['A0,A1,A2,A3,A4,A5', 'B0,B1,B2,B3,B4,B5'], 'the clusters, apart');
+  assert.ok(!groupClasses(ix, links).has('ui'), 'a small area keeps its classes');
+  const rails = railClasses(ix, links);
+  assert.deepEqual([...rails], ['State']);
+  const t = makeTree(groupClasses(ix, links));
+  const kinds = new Set<LinkKind>(['call']);
+  const whole = canvasOf(ix, t, links, rails, { focus: [], expand: [], fold: [], show: [], hide: [], kinds });
+  assert.deepEqual(whole.units.map(u => u.id).sort(), ['area:sim', 'area:ui'], 'with no focus, areas; the rail apart');
+  assert.deepEqual(whole.rails.map(r => r.id), ['State']);
+  assert.equal(whole.units.find(u => u.id === 'area:sim')!.taps.get('State')?.out, 12, 'a tap on the rail instead of a line');
+  // Looking at A2: the classes beside it in its group, the other group, the area linking in; nothing else.
+  const a2 = canvasOf(ix, t, links, rails, { focus: ['A2'], expand: [], fold: [], show: [], hide: [], kinds });
+  const ids = new Set(a2.units.map(u => u.id));
+  assert.equal(a2.units.find(u => u.id === 'A2')?.role, 'focus');
+  assert.ok(ids.has('A0') && ids.has('A5'), 'its group\'s classes, one by one');
+  assert.ok(!ids.has('B0') && !ids.has('area:ui') && !ids.has('Hud'), 'nothing two steps away');
+  assert.deepEqual(a2.chips.map(c => c.area).sort(), ['sim', 'ui'], 'the rest as chips');
+  assert.ok(a2.wires.every(w => w.from === 'A2' || w.to === 'A2'), 'lines touch the focus');
+  assert.ok(a2.wires.some(w => w.from === 'A2' && w.fromPin === 'A2.f'), "a focus card's pins are its functions");
+  // Looking at the A group: a frame of its classes; lines out of it leave from its edge.
+  const ga = groups.find(x => x.classes.includes('A0'))!.id;
+  const fa = canvasOf(ix, t, links, rails, { focus: [ga], expand: [], fold: [], show: [], hide: [], kinds });
+  assert.equal(fa.units.find(u => u.id === ga)?.role, 'frame');
+  assert.equal(fa.units.find(u => u.id === 'A0')?.parent, ga);
+  const out = fa.wires.filter(w => w.from === ga || w.to === ga);
+  assert.ok(out.some(w => w.from === ga && w.to.startsWith('group:')) && out.some(w => w.to === ga && w.from === 'area:ui'), JSON.stringify(out.map(w => [w.from, w.to])));
+  assert.ok(fa.units.find(u => u.id === 'A0')!.outside > 0, 'the card inside counts what leaves');
+  // Split the other group, fold it back, put an area away as a chip.
+  const gb = groups.find(x => x.classes.includes('B0'))!.id;
+  const split = canvasOf(ix, t, links, rails, { focus: ['A0'], expand: [gb], fold: [], show: [], hide: [], kinds });
+  assert.ok(split.units.some(u => u.id === 'B0'), 'split into its classes');
+  const folded = canvasOf(ix, t, links, rails, { focus: ['A0'], expand: [], fold: ['area:sim'], show: [], hide: [], kinds });
+  assert.ok(folded.units.some(u => u.id === 'area:sim') && !folded.units.some(u => u.id === 'A1'), 'its group folded into the area');
+  const hid = canvasOf(ix, t, links, rails, { focus: ['A1'], expand: [], fold: [], show: [], hide: ['area:ui'], kinds });
+  assert.ok(!hid.units.some(u => u.id === 'area:ui') && hid.chips.some(c => c.area === 'ui'));
+  const hidGroup = canvasOf(ix, t, links, rails, { focus: ['A0'], expand: [], fold: [], show: [], hide: [gb], kinds });
+  assert.ok(!hidGroup.units.some(u => u.id === gb) && hidGroup.where.get('B0') === 'chip:sim', 'a group put away joins its area\'s chip');
+  const back = canvasOf(ix, t, links, rails, { focus: ['A0'], expand: [], fold: [], show: ['area:sim'], hide: ['area:sim'], kinds });
+  assert.ok(back.units.some(u => u.id === gb), 'drawn again from the chip');
+  // Too many lines to follow: they go to the card, but for the function kept.
+  const merged = collapseWires(a2.wires, new Set(['A2']), () => false);
+  assert.ok(merged.every(w => w.fromPin === '*' || w.from !== 'A2'));
 });

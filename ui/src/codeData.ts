@@ -408,3 +408,418 @@ export function searchCode(ix: CodeIndex, q: string, max = 30): { id: string; la
   }
   return hits.sort((a, b) => a.score - b.score).slice(0, max);
 }
+
+/* ---------------- groups: the level between an area and its classes ---------------- */
+
+/** An area with more classes than this splits into groups. */
+export const GROUP_OVER = 9;
+const GROUP_MAX = 9;
+
+export interface Group {
+  /** `group:<area>|<key>`. */
+  id: string;
+  area: string;
+  name: string;
+  /** What it does: the map's Systems line, else its main class's doc comment. */
+  text: string;
+  classes: string[];
+  /** The class most of the others link to. */
+  hub?: string;
+  /** Named in the map's Systems section. */
+  declared?: true;
+}
+
+const firstLine = (s: string | undefined) => (s ?? '').split('\n')[0].trim();
+
+/**
+ * Groups of classes inside each large area: the map's Systems section first, the rest clustered
+ * by how much they link to each other (greedy modularity, capped at GROUP_MAX classes a group).
+ * Classes left on their own join the group they link to most, or a group of loose ones.
+ */
+export function groupClasses(ix: CodeIndex, links: Link[]): Map<string, Group[]> {
+  const out = new Map<string, Group[]>();
+  const w = new Map<string, Map<string, number>>();
+  const addW = (a: string, b: string, n: number) => {
+    if (!w.has(a)) w.set(a, new Map());
+    w.get(a)!.set(b, (w.get(a)!.get(b) ?? 0) + n);
+  };
+  for (const l of links) (addW(l.from, l.to, l.edges.length), addW(l.to, l.from, l.edges.length));
+  const wt = (a: string, b: string) => w.get(a)?.get(b) ?? 0;
+  for (const [area, cs] of ix.classesOf) {
+    if (cs.length <= GROUP_OVER) continue;
+    const groups: Group[] = [];
+    const left = new Set(cs.map(c => c.id));
+    for (const s of ix.g.systems ?? []) {
+      const mine = s.classes.filter(c => left.has(c));
+      if (!mine.length) continue;
+      for (const c of mine) left.delete(c);
+      groups.push({ id: `group:${area}|${s.name}`, area, name: s.name, text: s.text, classes: mine, declared: true });
+    }
+    // Greedy modularity over what's left: merge the pair of clusters that gains most, while it gains.
+    const pool = [...left].sort();
+    const deg = new Map(pool.map(c => [c, pool.reduce((s, d) => s + (d === c ? 0 : wt(c, d)), 0)]));
+    const m2 = [...deg.values()].reduce((s, d) => s + d, 0) || 1;
+    let clusters = pool.map(c => ({ cs: [c], deg: deg.get(c)! }));
+    for (;;) {
+      let best: [number, number, number] | undefined;
+      for (let i = 0; i < clusters.length; i++) {
+        for (let j = i + 1; j < clusters.length; j++) {
+          if (clusters[i].cs.length + clusters[j].cs.length > GROUP_MAX) continue;
+          let e = 0;
+          for (const a of clusters[i].cs) for (const b of clusters[j].cs) e += wt(a, b);
+          if (!e) continue;
+          const gain = e / m2 - (clusters[i].deg * clusters[j].deg) / (m2 * m2) * 2;
+          if (gain > 0 && (!best || gain > best[2])) best = [i, j, gain];
+        }
+      }
+      if (!best) break;
+      const [i, j] = best;
+      clusters[i] = { cs: [...clusters[i].cs, ...clusters[j].cs], deg: clusters[i].deg + clusters[j].deg };
+      clusters.splice(j, 1);
+    }
+    // A class on its own joins the group it links to most; with no links it's loose.
+    const loose: string[] = [];
+    const big = () => [...clusters.filter(c => c.cs.length > 1).map(c => c.cs), ...groups.map(g => g.classes)];
+    for (const one of clusters.filter(c => c.cs.length === 1).map(c => c.cs[0])) {
+      let into: string[] | undefined;
+      let most = 0;
+      for (const g of big()) {
+        if (g.length >= GROUP_MAX + 2) continue;
+        const n = g.reduce((s, c) => s + wt(one, c), 0);
+        if (n > most) (most = n), (into = g);
+      }
+      if (into) into.push(one);
+      else loose.push(one);
+    }
+    clusters = clusters.filter(c => c.cs.length > 1);
+    for (const c of clusters) {
+      const inner = (x: string) => c.cs.reduce((s, y) => s + wt(x, y), 0);
+      const hub = [...c.cs].sort((a, b) => inner(b) - inner(a) || (deg.get(b) ?? 0) - (deg.get(a) ?? 0) || a.localeCompare(b))[0];
+      const name = ix.cls.get(hub)?.name ?? hub;
+      groups.push({ id: `group:${area}|${hub}`, area, name: c.cs.length > 1 ? `${name} +${c.cs.length - 1}` : name, text: firstLine(ix.cls.get(hub)?.doc), classes: c.cs, hub });
+    }
+    if (loose.length) groups.push({ id: `group:${area}|(loose)`, area, name: loose.length === 1 ? ix.cls.get(loose[0])?.name ?? loose[0] : 'On their own', text: loose.length === 1 ? firstLine(ix.cls.get(loose[0])?.doc) : 'Classes that link to nothing else here', classes: loose });
+    for (const g of groups) g.classes.sort((a, b) => (ix.cls.get(a)?.name ?? a).localeCompare(ix.cls.get(b)?.name ?? b));
+    out.set(area, groups.sort((a, b) => b.classes.length - a.classes.length || a.name.localeCompare(b.name)));
+  }
+  return out;
+}
+
+/**
+ * Autoloads that much of the game uses: global state, a bus, a table of constants, audio. Drawn
+ * as rails beside the map, with a tap on each card that uses one, instead of a line from every
+ * card. Classes of the game's own (a Genome everything reads) stay cards: they're its systems.
+ */
+export function railClasses(ix: CodeIndex, links: Link[]): Set<string> {
+  const ins = new Map<string, Set<string>>();
+  for (const l of links) {
+    if (!ins.has(l.to)) ins.set(l.to, new Set());
+    ins.get(l.to)!.add(l.from);
+  }
+  const min = Math.max(6, Math.ceil(ix.g.classes.length * 0.1));
+  return new Set(ix.g.classes.filter(c => c.kind === 'autoload' && (ins.get(c.id)?.size ?? 0) >= min).map(c => c.id));
+}
+
+/** Lines into a focus card summed to the card itself, except those of `keep` (a function looked at), when there are too many to follow. */
+export function collapseWires(ws: Wire[], focusCards: Set<string>, shown: (unit: string, pin: string) => boolean, keep?: string): Wire[] {
+  const out = new Map<string, Wire>();
+  for (const w of ws) {
+    const mine = keep && ((focusCards.has(w.from) && w.fromPin === keep) || (focusCards.has(w.to) && w.toPin === keep));
+    const fromPin = focusCards.has(w.from) && !mine && !shown(w.from, w.fromPin) ? '*' : w.fromPin;
+    const toPin = focusCards.has(w.to) && !mine && !shown(w.to, w.toPin) ? '*' : w.toPin;
+    const key = `${w.kind}|${w.from}|${fromPin}|${w.to}|${toPin}`;
+    const x = out.get(key);
+    if (!x) out.set(key, { ...w, key, fromPin, toPin, edges: [...w.edges], names: [...w.names], links: [...w.links] });
+    else {
+      x.edges.push(...w.edges);
+      for (const n of w.names) if (!x.names.includes(n)) x.names.push(n);
+      for (const l of w.links) if (!x.links.includes(l)) x.links.push(l);
+    }
+  }
+  return [...out.values()];
+}
+
+/* ---------------- the canvas: a focus, its neighbours, and chips for the rest ---------------- */
+
+export interface Tree {
+  groups: Map<string, Group[]>;
+  group: Map<string, Group>;
+  /** Each class's group, in areas that have groups. */
+  groupOf: Map<string, string>;
+}
+
+export function makeTree(groups: Map<string, Group[]>): Tree {
+  const group = new Map<string, Group>();
+  const groupOf = new Map<string, string>();
+  for (const gs of groups.values()) for (const g of gs) {
+    group.set(g.id, g);
+    for (const c of g.classes) groupOf.set(c, g.id);
+  }
+  return { groups, group, groupOf };
+}
+
+export const isAreaId = (id: string) => id.startsWith('area:');
+export const isGroupId = (id: string) => id.startsWith('group:');
+
+/** A class's place: its area, its group if the area has groups, itself. */
+export function pathOf(ix: CodeIndex, t: Tree, cls: string): string[] {
+  const c = ix.cls.get(cls);
+  if (!c) return [cls];
+  const g = t.groupOf.get(cls);
+  return g ? [`area:${c.area}`, g, cls] : [`area:${c.area}`, cls];
+}
+
+/** What a unit holds: an area its groups (or classes), a group its classes. */
+export function childrenOf(ix: CodeIndex, t: Tree, id: string): string[] {
+  if (isAreaId(id)) {
+    const a = id.slice(5);
+    return t.groups.has(a) ? t.groups.get(a)!.map(g => g.id) : (ix.classesOf.get(a) ?? []).map(c => c.id);
+  }
+  if (isGroupId(id)) return t.group.get(id)?.classes ?? [];
+  return [];
+}
+
+export function classesIn(ix: CodeIndex, t: Tree, id: string): string[] {
+  if (isAreaId(id)) return (ix.classesOf.get(id.slice(5)) ?? []).map(c => c.id);
+  if (isGroupId(id)) return t.group.get(id)?.classes ?? [];
+  return ix.cls.has(id) ? [id] : [];
+}
+
+export const parentOf = (ix: CodeIndex, t: Tree, id: string): string | undefined => {
+  if (isAreaId(id)) return undefined;
+  if (isGroupId(id)) return `area:${t.group.get(id)?.area ?? ''}`;
+  const p = pathOf(ix, t, id);
+  return p.length > 1 ? p[p.length - 2] : undefined;
+};
+
+export interface CanvasInput {
+  /** What's looked at: classes, groups or areas. Empty: the whole game, area by area. */
+  focus: string[];
+  /** Units split into what they hold. */
+  expand: string[];
+  /** Units kept whole, even where one of their classes would show on its own. */
+  fold: string[];
+  /** Areas drawn even though nothing links them to the focus, and ones put away as chips. */
+  show: string[];
+  hide: string[];
+  kinds: Set<LinkKind>;
+  /** Classes to draw on their own (where two systems in focus meet). */
+  single?: Set<string>;
+}
+
+export interface Unit {
+  id: string;
+  /** focus: a class looked at, drawn with its functions; frame: a group or area looked at, its insides drawn in it; near: one step from the focus (or anything, with no focus). */
+  role: 'focus' | 'frame' | 'near';
+  /** The frame it's drawn in. */
+  parent?: string;
+  /** The classes it stands for here. */
+  classes: string[];
+  /** Links from its classes to classes that aren't drawn. */
+  beyond: number;
+  /** In a frame: links from its classes to what's outside the frame (drawn from the frame's edge). */
+  outside: number;
+  /** Its taps on the rails: rail class → links each way. */
+  taps: Map<string, { in: number; out: number }>;
+}
+
+/** A line on the canvas: from a pin of one unit to a pin of another. A focus card's pins are its functions ('*' the class itself); another unit's pin is the unit at the other end. */
+export interface Wire {
+  key: string;
+  from: string;
+  fromPin: string;
+  to: string;
+  toPin: string;
+  kind: LinkKind;
+  edges: CodeEdge[];
+  names: string[];
+  links: Link[];
+}
+
+export interface Canvas {
+  units: Unit[];
+  wires: Wire[];
+  /** Areas with classes not drawn: how many, and how many links reach them from what is. */
+  chips: { area: string; hidden: number; links: number }[];
+  rails: { id: string; taps: number }[];
+  /** Where each class is: its unit, `chip:<area>`, or `rail:<class>`. */
+  where: Map<string, string>;
+}
+
+/** Each function's place in a wire: who does it on the from side, who it reaches on the to side. */
+function wireEnds(ix: CodeIndex, l: Link): { a: string; b: string; edges: CodeEdge[]; name: string }[] {
+  if (l.kind === 'signal') {
+    const out: { a: string; b: string; edges: CodeEdge[]; name: string }[] = [];
+    for (let i = 0; i + 1 < l.edges.length; i += 2) out.push({ a: l.edges[i].f, b: l.edges[i + 1].t, edges: [l.edges[i], l.edges[i + 1]], name: ix.sig.get(l.edges[i].t)?.name ?? l.edges[i].t });
+    return out;
+  }
+  return l.edges.map(e => ({ a: e.f, b: l.kind === 'call' ? e.t : '*', edges: [e], name: l.kind === 'call' ? ix.fn.get(e.t)?.name ?? e.t : l.kind === 'new' ? 'new' : ix.field.get(e.t)?.name ?? e.t }));
+}
+
+/**
+ * What the canvas draws for a focus: the focus in full (a class with its functions, a group or
+ * area as a frame with what it holds), what's one step from it summed at the coarsest level that
+ * still tells it apart from the focus (a class beside it, a group of its area, another area), and
+ * chips for the rest. With no focus, every area. Rails stand in for the classes everything uses.
+ */
+export function canvasOf(ix: CodeIndex, t: Tree, links: Link[], rails: Set<string>, inp: CanvasInput): Canvas {
+  const focus = inp.focus.filter(f => classesIn(ix, t, f).length);
+  const covered = new Map<string, string>();
+  for (const f of focus) for (const c of classesIn(ix, t, f)) if (!covered.has(c)) covered.set(c, f);
+  const isRail = (c: string) => rails.has(c) && !covered.has(c);
+  const live = links.filter(l => inp.kinds.has(l.kind));
+  const near = new Set<string>();
+  for (const l of live) {
+    if (covered.has(l.from) && !covered.has(l.to)) near.add(l.to);
+    if (covered.has(l.to) && !covered.has(l.from)) near.add(l.from);
+  }
+  const expand = new Set(inp.expand);
+  const fold = new Set(inp.fold);
+  const show = new Set(inp.show);
+  const hide = new Set(inp.hide);
+  // Down the class's path as far as it's opened, back up to the highest fold (not above `min`, a frame's insides).
+  const refine = (path: string[], i: number, min = 0) => {
+    while (i < path.length - 1 && expand.has(path[i])) i++;
+    const folded = path.slice(min, i + 1).findIndex(p => fold.has(p));
+    return path[folded >= 0 ? min + folded : i];
+  };
+  const where = new Map<string, string>();
+  const units = new Map<string, Unit>();
+  const unit = (id: string, role: Unit['role'], parent?: string) => {
+    let u = units.get(id);
+    if (!u) units.set(id, (u = { id, role, ...(parent ? { parent } : {}), classes: [], beyond: 0, outside: 0, taps: new Map() }));
+    return u;
+  };
+  for (const f of focus) if (!ix.cls.has(f)) unit(f, 'frame');
+  for (const c of ix.g.classes) {
+    const path = pathOf(ix, t, c.id);
+    const f = covered.get(c.id);
+    if (f !== undefined) {
+      if (ix.cls.has(f)) unit(f, 'focus').classes.push(c.id), where.set(c.id, f);
+      else {
+        // Inside a frame: what the frame holds, split further where opened.
+        const id = refine(path, path.indexOf(f) + 1, path.indexOf(f) + 1);
+        unit(id, 'near', f).classes.push(c.id);
+        where.set(c.id, id);
+      }
+      continue;
+    }
+    if (rails.has(c.id)) {
+      where.set(c.id, `rail:${c.id}`);
+      continue;
+    }
+    let id: string | undefined;
+    if (!focus.length) id = refine(path, 0);
+    else if (near.has(c.id) || inp.single?.has(c.id)) {
+      // The coarsest level that tells it apart from every focus, opened or folded as asked; with much in focus, its area.
+      let depth = 0;
+      for (const fo of focus.length > 5 ? [] : focus) {
+        const fp = isAreaId(fo) ? [fo] : isGroupId(fo) ? [`area:${t.group.get(fo)!.area}`, fo] : pathOf(ix, t, fo);
+        let i = 0;
+        while (i < path.length - 1 && i < fp.length && path[i] === fp[i]) i++;
+        depth = Math.max(depth, i);
+      }
+      id = inp.single?.has(c.id) ? c.id : refine(path, depth);
+    } else if (show.has(path[0])) id = refine(path, 0);
+    // Hidden: the card it would be on, or something holding it, was put away.
+    if (id && !inp.single?.has(c.id) && path.slice(0, path.indexOf(id) + 1).some(x => hide.has(x) && !(x === path[0] && show.has(x)))) id = undefined;
+    if (!id) {
+      where.set(c.id, `chip:${c.area}`);
+      continue;
+    }
+    unit(id, 'near').classes.push(c.id);
+    where.set(c.id, id);
+  }
+  // Lines: between pins; a focus card's pins are its functions.
+  const wires = new Map<string, Wire>();
+  const inFocus = (u: Unit) => u.role !== 'near' || !!u.parent;
+  for (const l of live) {
+    const a = where.get(l.from);
+    const b = where.get(l.to);
+    if (!a || !b || a === b) continue;
+    let ua = units.get(a);
+    let ub = units.get(b);
+    if (ua && ub) {
+      // A line leaving a frame leaves from its edge, as a collapsed graph's pins do; the card inside counts it.
+      if (ua.parent !== ub.parent) {
+        const n = l.edges.length;
+        if (ua.parent) (ua.outside += n), (ua = units.get(ua.parent)!);
+        if (ub.parent) (ub.outside += n), (ub = units.get(ub.parent)!);
+        if (ua === ub) continue;
+      }
+      // With a focus, a line touches it (a focus card, or what a frame holds): what neighbours share isn't drawn.
+      if (focus.length && !inFocus(ua) && !inFocus(ub)) continue;
+      for (const end of wireEnds(ix, l)) {
+        const fromPin = ua.role === 'focus' ? end.a : ub.id;
+        const toPin = ub.role === 'focus' ? end.b : ua.id;
+        const key = `${l.kind}|${ua.id}|${fromPin}|${ub.id}|${toPin}`;
+        let w = wires.get(key);
+        if (!w) wires.set(key, (w = { key, from: ua.id, fromPin, to: ub.id, toPin, kind: l.kind, edges: [], names: [], links: [] }));
+        w.edges.push(...end.edges);
+        if (!w.names.includes(end.name)) w.names.push(end.name);
+        if (!w.links.includes(l)) w.links.push(l);
+      }
+      continue;
+    }
+    const n = l.edges.length;
+    const tap = (u: Unit | undefined, rail: string, dir: 'in' | 'out') => {
+      if (!u) return;
+      const x = u.taps.get(rail) ?? { in: 0, out: 0 };
+      x[dir] += n;
+      u.taps.set(rail, x);
+    };
+    if (b.startsWith('rail:')) tap(ua, l.to, 'out');
+    else if (a.startsWith('rail:')) tap(ub, l.from, 'in');
+    else if (ua && b.startsWith('chip:')) ua.beyond += n;
+    else if (ub && a.startsWith('chip:')) ub.beyond += n;
+  }
+  const chips = new Map<string, { area: string; hidden: number; links: number }>();
+  for (const [c, w] of where) {
+    if (!w.startsWith('chip:')) continue;
+    const area = w.slice(5);
+    const x = chips.get(area) ?? { area, hidden: 0, links: 0 };
+    x.hidden++;
+    chips.set(area, x);
+  }
+  for (const l of live) {
+    const a = where.get(l.from);
+    const b = where.get(l.to);
+    if (a?.startsWith('chip:') && b && units.has(b)) chips.get(a.slice(5))!.links += l.edges.length;
+    else if (b?.startsWith('chip:') && a && units.has(a)) chips.get(b.slice(5))!.links += l.edges.length;
+  }
+  const railTaps = new Map<string, number>();
+  for (const u of units.values()) for (const [r, x] of u.taps) railTaps.set(r, (railTaps.get(r) ?? 0) + x.in + x.out);
+  return {
+    units: [...units.values()],
+    wires: [...wires.values()],
+    chips: [...chips.values()].sort((x, y) => y.links - x.links || x.area.localeCompare(y.area)),
+    rails: [...rails].filter(r => !covered.has(r)).map(id => ({ id, taps: railTaps.get(id) ?? 0 })).sort((x, y) => y.taps - x.taps),
+    where,
+  };
+}
+
+/** What a scope changed, as a focus: its classes, or their groups or areas when there are many. */
+export function changeFocusOf(ix: CodeIndex, t: Tree, chg: CodeChange, max = 12): string[] {
+  const cls = [...chg.touched].filter(c => ix.cls.has(c)).sort();
+  if (cls.length <= max) return cls;
+  const groups = [...new Set(cls.map(c => t.groupOf.get(c) ?? c))];
+  if (groups.length <= max) return groups;
+  return [...new Set(cls.map(c => `area:${ix.cls.get(c)!.area}`))];
+}
+
+/** The shortest way from an engine callback to what's looked at: to a function the scope changed if there is one, else one reached from outside. */
+export function routeTo(ix: CodeIndex, t: Tree, focus: string[], chg?: CodeChange): string[] {
+  const cls = new Set(focus.flatMap(f => classesIn(ix, t, f)).slice(0, 60));
+  if (!cls.size) return [];
+  const fns = [...cls].flatMap(c => ix.fnsOf.get(c) ?? []);
+  const changed = fns.filter(f => chg?.edited.has(f.id) || chg?.newFns.has(f.id));
+  const outside = (id: string) => (ix.into.get(id) ?? []).filter(e => (e.k === 'call' && !cls.has(ix.fn.get(e.f)?.cls ?? '')) || e.k === 'listen').length;
+  const reached = fns.filter(f => outside(f.id) > 0).sort((a, b) => outside(b.id) - outside(a.id));
+  const tries = (changed.length ? changed : reached.length ? reached : fns.filter(f => f.engine)).slice(0, 6);
+  let best: string[] = [];
+  for (const f of tries) {
+    const s = stacksTo(ix, f.id, 1)[0];
+    if (s && (!best.length || s.frames.length < best.length)) best = s.frames;
+  }
+  return best;
+}
