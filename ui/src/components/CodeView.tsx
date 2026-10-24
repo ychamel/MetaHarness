@@ -1,32 +1,53 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api.ts';
-import type { DiffFile } from '../types.ts';
+import type { DiffFile, Highlights } from '../types.ts';
 import { marksOf } from '../designData.ts';
 
-const sources = new Map<string, Promise<string>>();
+type Source = { text: string; highlights?: Highlights };
+const sources = new Map<string, Promise<Source>>();
 
-/** A file's text at a revision, fetched once: undefined while it's read, null when it can't be. */
-export function useSource(goal: string, rev: string | undefined, path: string | undefined): string | undefined | null {
-  const [t, setT] = useState<{ k: string; text: string | null }>();
+/** A file's text at a revision, coloured by its language pack when it has one; fetched once: undefined while it's read, null when it can't be. */
+export function useSource(goal: string, rev: string | undefined, path: string | undefined): Source | undefined | null {
+  const [t, setT] = useState<{ k: string; src: Source | null }>();
   const k = `${goal}\n${rev}\n${path}`;
   useEffect(() => {
     if (!rev || !path) return;
     let alive = true;
     let p = sources.get(k);
     if (!p) {
-      p = api.designSource(goal, rev, path).then(r => r.text);
+      p = api.designSource(goal, rev, path).then(r => ({ text: r.text, ...(r.highlights ? { highlights: r.highlights } : {}) }));
       p.catch(() => sources.delete(k));
       sources.set(k, p);
     }
     p.then(
-      text => alive && setT({ k, text }),
-      () => alive && setT({ k, text: null }),
+      src => alive && setT({ k, src }),
+      () => alive && setT({ k, src: null }),
     );
     return () => {
       alive = false;
     };
   }, [goal, rev, path, k]);
-  return t?.k === k ? t.text : undefined;
+  return t?.k === k ? t.src : undefined;
+}
+
+/** A line's text in its colours: each span a `tk-<kind>`, the rest plain. */
+function coloured(line: string, spans: number[] | undefined, kinds: string[]): ReactNode {
+  if (!line) return ' ';
+  if (!spans?.length) return line;
+  const out: ReactNode[] = [];
+  let at = 0;
+  for (let i = 0; i < spans.length; i += 3) {
+    const [s, e, k] = [spans[i], spans[i + 1], spans[i + 2]];
+    if (s > at) out.push(line.slice(at, s));
+    out.push(
+      <span key={i} className={`tk-${kinds[k]}`}>
+        {line.slice(s, e)}
+      </span>,
+    );
+    at = e;
+  }
+  if (at < line.length) out.push(line.slice(at));
+  return out;
 }
 
 const diffs = new Map<string, Promise<DiffFile | undefined>>();
@@ -72,7 +93,8 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
   lineClass?: (n: number) => string | undefined;
   extra?: (n: number) => ReactNode;
 }) {
-  const text = useSource(goal, rev, path);
+  const src = useSource(goal, rev, path);
+  const hl = src?.highlights;
   const diff = useFileDiff(goal, range?.from, range?.to, path, !!range && !gone);
   const marks = useMemo(() => (diff && !diff.binary ? marksOf(diff.patch) : undefined), [diff]);
   const box = useRef<HTMLPreElement>(null);
@@ -85,9 +107,9 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
     const first = el.querySelector<HTMLElement>('.code-line.add, .code-line.chg, .code-gap');
     if (first) el.scrollTop = Math.max(0, first.offsetTop - 48);
   });
-  if (text === undefined) return <div className="muted small">Reading the code…</div>;
-  if (text === null) return <div className="muted small">Couldn't read {path}{rev ? ` at ${rev.slice(0, 7)}` : ''}.</div>;
-  const all = text.split('\n');
+  if (src === undefined) return <div className="muted small">Reading the code…</div>;
+  if (src === null) return <div className="muted small">Couldn't read {path}{rev ? ` at ${rev.slice(0, 7)}` : ''}.</div>;
+  const all = src.text.split('\n');
   if (all.at(-1) === '') all.pop();
   const a = Math.max(1, lines?.[0] ?? 1);
   const z = Math.min(all.length, lines?.[1] ?? all.length, a + 3000);
@@ -143,7 +165,7 @@ export function MarkedCode({ goal, rev, path, range, lines, gone, label, lineCla
             g && gap(n, g),
             <div key={n} className={['code-line', gone ? 'del' : m?.kind, lineClass?.(n)].filter(Boolean).join(' ')} tabIndex={m?.kind === 'chg' ? 0 : undefined}>
               <span className="code-n">{n}</span>
-              <span className="code-t">{all[n - 1] || ' '}</span>
+              <span className="code-t">{coloured(all[n - 1], hl?.lines[n - 1], hl?.kinds ?? [])}</span>
               {extra?.(n)}
               {m?.kind === 'chg' && (
                 <span className="code-was" role="tooltip">

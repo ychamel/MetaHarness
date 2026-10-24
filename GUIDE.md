@@ -288,8 +288,8 @@ You review the result in your checkout like any other change, and push it yourse
         first, then goes back.
         - **Code with its edits marked:** a class's panel shows its code (its whole file; an
           inner class, its own lines), and a function's its own lines, as they are, with the
-          edits marked on them: green lines added, yellow lines changed (hover one for what it
-          was), and a red line where lines were removed (hover it for them). The code opens
+          edits marked on them (and coloured by its language pack): green lines added, yellow
+          lines changed (hover one for what it was), and a red line where lines were removed (hover it for them). The code opens
           scrolled to the first edit, and the head says how many of each. The edits are the kept
           commit's when it touched that code (the code shown as that commit left it), else the
           scope's. A group's or area's panel lists its changed files, each opening to its code
@@ -605,7 +605,10 @@ restarting the daemon. The pages write the same files described below.
   anywhere, like GDScript's `class_name`), `suffix` (any file whose path ends the same way).
   Files no pack reads still show in their area, sized but without definitions. A pack with
   `code: gdscript` also feeds the Systems lens (calls, signals, objects made, state); GDScript
-  is the only code reader so far.
+  is the only code reader so far. A `highlights.scm` beside the grammar colours the code the
+  Design view shows: a grammar's own `queries/highlights.scm` works as is (later patterns win;
+  ones the grammar doesn't know are left out), and its captures (`@keyword`, `@string`,
+  `@function`, `@type`, …) pick the colours. The built-in packs all have one.
   `"design": false` in `settings.json` turns the snapshots off.
 - **MCP servers.** A role names what it needs, for example `mcp: blender`. Each name is looked
   up in `~/.metaharness/mcp.json`, in the format every harness uses

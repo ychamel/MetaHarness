@@ -10,7 +10,7 @@ import { compareDesigns, cycles, DesignTracker, folderAreas, mapAreas, parseFlow
 import * as gitx from '../src/git.ts';
 import { git } from '../src/git.ts';
 import { readAuthors } from '../src/guard.ts';
-import { loadLanguages, Outliner, resolveContext, resolveImport } from '../src/languages.ts';
+import { loadLanguages, Outliner, resolveContext, resolveImport, scmPatterns } from '../src/languages.ts';
 import { makeRepo, settle, withTimeout } from './helpers.ts';
 
 /** Runs git as the agent does: with the environment its harness got (the guard and its name). */
@@ -479,4 +479,26 @@ test('design scopes: the whole goal (with unmerged branches as a picture), a com
   // Commits name the areas they touched, for the Git tab.
   assert.deepEqual(d.gitView(goal).areas!.map(a => a.path), ['src/api', 'src/store', '']);
   await d.close();
+});
+
+test('code coloured by the language packs: GDScript, the patterns split apart, and ones the grammar lacks dropped', async () => {
+  const packs = loadLanguages([]);
+  const o = new Outliner(packs);
+  const text = 'const MAX := 4\nfunc go(n: int) -> void:\n\tprint("hi", self.n) # say\n';
+  const h = (await o.highlight(packs.get('gdscript')!, text))!;
+  const lines = text.split('\n');
+  const spans = (i: number) => {
+    const out: string[] = [];
+    for (let j = 0; j < h.lines[i].length; j += 3) out.push(`${lines[i].slice(h.lines[i][j], h.lines[i][j + 1])}:${h.kinds[h.lines[i][j + 2]]}`);
+    return out;
+  };
+  assert.deepEqual(spans(0), ['const:keyword', 'MAX:constant', ':=:operator', '4:number']);
+  assert.deepEqual(spans(1), ['func:keyword', 'go:function', 'n:parameter', 'int:type', '->:operator', 'void:type']);
+  assert.deepEqual(spans(2), ['print:function', '"hi":string', 'self:builtin', 'n:property', '# say:comment']);
+  for (const name of ['python', 'typescript', 'tsx', 'javascript']) assert.ok(await o.highlight(packs.get(name)!, 'x = 1\n'), `${name} colours`);
+
+  assert.deepEqual(scmPatterns('; c\n(a) @x\n[(b) "c"] @y\n((d) @z (#match? @z "^[A-Z(]"))\n"if" @k'), ['(a) @x', '[(b) "c"] @y', '((d) @z (#match? @z "^[A-Z(]"))', '"if" @k']);
+  const lenient = new Outliner(new Map([['gd', { ...packs.get('gdscript')!, name: 'gd', highlights: '(no_such_node) @keyword\n(comment) @comment' }]]));
+  const c = (await lenient.highlight(lenient.packs.get('gd')!, '# hi\n'))!;
+  assert.deepEqual(c.lines[0], [0, 4, c.kinds.indexOf('comment')], 'the pattern it knows still colours');
 });

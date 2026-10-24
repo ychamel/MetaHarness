@@ -14,6 +14,9 @@ import { BUILTIN_DIR } from './rules.ts';
  * queries.scm follows tree-sitter's tags.scm convention, so a grammar's own tags.scm mostly works
  * as is: `@definition.<kind>` around a definition with `@name` inside it, `@reference.<kind>`
  * for names used, and MetaHarness's `@import` for the text that names another file.
+ *
+ * An optional `highlights.scm` colours the code shown in the Design view: a grammar's own
+ * highlights.scm works as is (later patterns win; patterns the grammar doesn't know are dropped).
  */
 
 export type Resolve = 'relative' | 'dotted' | 'res' | 'name' | 'suffix';
@@ -25,6 +28,8 @@ export interface LanguagePack {
   /** The grammar's wasm file, for tree-sitter packs. */
   grammar?: string;
   queries?: string;
+  /** Syntax highlighting queries, tree-sitter's highlights.scm. */
+  highlights?: string;
   /** Line patterns, for packs without a grammar. */
   patterns?: { kind: string; re: RegExp }[];
   /** How an import names a file, tried in order. */
@@ -48,6 +53,7 @@ export function loadLanguagePack(dir: string, builtIn = false): LanguagePack | u
   const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
   const grammar = meta.grammar ? join(dir, meta.grammar) : undefined;
   const queriesFile = join(dir, meta.queries || 'queries.scm');
+  const highlightsFile = join(dir, meta.highlights || 'highlights.scm');
   const patternsFile = join(dir, meta.patterns || 'patterns.txt');
   const patterns = existsSync(patternsFile)
     ? readFileSync(patternsFile, 'utf8')
@@ -67,6 +73,7 @@ export function loadLanguagePack(dir: string, builtIn = false): LanguagePack | u
     extensions: list(meta.extensions).map(e => e.toLowerCase()),
     ...(grammar && existsSync(grammar) ? { grammar } : {}),
     ...(existsSync(queriesFile) ? { queries: readFileSync(queriesFile, 'utf8') } : {}),
+    ...(existsSync(highlightsFile) ? { highlights: readFileSync(highlightsFile, 'utf8') } : {}),
     ...(patterns?.length ? { patterns } : {}),
     resolve: list(meta.resolve).filter((r): r is Resolve => (RESOLVES as string[]).includes(r)),
     try: list(meta.try),
@@ -138,6 +145,7 @@ type Loaded = { language: import('web-tree-sitter').Language; query: import('web
 export class Outliner {
   private ts?: Promise<TS>;
   private loaded = new Map<string, Promise<Loaded | undefined>>();
+  private highlighters = new Map<string, Promise<import('web-tree-sitter').Query | undefined>>();
   /** Why a pack couldn't be used, by name: shown to the human once. */
   readonly problems = new Map<string, string>();
 
@@ -167,6 +175,27 @@ export class Outliner {
     }
   }
 
+  /** A file's text as coloured spans, line by line, from the pack's highlights.scm; undefined without one. */
+  async highlight(pack: LanguagePack, text: string): Promise<Highlights | undefined> {
+    if (!pack.grammar || !pack.queries || !pack.highlights || text.length > MAX_HIGHLIGHT) return undefined;
+    const l = await this.load(pack);
+    if (!l) return undefined;
+    let q = this.highlighters.get(pack.name);
+    if (!q) {
+      q = this.ts!.then(ts => lenientQuery(ts, l.language, pack.highlights!));
+      this.highlighters.set(pack.name, q);
+    }
+    const query = await q;
+    if (!query) return undefined;
+    const tree = l.parser.parse(text);
+    if (!tree) return undefined;
+    try {
+      return paint(text, query.captures(tree.rootNode));
+    } finally {
+      tree.delete();
+    }
+  }
+
   private load(pack: LanguagePack): Promise<Loaded | undefined> {
     let p = this.loaded.get(pack.name);
     if (!p) {
@@ -187,6 +216,129 @@ export class Outliner {
     }
     return p;
   }
+}
+
+/* ---------------- colouring the code ---------------- */
+
+/** Coloured spans: the kinds by name, and for each line its spans as flat [start, end, kind] triples (columns in UTF-16 units). */
+export interface Highlights {
+  kinds: string[];
+  lines: number[][];
+}
+
+const MAX_HIGHLIGHT = 600_000;
+
+/** The kinds code is coloured by; captures that name none of them are drawn plain. */
+export const TOKEN_KINDS = ['comment', 'string', 'escape', 'number', 'keyword', 'operator', 'function', 'type', 'constant', 'builtin', 'property', 'parameter', 'attribute', 'tag', 'label'] as const;
+
+/** A highlights.scm capture's kind: an index into TOKEN_KINDS, 0 for plain (it still covers what's under it), undefined to ignore it. */
+export function tokenKind(capture: string): number | undefined {
+  if (capture.startsWith('_')) return undefined;
+  const [a, b] = capture.split('.');
+  const k = (name: (typeof TOKEN_KINDS)[number]) => TOKEN_KINDS.indexOf(name) + 1;
+  if (b === 'builtin') return k('builtin');
+  if (a === 'comment') return k('comment');
+  if (a === 'escape' || (a === 'string' && b === 'escape')) return k('escape');
+  if (a === 'string' || a === 'character') return k('string');
+  if (a === 'number' || a === 'float' || a === 'boolean') return k('number');
+  if (['keyword', 'conditional', 'repeat', 'include', 'exception'].includes(a)) return k('keyword');
+  if (a === 'operator') return k('operator');
+  if (a === 'function' || a === 'method') return k('function');
+  if (a === 'type' || a === 'constructor') return k('type');
+  if (a === 'constant') return k('constant');
+  if (a === 'property' || (a === 'variable' && (b === 'member' || b === 'property' || b === 'field'))) return k('property');
+  if (a === 'parameter' || (a === 'variable' && b === 'parameter')) return k('parameter');
+  if (a === 'attribute' || a === 'annotation' || a === 'decorator') return k('attribute');
+  if (a === 'tag') return k('tag');
+  if (a === 'label') return k('label');
+  if (a === 'variable' || a === 'punctuation' || a === 'embedded') return 0;
+  return undefined;
+}
+
+/**
+ * Paints the captures over the text, outer nodes first so what's inside them wins, and for the
+ * same node the later pattern (highlights.scm's convention), then cuts it into spans per line.
+ */
+function paint(text: string, caps: import('web-tree-sitter').QueryCapture[]): Highlights {
+  const marks = new Uint8Array(text.length);
+  const list = caps
+    .map(c => ({ s: c.node.startIndex, e: c.node.endIndex, k: tokenKind(c.name), p: c.patternIndex }))
+    .filter((c): c is { s: number; e: number; k: number; p: number } => c.k !== undefined && c.e > c.s)
+    .sort((x, y) => y.e - y.s - (x.e - x.s) || x.p - y.p);
+  for (const c of list) marks.fill(c.k, c.s, Math.min(c.e, text.length));
+  const lines: number[][] = [];
+  let line: number[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; ) {
+    if (text.charCodeAt(i) === 10) {
+      lines.push(line);
+      line = [];
+      start = ++i;
+      continue;
+    }
+    const k = marks[i];
+    let j = i + 1;
+    while (j < text.length && marks[j] === k && text.charCodeAt(j) !== 10) j++;
+    if (k) line.push(i - start, j - start, k - 1);
+    i = j;
+  }
+  lines.push(line);
+  return { kinds: [...TOKEN_KINDS], lines };
+}
+
+/** A query from a highlights.scm, keeping only the patterns this grammar accepts: one for another version of it still mostly works. */
+function lenientQuery(ts: TS, language: import('web-tree-sitter').Language, source: string): import('web-tree-sitter').Query | undefined {
+  try {
+    return new ts.Query(language, source);
+  } catch {
+    const good = scmPatterns(source).filter(f => {
+      try {
+        new ts.Query(language, f).delete();
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    return good.length ? new ts.Query(language, good.join('\n')) : undefined;
+  }
+}
+
+/** A query file's top-level patterns, each with its captures and predicates (comments dropped). */
+export function scmPatterns(source: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let depth = 0;
+  let closed = false;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === ';') {
+      while (i < source.length && source[i] !== '\n') i++;
+      cur += '\n';
+      continue;
+    }
+    // A pattern starts at the top level with a node, a group or a string, once the last one has closed.
+    if (depth === 0 && closed && (ch === '(' || ch === '[' || ch === '"')) {
+      out.push(cur.trim());
+      cur = '';
+      closed = false;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < source.length && source[j] !== '"') j += source[j] === '\\' ? 2 : 1;
+      cur += source.slice(i, j + 1);
+      i = j;
+      if (depth === 0) closed = true;
+      continue;
+    }
+    if (ch === '(' || ch === '[') depth++;
+    if (ch === ')' || ch === ']') {
+      depth--;
+      if (depth === 0) closed = true;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
 }
 
 function treeOutline(l: Loaded, text: string): FileOutline {

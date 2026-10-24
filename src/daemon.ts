@@ -22,7 +22,7 @@ import { HISTORY, SharedFolder } from './shared.ts';
 import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
 import { authorsDir, deniedCommandPrefixes, guardEnv, installGuard, readAuthors, refusedGitCommand, removeAuthors } from './guard.ts';
 import { DesignTracker, MAP_FILE, compareDesigns, designReport, type DesignReport, type SnapshotInfo } from './design.ts';
-import { Outliner } from './languages.ts';
+import { Outliner, packFor, type Highlights } from './languages.ts';
 import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
 import { settle } from './procs.ts';
@@ -3526,6 +3526,7 @@ export class Daemon {
     this.config = loadConfig(this.configDirs, { repo: this.repo });
     if (this.settingsOverride) Object.assign(this.config.settings, this.settingsOverride);
     this.design = new DesignTracker(this.home, new Outliner(this.config.languages));
+    this.highlighted.clear();
   }
 
   /** Roles, workflows, guidelines and MCP servers with the folder each comes from, plus the harnesses a role can name. */
@@ -3757,7 +3758,7 @@ export class Daemon {
   }
 
   /** A file's text at a commit or tree, for the Systems lens to show a function's code. */
-  designSource(goalId: string, rev: string, path: string) {
+  async designSource(goalId: string, rev: string, path: string) {
     const gg = this.goalGit(goalId);
     if (!gg) throw new Error('No git repository for this goal.');
     const sha = /^[\w./@^~-]+$/.test(rev) && !rev.startsWith('-') ? git.resolveTreeish(gg, rev) : undefined;
@@ -3765,8 +3766,21 @@ export class Daemon {
     if (!path || path.startsWith('/') || path.split('/').includes('..')) throw new Error(`${path} isn't a path in the repository.`);
     const text = git.showFile(gg, sha, path);
     if (text === undefined) throw new Error(`There's no ${path} at ${sha.slice(0, 7)}.`);
-    return { path, sha, text };
+    // Coloured by its language pack's highlights.scm; a commit's file never changes, so it's kept.
+    const key = `${sha}\n${path}`;
+    let highlights = this.highlighted.get(key);
+    if (!highlights) {
+      const pack = packFor(this.design.outliner.packs.values(), path);
+      highlights = pack ? this.design.outliner.highlight(pack, text).catch(() => undefined) : Promise.resolve(undefined);
+      this.highlighted.set(key, highlights);
+      if (this.highlighted.size > 200) this.highlighted.delete(this.highlighted.keys().next().value!);
+    }
+    const h = await highlights;
+    return { path, sha, text, ...(h ? { highlights: h } : {}) };
   }
+
+  /** Files coloured for the Design view, by commit and path. */
+  private highlighted = new Map<string, Promise<Highlights | undefined>>();
 
   /** Builds a scope's report (src/design.ts) and keeps it beside the snapshots. */
   private async scopeReport(goalId: string, gg: git.GoalGit, dir: string, scope: { kind: string; title: string; from: string; to: string; heads: string[] }) {

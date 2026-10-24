@@ -87,7 +87,7 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
       const rev = q('rev');
       const path = q('path');
       if (!rev || !path) throw new Error('GET /design/source needs &rev=<commit>&path=<file>.');
-      return json(res, 200, d.designSource(goalOf(), rev, path));
+      return json(res, 200, await d.designSource(goalOf(), rev, path));
     }
     if (req.method === 'GET' && url.pathname === '/design/compare') {
       const from = q('from'), to = q('to');

@@ -554,6 +554,12 @@ export interface DesignScopeView {
   note?: string;
 }
 
+/** A file's code as coloured spans (src/languages.ts): the kinds by name, and per line flat [start, end, kind] triples. */
+export interface Highlights {
+  kinds: string[];
+  lines: number[][];
+}
+
 /* ---------------- the Systems lens: the code graph (src/codegraph.ts) ---------------- */
 
 export type CodeEdgeKind = 'call' | 'new' | 'emit' | 'listen' | 'read' | 'write';

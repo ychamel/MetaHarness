@@ -1210,3 +1210,30 @@ details.more { display: grid; gap: 6px; }
 .code-was { display: none; position: absolute; left: 44px; top: calc(100% + 2px); z-index: 6; min-width: 200px; padding: 3px 8px; white-space: pre; tab-size: 4; background: color-mix(in srgb, var(--chg-gone) 14%, var(--panel)); border: 1px solid color-mix(in srgb, var(--chg-gone) 55%, var(--line)); border-radius: 6px; box-shadow: var(--shadow); color: var(--text); pointer-events: none; }
 .code-was-sign { color: var(--chg-gone); font-weight: 700; margin-right: 8px; user-select: none; }
 .code-line.chg:hover .code-was, .code-line.chg:focus .code-was, .code-gap:hover .code-was, .code-gap:focus .code-was { display: block; }
+/* Code colours, by the kinds language packs' highlights.scm give (src/languages.ts TOKEN_KINDS). */
+:root {
+  --syn-keyword: #8a3fd1; --syn-string: #2b7a3d; --syn-comment: #7d8590; --syn-number: #b4530b; --syn-function: #2b62c4;
+  --syn-type: #0e7882; --syn-constant: #b4530b; --syn-builtin: #b8336a; --syn-property: #6c5b20; --syn-parameter: #9a5b00;
+  --syn-attribute: #8f4f9e; --syn-tag: #2b62c4; --syn-operator: #5a6270;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --syn-keyword: #c792ea; --syn-string: #9ece6a; --syn-comment: #6f7782; --syn-number: #ff9e64; --syn-function: #7aa2f7;
+    --syn-type: #5fcfd6; --syn-constant: #ff9e64; --syn-builtin: #f07ca8; --syn-property: #d9c48a; --syn-parameter: #e0af68;
+    --syn-attribute: #bb9af7; --syn-tag: #7aa2f7; --syn-operator: #89ddff;
+  }
+}
+.tk-keyword { color: var(--syn-keyword); }
+.tk-string, .tk-escape { color: var(--syn-string); }
+.tk-escape { font-weight: 600; }
+.tk-comment { color: var(--syn-comment); font-style: italic; }
+.tk-number { color: var(--syn-number); }
+.tk-function { color: var(--syn-function); }
+.tk-type { color: var(--syn-type); }
+.tk-constant { color: var(--syn-constant); }
+.tk-builtin { color: var(--syn-builtin); }
+.tk-property { color: var(--syn-property); }
+.tk-parameter { color: var(--syn-parameter); }
+.tk-attribute, .tk-label { color: var(--syn-attribute); }
+.tk-tag { color: var(--syn-tag); }
+.tk-operator { color: var(--syn-operator); }
