@@ -200,6 +200,15 @@ test('the canvas: groups in a large area, rails, and a focus with its neighbours
   assert.ok(!hidGroup.units.some(u => u.id === gb) && hidGroup.where.get('B0') === 'chip:sim', 'a group put away joins its area\'s chip');
   const back = canvasOf(ix, t, links, rails, { focus: ['A0'], expand: [], fold: [], show: ['area:sim'], hide: ['area:sim'], kinds });
   assert.ok(back.units.some(u => u.id === gb), 'drawn again from the chip');
+  // Opened in place: a frame around its cards, lines to the card inside that makes them, nothing else changed.
+  const opened = canvasOf(ix, t, links, rails, { focus: [], open: ['area:sim'], expand: [], fold: [], show: [], hide: [], kinds });
+  assert.equal(opened.units.find(u => u.id === 'area:sim')?.role, 'open');
+  assert.deepEqual(opened.units.filter(u => u.parent === 'area:sim').map(u => u.id).sort(), [ga, gb].sort());
+  assert.ok(opened.wires.some(w => w.from === 'area:ui' && w.to === ga), 'from the other area straight to the group inside');
+  assert.ok(opened.wires.some(w => (w.from === ga && w.to === gb) || (w.from === gb && w.to === ga)), 'between the cards inside');
+  const hud = canvasOf(ix, t, links, rails, { focus: ['Hud'], open: ['area:sim'], expand: [], fold: [], show: [], hide: [], kinds });
+  assert.deepEqual(hud.units.map(u => `${u.role}:${u.id}${u.parent ? '<' + u.parent : ''}`).sort(), ['focus:Hud', `near:${ga}<area:sim`, 'open:area:sim'].sort(), 'only what was there, opened');
+  assert.ok(hud.wires.some(w => w.from === 'Hud' && w.to === ga));
   // Too many lines to follow: they go to the card, but for the function kept.
   const merged = collapseWires(a2.wires, new Set(['A2']), () => false);
   assert.ok(merged.every(w => w.fromPin === '*' || w.from !== 'A2'));

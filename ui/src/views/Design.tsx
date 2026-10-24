@@ -4,7 +4,7 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api.ts';
 import { agentColors } from '../agentColors.ts';
 import { ago } from '../format.ts';
-import type { AreaChange, DesignArea, DesignChange, DesignFile, DesignReport, DesignScopeView, DesignSnapshot, DiffFile, Goal, GitView, MhEvent, ScopeSel, SnapshotInfo, SymbolRef } from '../types.ts';
+import type { AreaChange, DesignArea, DesignChange, DesignFile, DesignReport, DesignScopeView, DesignSnapshot, DiffFile, FileChange, Goal, GitView, MhEvent, ScopeSel, SnapshotInfo, SymbolRef } from '../types.ts';
 import { activity, areaLabel, areaOf, hunksFor, insights, lanes, layers as layerRows, pinnedNotes, symbolEnd, treemap, type Activity, type Touch } from '../designData.ts';
 import { MessageDialog } from '../components/Dialogs.tsx';
 import { Hunks } from '../components/Diff.tsx';
@@ -93,6 +93,8 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
   const [error, setError] = useState<string>();
   const [layers, setLayer] = useLayers();
   const [lit, setLit] = useState<string[]>();
+  /** Files lit for a moment, from a commit or a file hovered: shown on the map without changing the scope. */
+  const [peek, setPeek] = useState<string[]>();
   const [flow, setFlow] = useState<string>();
   const [file, setFile] = useState<string>();
   const [messaging, setMessaging] = useState<string>();
@@ -129,7 +131,7 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
   const act = useMemo(() => activity(events, snap, since), [events, snap, since]);
   const notes = useMemo(() => pinnedNotes(events), [events]);
   const found = useMemo(() => insights(events, snap), [events, snap]);
-  const setScope = (s: ScopeSel) => (setFile(undefined), onNav({ ...nav, scope: s }));
+  const setScope = (s: ScopeSel) => (setFile(undefined), setPeek(undefined), onNav({ ...nav, scope: s }));
   const setArea = (a?: string) => (setFile(undefined), onNav({ ...nav, area: a }));
   const setFocus = (f?: string) => onNav({ ...nav, focus: f });
 
@@ -147,12 +149,12 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
       </button>
     </div>
   );
-  const scopeBar = <ScopeBar goal={goal} events={events} gitv={gitv} view={view} scope={scope} color={color} focus={nav.focus} onScope={setScope} onFocus={setFocus} />;
+  const scopeBar = <ScopeBar goal={goal} events={events} gitv={gitv} view={view} scope={scope} color={color} focus={nav.focus} onScope={setScope} onFocus={setFocus} onPeek={setPeek} />;
   if (nav.lens === 'systems') {
     return (
       <>
         {scopeBar}
-        <Systems goal={goal} view={view} snap={snap} nav={nav.systems ?? {}} onNav={s => onNav({ ...nav, systems: s })} lens={lens} />
+        <Systems goal={goal} view={view} snap={snap} nav={nav.systems ?? {}} onNav={s => onNav({ ...nav, systems: s })} lens={lens} peek={peek} onPeek={setPeek} />
       </>
     );
   }
@@ -176,7 +178,7 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
       <div className="design-body">
         <div className="view">
           <AreaMap
-            snap={snap} view={view} act={act} notes={notes} color={color} layers={layers} selected={area} lit={lit} flow={flow} focus={nav.focus} now={now}
+            snap={snap} view={view} act={act} notes={notes} color={color} layers={layers} selected={area} lit={lit} litFiles={peek} flow={flow} focus={nav.focus} now={now}
             onSelect={setArea}
           />
         </div>
@@ -191,7 +193,7 @@ export default function Design({ goal, events, nav, onNav, onCommand, onSelectAg
           ) : (
             <ScopeSummary
               goal={goal} events={events} snap={snap} view={view} found={found} color={color} focus={nav.focus} flow={flow}
-              onFlow={setFlow} onLit={setLit} onScope={setScope} onArea={setArea} onFile={(a, f) => (onNav({ ...nav, area: a }), setFile(f))} onFocus={setFocus}
+              onFlow={setFlow} onLit={setLit} onPeek={setPeek} onScope={setScope} onArea={setArea} onFile={(a, f) => (onNav({ ...nav, area: a }), setFile(f))} onFocus={setFocus}
               onSelectAgent={onSelectAgent} onOpenCommit={onOpenCommit}
             />
           )}
@@ -218,7 +220,7 @@ function landingsOf(list: SnapshotInfo[]): { n: number; sel: ScopeSel; s: Snapsh
   }));
 }
 
-function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFocus }: {
+function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFocus, onPeek }: {
   goal: Goal;
   events: MhEvent[];
   gitv?: GitView;
@@ -228,7 +230,10 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
   focus?: string;
   onScope: (s: ScopeSel) => void;
   onFocus: (f?: string) => void;
+  onPeek: (paths?: string[]) => void;
 }) {
+  const [hover, setHover] = useState<{ sha: string; x: number; y: number }>();
+  const pathsOf = useMemo(() => new Map(events.filter(e => e.type === 'git.commit' && Array.isArray(e.data.paths)).map(e => [String(e.data.sha), e.data.paths as string[]])), [events]);
   const branch = gitv?.git?.branch ?? goal.branch ?? 'goal branch';
   const model = useMemo(() => lanes(events, branch, (gitv?.branches ?? []).map(b => ({ name: b.name, agent: b.agent }))), [events, branch, gitv?.branches]);
   const inScope = useMemo(() => new Set(view.report?.commits.map(c => c.sha)), [view.report]);
@@ -341,8 +346,15 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
               const sel = scope.kind === 'commit' && scope.sha === d.sha;
               const dim = focus && d.agent !== focus;
               return (
-                <g key={d.sha} className="lane-dot" onClick={e => pick(d.sha, e.shiftKey)} opacity={dim ? 0.3 : 1}>
-                  <title>{`${d.summary}\n${d.agent ?? 'unnamed (you?)'} · ${d.sha.slice(0, 7)}${d.added !== undefined ? ` · +${d.added} −${d.removed}` : ''}`}</title>
+                <g
+                  key={d.sha} className="lane-dot" onClick={e => (setHover(undefined), pick(d.sha, e.shiftKey))} opacity={dim ? 0.3 : 1}
+                  onMouseEnter={e => {
+                    const r = (e.currentTarget as SVGGElement).getBoundingClientRect();
+                    setHover({ sha: d.sha, x: r.left + r.width / 2, y: r.bottom });
+                    onPeek(pathsOf.get(d.sha) ?? []);
+                  }}
+                  onMouseLeave={() => (setHover(undefined), onPeek(undefined))}
+                >
                   {on && <circle cx={x(d.col)} cy={y(d.lane)} r={sel ? 8 : 7} fill="none" stroke="var(--accent)" strokeWidth={sel ? 2.5 : 1.5} />}
                   <circle cx={x(d.col)} cy={y(d.lane)} r={5} fill={d.merge ? 'var(--panel)' : d.agent ? color(d.agent) : 'var(--text-3)'} stroke={d.agent ? color(d.agent) : 'var(--text-3)'} strokeWidth={2} />
                 </g>
@@ -352,6 +364,35 @@ function ScopeBar({ goal, events, gitv, view, scope, color, focus, onScope, onFo
           {!model.dots.length && <div className="empty small">No commits yet. They show here as agents make them.</div>}
         </div>
       </div>
+      {hover && (() => {
+        const d = model.dots.find(x => x.sha === hover.sha);
+        if (!d) return null;
+        const paths = pathsOf.get(d.sha) ?? [];
+        return (
+          <div className="commit-peek" style={{ left: Math.min(hover.x, window.innerWidth - 380), top: hover.y + 6 }} role="tooltip">
+            <div className="peek-head">
+              <span className="swatch" style={{ background: d.agent ? color(d.agent) : 'var(--text-3)' }} />
+              <b>{d.agent ?? 'unnamed (you?)'}</b>
+              <span className="mono muted small">{d.sha.slice(0, 7)}</span>
+              {d.added !== undefined && (
+                <span className="small">
+                  <span className="diff-add">+{d.added}</span> <span className="diff-del">−{d.removed}</span>
+                </span>
+              )}
+            </div>
+            <div className="peek-summary">{d.summary}</div>
+            {paths.length > 0 && (
+              <ul className="peek-files mono small">
+                {paths.slice(0, 10).map(p => (
+                  <li key={p} className="ellipsis">{p}</li>
+                ))}
+                {paths.length > 10 && <li className="muted">and {paths.length - 10} more</li>}
+              </ul>
+            )}
+            <div className="muted small">Lit on the map · click to look at it · shift-click another for a range</div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -400,6 +441,8 @@ type AreaData = {
   working: boolean;
   on: boolean;
   lit: boolean;
+  /** Its files lit for a moment. */
+  peek: string[];
   faded: boolean;
 };
 
@@ -413,7 +456,7 @@ function cardDefs(c: DesignChange | undefined, area: string): { sign: string; te
   return [...all.filter(d => d.big), ...all.filter(d => !d.big)].slice(0, 3);
 }
 
-function AreaMap({ snap, view, act, notes, color, layers, selected, lit, flow, focus, now, onSelect }: {
+function AreaMap({ snap, view, act, notes, color, layers, selected, lit, litFiles, flow, focus, now, onSelect }: {
   snap: DesignSnapshot;
   view: DesignScopeView;
   act: Activity;
@@ -422,6 +465,8 @@ function AreaMap({ snap, view, act, notes, color, layers, selected, lit, flow, f
   layers: Layers;
   selected?: string;
   lit?: string[];
+  /** Files lit for a moment (a commit or a file hovered): their areas lit, the rest dimmed, the files named on their cards. */
+  litFiles?: string[];
   flow?: string;
   focus?: string;
   now: number;
@@ -448,6 +493,12 @@ function AreaMap({ snap, view, act, notes, color, layers, selected, lit, flow, f
     const maxChurn = Math.max(1, ...(report?.areas.map(a => a.added + a.removed) ?? []));
     const maxHot = Math.max(1, ...(report?.areas.map(a => a.hotspot) ?? []));
     const litSet = new Set(lit);
+    const peekBy = new Map<string, string[]>();
+    for (const f of litFiles ?? []) {
+      const a = snap.files.find(x => x.path === f)?.area ?? areaOf(snap.map.areas, f) ?? '';
+      peekBy.set(a, [...(peekBy.get(a) ?? []), f]);
+    }
+    const peeking = !!litFiles;
     const nodes: Node<AreaData>[] = areas.map(a => {
       const files = snap.files.filter(f => f.area === a.path);
       const t = layers.live ? act.areas.get(a.path) : undefined;
@@ -465,8 +516,9 @@ function AreaMap({ snap, view, act, notes, color, layers, selected, lit, flow, f
           heat: ch ? (ch.added + ch.removed) / maxChurn : 0, hot: ch ? ch.hotspot / maxHot : 0, defs: cardDefs(change, a.path), color, layers,
           added, removed, rewritten: !!change?.areas.rewritten.includes(a.path),
           notes: notes.filter(n => n.path === a.path || (n.path !== '' && a.path.startsWith(n.path + '/'))).length,
-          collisions: editors.get(a.path) ?? 0, working: !!t && now - t.lastEdit < 30_000, on: selected === a.path, lit: litSet.has(a.path),
-          faded: (selected !== undefined && !near.has(a.path)) || !touchedByFocus || untouched,
+          collisions: editors.get(a.path) ?? 0, working: !!t && now - t.lastEdit < 30_000, on: selected === a.path, lit: litSet.has(a.path) || peekBy.has(a.path),
+          peek: peekBy.get(a.path) ?? [],
+          faded: peeking ? !peekBy.has(a.path) : (selected !== undefined && !near.has(a.path)) || !touchedByFocus || untouched,
         },
       };
     });
@@ -482,7 +534,7 @@ function AreaMap({ snap, view, act, notes, color, layers, selected, lit, flow, f
         const isNew = layers.change && added.has(k);
         const inCycle = circle.has(k);
         const on = selected !== undefined && (e.from === selected || e.to === selected);
-        const stroke = inCycle ? 'var(--waiting)' : isNew ? 'var(--accent)' : on ? 'var(--text-2)' : 'var(--line-strong)';
+        const stroke = inCycle ? 'var(--waiting)' : isNew ? 'var(--chg-new)' : on ? 'var(--text-2)' : 'var(--line-strong)';
         edges.push({
           id: `${e.from}->${e.to}`, source: id(e.from), target: id(e.to), ...handlesFor(pos.get(e.from)!, pos.get(e.to)!, false),
           label: [isNew && 'new', inCycle && 'circular', String(e.n)].filter(Boolean).join(' · '),
@@ -518,7 +570,7 @@ function AreaMap({ snap, view, act, notes, color, layers, selected, lit, flow, f
       });
     }
     return { nodes, edges };
-  }, [snap, view, act, notes, color, layers, selected, lit, flow, focus, now, change, report]);
+  }, [snap, view, act, notes, color, layers, selected, lit, litFiles, flow, focus, now, change, report]);
 
   return (
     <ReactFlow
@@ -544,8 +596,8 @@ function AreaCard({ data: d }: NodeProps<Node<AreaData>>) {
   const edits = t ? [...t.edits].sort((a, b) => b[1] - a[1]) : [];
   const ch = d.layers.change ? d.ch : undefined;
   const style: CSSProperties = {};
-  if (ch && d.heat > 0) style.background = `color-mix(in srgb, var(--accent) ${Math.round(5 + d.heat * 25)}%, var(--panel))`;
-  if (d.layers.hot && d.hot > 0) style.boxShadow = `0 0 0 ${Math.round(2 + d.hot * 5)}px color-mix(in srgb, var(--limited) ${Math.round(25 + d.hot * 40)}%, transparent), var(--shadow)`;
+  if (ch && d.heat > 0) style.background = `color-mix(in srgb, var(--chg-edit) ${Math.round(5 + d.heat * 25)}%, var(--panel))`;
+  if (d.layers.hot && d.hot > 0) style.boxShadow = `0 0 0 ${Math.round(2 + d.hot * 5)}px color-mix(in srgb, var(--chg-gone) ${Math.round(25 + d.hot * 40)}%, transparent), var(--shadow)`;
   const cls = ['area-card', d.area.unmapped && 'unmapped', d.on && 'on', d.faded && 'faded', d.working && 'working', d.lit && 'lit', d.removed && 'gone', d.layers.change && d.added && 'added'].filter(Boolean).join(' ');
   return (
     <div className={cls} style={style}>
@@ -602,6 +654,16 @@ function AreaCard({ data: d }: NodeProps<Node<AreaData>>) {
         <div className="area-stats muted small">
           {d.files} file{d.files === 1 ? '' : 's'} · {d.symbols} definition{d.symbols === 1 ? '' : 's'}
         </div>
+      )}
+      {d.peek.length > 0 && (
+        <ul className="card-peek mono small">
+          {d.peek.slice(0, 4).map(f => (
+            <li key={f} className="ellipsis">
+              ● {f.split('/').pop()}
+            </li>
+          ))}
+          {d.peek.length > 4 && <li className="muted">+{d.peek.length - 4}</li>}
+        </ul>
       )}
       {edits.length > 0 && (
         <div className="act-names small" title="Editing here (Activity layer)">
@@ -1061,7 +1123,34 @@ function CommitRow({ c, color, onClick, onHover }: { c: DesignReport['commits'][
 
 /* ---------------- the inspector: the scope ---------------- */
 
-function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onFlow, onLit, onScope, onArea, onFile, onFocus, onSelectAgent, onOpenCommit }: {
+/** The files a scope changed, most changed first; hovering one lights it on the map. */
+export function ChangedFiles({ files, onPeek, onFile, max = 14 }: { files: FileChange[]; onPeek: (paths?: string[]) => void; onFile: (area: string, file: string) => void; max?: number }) {
+  const [all, setAll] = useState(false);
+  if (!files.length) return null;
+  const list = [...files].sort((a, b) => b.added + b.removed - (a.added + a.removed));
+  return (
+    <>
+      <div className="section-title">Files changed <span className="muted">{files.length}</span></div>
+      <div onMouseLeave={() => onPeek(undefined)}>
+        {(all ? list : list.slice(0, max)).map(f => (
+          <button key={f.path} className="history-row file-row" onClick={() => onFile(f.area, f.path)} onMouseEnter={() => onPeek([f.path])} onFocus={() => onPeek([f.path])} title="Hover to light it on the map; click to open it">
+            <span className="grow mono ellipsis">{f.path}</span>
+            <span className="small nowrap">
+              <span className="diff-add">+{f.added}</span> <span className="diff-del">−{f.removed}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+      {list.length > max && (
+        <button className="text-link small" onClick={() => setAll(!all)}>
+          {all ? 'Fewer' : `All ${list.length}`}
+        </button>
+      )}
+    </>
+  );
+}
+
+function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onFlow, onLit, onPeek, onScope, onArea, onFile, onFocus, onSelectAgent, onOpenCommit }: {
   goal: Goal;
   events: MhEvent[];
   snap: DesignSnapshot;
@@ -1072,6 +1161,7 @@ function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onF
   flow?: string;
   onFlow: (f?: string) => void;
   onLit: (a?: string[]) => void;
+  onPeek: (paths?: string[]) => void;
   onScope: (s: ScopeSel) => void;
   onArea: (a: string) => void;
   onFile: (area: string, file: string) => void;
@@ -1136,9 +1226,10 @@ function ScopeSummary({ goal, events, snap, view, found, color, focus, flow, onF
           <ChangeList change={view.change} keep={s => mine(files.get(s.file)?.agents ?? [])} onArea={onArea} />
         </>
       )}
+      <ChangedFiles files={(r?.files ?? []).filter(f => mine(f.agents))} onPeek={onPeek} onFile={onFile} />
       <div className="section-title">Commits{focus && ` by ${focus}`}</div>
       {commits.slice(0, 60).map(c => (
-        <CommitRow key={c.sha} c={c} color={color} onHover={onLit} onClick={() => onScope({ kind: 'commit', sha: c.sha })} />
+        <CommitRow key={c.sha} c={c} color={color} onHover={on => onPeek(on ? c.paths : undefined)} onClick={() => onScope({ kind: 'commit', sha: c.sha })} />
       ))}
       {commits.length > 60 && <div className="muted small">and {commits.length - 60} more</div>}
       {!commits.length && <div className="muted small">None in this scope.</div>}

@@ -875,7 +875,7 @@ body.resizing iframe, body.resizing .react-flow { pointer-events: none; }
 .area-card.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow); }
 .area-card.faded { opacity: 0.3; }
 .area-card.working { border-color: var(--working); }
-.area-card.lit { outline: 2px dashed var(--accent); outline-offset: 3px; }
+.area-card.lit { outline: 3px solid var(--peek); outline-offset: 3px; }
 .area-card.gone { border-style: dashed; opacity: 0.55; background: var(--panel-2); }
 .area-card.added { border-color: var(--done); border-width: 2px; }
 .card-defs { list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 0; font-size: 11.5px; }
@@ -1031,8 +1031,8 @@ details.more { display: grid; gap: 6px; }
 .node-row .row-label { flex: 1; min-width: 0; }
 .node-row .row-n { font-size: 10.5px; flex: none; }
 .row-engine { color: var(--accent); margin-right: 3px; }
-.row-mark { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--accent); }
-.row-mark.new { background: var(--done); }
+.row-mark { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--chg-edit); }
+.row-mark.new { background: var(--chg-new); }
 .sys-node .react-flow__handle.pin { opacity: 1; width: 7px; height: 7px; min-width: 0; min-height: 0; border: 1.5px solid var(--panel); background: var(--text-3); }
 .sys-node .node-row:hover .react-flow__handle.pin, .sys-node .node-row.on .react-flow__handle.pin { background: var(--accent); }
 .sys-node .react-flow__handle.pin.off { opacity: 0; }
@@ -1055,7 +1055,7 @@ details.more { display: grid; gap: 6px; }
 .sys-chip:hover { border-color: var(--accent); }
 .sys-chip.route { border: 1.5px dashed var(--accent); }
 .sys-chip.hl { box-shadow: 0 0 0 3px color-mix(in srgb, var(--paused) 45%, transparent); }
-.sys-chips .sys-hint { position: static; margin-left: auto; }
+.sys-chips .sys-hint { position: static; margin-left: 12px; }
 .trace-view.docked { height: auto; border: 1px solid var(--line); border-radius: 8px; margin: 4px 0 8px; }
 .trace-view.docked .trace-head { flex-wrap: wrap; padding: 4px 6px; }
 .trace-view.docked .trace-rows { max-height: 340px; overflow: auto; padding-bottom: 6px; font-size: 12px; }
@@ -1074,3 +1074,29 @@ details.more { display: grid; gap: 6px; }
 .adjust-chip .x:hover { color: var(--accent); }
 .card-resize { pointer-events: none; }
 .react-flow__node:hover .card-resize, .react-flow__node.selected .card-resize { pointer-events: auto; }
+.sys-frame.open { border: 1.5px dashed var(--line-strong); background: color-mix(in srgb, var(--panel-2) 60%, transparent); }
+/* What changed reads the same everywhere: new green, changed amber, removed red; selected blue, hovered purple. */
+:root { --chg-new: var(--done); --chg-edit: var(--limited); --chg-gone: var(--crashed); --peek: var(--paused); }
+.pill.chg { color: var(--chg-edit); background: color-mix(in srgb, var(--chg-edit) 14%, transparent); }
+.sys-node.changed { box-shadow: inset 4px 0 0 var(--chg-edit), var(--shadow); }
+.sys-node.added { border-color: var(--chg-new); box-shadow: inset 4px 0 0 var(--chg-new), var(--shadow); }
+.sys-node.on { box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); border-color: var(--accent); }
+.sys-node.peek-on { outline: 3px solid var(--peek); outline-offset: 2px; }
+.sys-node.peek-off, .sys-frame.peek-off { opacity: 0.28; }
+.sys-chip.peek { outline: 2px solid var(--peek); outline-offset: 1px; }
+.sys-legend { display: inline-flex; gap: 10px; margin-left: auto; color: var(--text-2); white-space: nowrap; }
+.sys-legend .lg { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; box-sizing: border-box; }
+.lg.new { background: var(--chg-new); }
+.lg.chg { background: var(--chg-edit); }
+.lg.gone { background: var(--chg-gone); }
+.lg.sel { border: 2px solid var(--accent); }
+.lg.lit { border: 2px solid var(--peek); }
+.area-card { transition: opacity 0.2s, outline-color 0.2s; }
+.card-peek { list-style: none; margin: 2px 0 0; padding: 0; color: var(--peek); font-weight: 600; }
+.commit-peek { position: fixed; z-index: 60; width: 360px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line-strong); border-left: 3px solid var(--peek); border-radius: 8px; box-shadow: var(--shadow); display: grid; gap: 4px; pointer-events: none; font-size: 13px; }
+.commit-peek .peek-head { display: flex; gap: 6px; align-items: center; }
+.commit-peek .peek-summary { font-weight: 600; }
+.commit-peek .peek-files { list-style: none; margin: 0; padding: 0; color: var(--text-2); }
+.file-row .grow { min-width: 0; }
+.reading { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.4; } }

@@ -241,6 +241,12 @@ You review the result in your checkout like any other change, and push it yourse
         also **pin a note** for the agents working there (each gets it the first time it
         touches the area), **keep it for future goals** (it becomes a rule), or message the
         team about the area.
+      - **Hover a commit** in the lanes (or in the panel's list) to preview it without
+        changing the scope: a card says who made it, its message, +/− and its files, and what
+        it touched lights up on the map (areas, or the classes, cards and chips on Systems)
+        while the rest dims. **Files changed** in the panel does the same for one file. Click
+        to look at it. Colours are the same everywhere: green new, amber changed, red removed,
+        blue selected, purple hovered.
       - Each landing leaves a **report** in the goal's `design/reports/` folder (JSON: the
         commits, each area's share, files ranked as hotspots, circular dependencies, coupling,
         the flows checked against the imports), for a later goal or a model to analyse.
@@ -271,11 +277,16 @@ You review the result in your checkout like any other change, and push it yourse
           the classes both touch, by the way influence runs (when the ecosystem changes
           `Genome` and creatures read it, the ecosystem reaches creatures through `Genome`).
           Those classes are drawn on their own.
+        - **Open a card in place** with its **▾** (on area and group cards, or **Open it here**
+          in its menu): it becomes a frame with its cards inside, the lines going to the card
+          inside that makes them, and nothing else on the canvas changes, the view included.
+          Cards inside open too. **▴** closes it. Opened as a neighbour, it holds only what
+          links to what you look at; the rest stays in the chips.
         - **Right-click a card** (or its **⋯**) for its menu: the first line says why it's on
           the canvas ("One step from Creature (5 links)"), then what you can do with it: look
           at it, also look at it, split it into its groups or classes, fold it into what holds
-          it, hide it (it joins the chips), show it in the panel. What you split, fold, hide or
-          draw from the chips is listed in a strip above the canvas, each with **×** to undo
+          it, hide it (it joins the chips), show it in the panel. What you open, split, fold, hide
+          or draw from the chips is listed in a strip above the canvas, each with **×** to undo
           it, and **Undo all**. Click a chip to draw it (and anything hidden in it). **←** or
           **Esc** goes back; **Whole game** clears what's looked at.
         - **Drag a card's bottom-right corner** to resize it: taller shows more of its pins,

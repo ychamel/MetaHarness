@@ -27,7 +27,7 @@ export const KIND_STYLE: Record<LinkKind | 'engine', { stroke: string; dash?: st
 };
 
 /** What a person can do to a card. */
-export type Act = 'select' | 'focus' | 'add' | 'expand' | 'shrink' | 'hide' | 'unfocus';
+export type Act = 'select' | 'focus' | 'add' | 'expand' | 'shrink' | 'hide' | 'unfocus' | 'open' | 'close';
 
 export interface CanvasProps {
   goal: string;
@@ -47,6 +47,8 @@ export interface CanvasProps {
   route: string[];
   /** A class lit from the inspector (a step of the trace hovered). */
   hl?: string;
+  /** Classes lit for a moment (a commit or a file hovered): the rest dims. */
+  lit?: Set<string>;
   canBack: boolean;
   onBack: () => void;
   onNav: (n: Partial<SystemsNav>) => void;
@@ -81,12 +83,16 @@ type CardData = {
   isNew: boolean;
   on: boolean;
   hl: boolean;
+  /** Lit for a moment, or dimmed while others are. */
+  peek: 'on' | 'off' | undefined;
   route: boolean;
   inFrame: boolean;
   /** Why it's on the canvas, in a line. */
   why: string;
   /** Sized by the person. */
   sized: boolean;
+  /** A group or area holding more than one card: it can be opened in place. */
+  opens: boolean;
   h: number;
   w: number;
   onAct: (a: Act) => void;
@@ -97,7 +103,7 @@ type CardData = {
   onMore?: () => void;
 };
 
-type FrameData = { unit: string; title: string; sub: string; text: string; changed: number; on: boolean; onAct: (a: Act) => void; onMenu: (e: ReactMouseEvent) => void };
+type FrameData = { unit: string; title: string; sub: string; text: string; changed: number; on: boolean; open: boolean; onAct: (a: Act) => void; onMenu: (e: ReactMouseEvent) => void };
 
 type Info = { kind: CardData['kind']; title: string; sub: string; text: string; badges: string[]; when: string[] };
 
@@ -167,9 +173,11 @@ function CanvasInner(p: CanvasProps) {
     if (!menu) return;
     const close = (e: Event) => !(e.target as HTMLElement)?.closest?.('.sys-menu') && setMenu(undefined);
     const esc = (e: KeyboardEvent) => e.key === 'Escape' && (e.stopImmediatePropagation(), setMenu(undefined));
-    window.addEventListener('mousedown', close);
+    // Capture: the canvas stops the events it pans with, so a click on it would never reach the window otherwise.
+    window.addEventListener('pointerdown', close, true);
+    window.addEventListener('wheel', close, true);
     window.addEventListener('keydown', esc, true);
-    return () => (window.removeEventListener('mousedown', close), window.removeEventListener('keydown', esc, true));
+    return () => (window.removeEventListener('pointerdown', close, true), window.removeEventListener('wheel', close, true), window.removeEventListener('keydown', esc, true));
   }, [menu]);
   const selFn = nav.sel && ix.fn.has(nav.sel) ? nav.sel : undefined;
   const unitName = (id: string) =>
@@ -211,7 +219,7 @@ function CanvasInner(p: CanvasProps) {
   const model = useMemo(() => {
     const units = new Map(canvas.units.map(u => [u.id, u]));
     const focusCards = new Set(canvas.units.filter(u => u.role === 'focus').map(u => u.id));
-    const overview = !canvas.units.some(u => u.role !== 'near' || u.parent);
+    const overview = !canvas.units.some(u => u.role === 'focus' || u.role === 'frame');
     // A focus card's rows: its functions that lines touch, changed and engine-called ones first.
     const fnRows = new Map<string, Row[]>();
     const more = new Map<string, number>();
@@ -304,14 +312,17 @@ function CanvasInner(p: CanvasProps) {
   /** Why a card is on the canvas. */
   const why = (u: Unit): string => {
     if (u.role === 'focus' || u.role === 'frame') return p.focus.includes(u.id) ? "You're looking at it." : 'The scope changed it.';
-    if (u.parent) return `Part of ${unitName(u.parent)}, which you're looking at.`;
-    if (!model.focusCards.size && !canvas.units.some(x => x.role === 'frame')) return 'Part of the whole game.';
+    const holder = u.parent ? canvas.units.find(x => x.id === u.parent) : undefined;
+    if (holder?.role === 'frame') return `Part of ${unitName(holder.id)}, which you're looking at.`;
+    if (u.role === 'open') return 'Opened in place: its cards are inside it.';
+    if (!holder && !model.focusCards.size && !canvas.units.some(x => x.role === 'frame')) return 'Part of the whole game.';
     const with_ = new Map<string, number>();
     for (const w of canvas.wires) {
       if (w.from === u.id && w.to !== u.id) with_.set(w.to, (with_.get(w.to) ?? 0) + w.edges.length);
       if (w.to === u.id && w.from !== u.id) with_.set(w.from, (with_.get(w.from) ?? 0) + w.edges.length);
     }
     const ws = [...with_].sort((a, b) => b[1] - a[1]);
+    if (holder) return `Inside ${unitName(holder.id)}, which you opened.${ws.length ? ` Links with ${ws.slice(0, 3).map(([x, n]) => `${unitName(x)} (${n})`).join(', ')}.` : ''}`;
     if (ws.length) return `One step from ${ws.slice(0, 3).map(([x, n]) => `${unitName(x)} (${n} link${n === 1 ? '' : 's'})`).join(', ')}${ws.length > 3 ? ` and ${ws.length - 3} more` : ''}.`;
     if (nav.show?.some(a => u.classes.some(c => `area:${ix.cls.get(c)?.area}` === a))) return 'You drew it from the chips.';
     return 'Where the two systems you look at meet.';
@@ -324,15 +335,19 @@ function CanvasInner(p: CanvasProps) {
     const act = (u: string) => (a: Act) => onAct(a, u);
     const selUnit = nav.sel ? (ix.fn.has(nav.sel) ? canvas.where.get(ix.fn.get(nav.sel)!.cls) : nav.sel) : undefined;
     const hlUnit = p.hl ? canvas.where.get(ix.fn.get(p.hl)?.cls ?? p.hl) : undefined;
+    const litUnits = p.lit ? new Set([...p.lit].map(c => canvas.where.get(c))) : undefined;
     for (const u of canvas.units) {
-      if (u.role !== 'frame') continue;
+      if (u.role !== 'frame' && u.role !== 'open') continue;
       const g = t.group.get(u.id);
       const a = isAreaId(u.id) ? u.id.slice(5) : g?.area ?? '';
       const all = isAreaId(u.id) ? ix.classesOf.get(a)?.length ?? 0 : g?.classes.length ?? 0;
+      const drawn = canvas.units.filter(x => x.parent === u.id).reduce((n, x) => n + x.classes.length, 0);
       out.push({
         id: u.id,
+        ...(u.parent ? { parent: u.parent } : {}),
         frame: {
-          unit: u.id, title: unitName(u.id), sub: isAreaId(u.id) ? `${a || 'top level'} · ${all} classes` : `group in ${titles.get(a) ?? areaLabel(a)} · ${all} classes`,
+          unit: u.id, title: unitName(u.id), open: u.role === 'open',
+          sub: `${isAreaId(u.id) ? a || 'top level' : `group in ${titles.get(a) ?? areaLabel(a)}`} · ${u.role === 'open' && drawn < all ? `${drawn} of ${all} classes drawn, the rest in the chips` : `${all} classes`}`,
           text: sentence(isAreaId(u.id) ? p.summaries.get(a) ?? '' : g?.text ?? ''), changed: canvas.units.filter(x => x.parent === u.id).reduce((s, x) => s + x.classes.filter(c => chg?.touched.has(c)).length, 0),
           on: selUnit === u.id, onAct: act(u.id), onMenu: e => setMenu({ unit: u.id, x: e.clientX, y: e.clientY }),
         },
@@ -349,7 +364,7 @@ function CanvasInner(p: CanvasProps) {
       return {
         unit: id, role: focus ? 'focus' : 'near', kind, title, sub, ...d,
         changed: kind === 'class' ? (ix.fnsOf.get(id) ?? []).filter(f => chg?.edited.has(f.id) || chg?.newFns.has(f.id)).length : u.classes.filter(c => chg?.touched.has(c)).length,
-        isNew: kind === 'class' && !!chg?.newClasses.has(id), on: selUnit === id, hl: hlUnit === id, route: routeSet.has(id), inFrame: !!u.parent, why: why(u), sized: !!size,
+        isNew: kind === 'class' && !!chg?.newClasses.has(id), on: selUnit === id, hl: hlUnit === id, peek: litUnits ? (litUnits.has(id) ? 'on' : 'off') : undefined, route: routeSet.has(id), inFrame: !!u.parent, why: why(u), sized: !!size, opens: (kind === 'area' || kind === 'group') && childrenOf(ix, t, id).length > 1,
         h: size?.h ?? cardHeight(d), w: size?.w ?? (focus ? W_FOCUS : W_NEAR), onAct: act(id),
         onMenu: e => setMenu({ unit: id, x: e.clientX, y: e.clientY }),
         onResize: (w, h) => (setMoreOpen(s => (s.has(id) ? new Set([...s].filter(x => x !== id)) : s)), setSize(id, { w, h })),
@@ -362,20 +377,20 @@ function CanvasInner(p: CanvasProps) {
         onMore: () => (setSize(id, undefined), setMoreOpen(s => new Set(s).add(id))),
       };
     };
-    for (const u of canvas.units) if (u.role !== 'frame') out.push({ id: u.id, ...(u.parent ? { parent: u.parent } : {}), card: card(u) });
+    for (const u of canvas.units) if (u.role !== 'frame' && u.role !== 'open') out.push({ id: u.id, ...(u.parent ? { parent: u.parent } : {}), card: card(u) });
     if (model.engineOn) {
       const d = { text: '', badges: [], when: [], rows: [], more: 0, beyond: 0, outside: 0, taps: [] };
       out.unshift({
         id: 'engine',
         card: {
-          unit: 'engine', role: 'engine', kind: 'engine', title: 'Engine', sub: 'runs the main scene, the autoloads and the callbacks', ...d, changed: 0, isNew: false, on: false, hl: false, route: routeSet.size > 0, inFrame: false,
-          why: 'The engine runs the main scene and the autoloads, and calls their callbacks.', sized: false,
+          unit: 'engine', role: 'engine', kind: 'engine', title: 'Engine', sub: 'runs the main scene, the autoloads and the callbacks', ...d, changed: 0, isNew: false, on: false, hl: false, peek: litUnits ? 'off' : undefined, route: routeSet.size > 0, inFrame: false,
+          why: 'The engine runs the main scene and the autoloads, and calls their callbacks.', sized: false, opens: false,
           h: cardHeight(d), w: 200, onAct: () => {}, onMenu: () => {}, onResize: () => {}, onRow: () => {}, onRowHover: () => {},
         },
       });
     }
     return out;
-  }, [canvas, model, nav.sel, nav.show, p.hl, p.summaries, p.focus, sizes, routeUnits, ix, t, chg, titles]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canvas, model, nav.sel, nav.show, p.hl, p.lit, p.summaries, p.focus, sizes, routeUnits, ix, t, chg, titles]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lines, and the route from the engine drawn over them.
   const edges = useMemo(() => {
@@ -384,6 +399,7 @@ function CanvasInner(p: CanvasProps) {
     const order = new Map<string, number>();
     if (selFn) (ix.out.get(selFn) ?? []).forEach((e, i) => !order.has(e.t) && order.set(e.t, i));
     const few = model.wires.length <= 16;
+    const peeking = !!p.lit;
     for (const w of model.wires) {
       const st = KIND_STYLE[w.kind];
       const isNew = w.edges.some(e => added.has(edgeKey(e)));
@@ -398,9 +414,9 @@ function CanvasInner(p: CanvasProps) {
       const dim = (!!selFn || !!hoverPin) && !lit;
       out.push({
         id: w.key, source: w.from, target: w.to, sourceHandle: `o:${w.fromPin}`, targetHandle: `i:${w.toPin}`, data: { wire: w }, interactionWidth: 14,
-        label, labelStyle: { fill: isNew ? 'var(--accent)' : st.stroke, fontSize: 11, fontWeight: lit ? 600 : 400 }, labelBgStyle: { fill: 'var(--panel)' },
-        style: { stroke: isNew ? 'var(--accent)' : st.stroke, strokeDasharray: st.dash, strokeWidth: (lit ? 1.25 : 0) + Math.min(3.5, 1.1 + Math.log2(n) * 0.45), opacity: dim ? 0.12 : 0.85 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: isNew ? 'var(--accent)' : st.stroke }, zIndex: lit ? 5 : 0,
+        label, labelStyle: { fill: isNew ? 'var(--chg-new)' : st.stroke, fontSize: 11, fontWeight: lit || isNew ? 600 : 400 }, labelBgStyle: { fill: 'var(--panel)' },
+        style: { stroke: isNew ? 'var(--chg-new)' : st.stroke, strokeDasharray: st.dash, strokeWidth: (lit ? 1.25 : 0) + (isNew ? 0.75 : 0) + Math.min(3.5, 1.1 + Math.log2(n) * 0.45), opacity: dim || peeking ? 0.12 : 0.85 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: isNew ? 'var(--chg-new)' : st.stroke }, zIndex: lit ? 5 : 0,
       });
     }
     if (model.engineOn) {
@@ -414,7 +430,7 @@ function CanvasInner(p: CanvasProps) {
       }
     }
     return out;
-  }, [model, chg, selFn, hoverEdge, hoverPin, routeUnits, ix]);
+  }, [model, chg, selFn, hoverEdge, hoverPin, routeUnits, ix, p.lit]);
 
   const lay = useElkLayout(p.goal, cards, model.layoutEdges);
   // A frame's lines leave and enter by the side facing the card at the other end.
@@ -431,8 +447,12 @@ function CanvasInner(p: CanvasProps) {
     });
   }, [edges, lay.nodes]);
   const flow = useReactFlow();
+  // The view moves when what's looked at changes; opening, splitting or hiding a card leaves it where it is.
+  const lookedKey = canvas.units.filter(u => u.role === 'focus' || u.role === 'frame').map(u => u.id).sort().join('\n');
+  const fitted = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!lay.fresh) return;
+    if (!lay.fresh || fitted.current === lookedKey) return;
+    fitted.current = lookedKey;
     // What's looked at, at a zoom you can read; what's around it a scroll away when it doesn't all fit.
     const looked = canvas.units.filter(u => u.role === 'focus' || u.role === 'frame').map(u => ({ id: u.id }));
     // The new cards reach React Flow and are measured a few frames after they're drawn; fitting before that finds nothing.
@@ -481,7 +501,7 @@ function CanvasInner(p: CanvasProps) {
         ))}
         {(p.focus.length > 0 || (changeChip && p.changesOn)) && (
           <span className="muted small" title="Around what you look at: the cards one step from it, each saying what it links with. The rest of the game is in the chips below the canvas.">
-            around it: {canvas.units.filter(u => u.role === 'near' && !u.parent).length} linked cards · the rest in the chips below · shift-click a card to add it
+            around it: {canvas.units.filter(u => (u.role === 'near' || u.role === 'open') && !u.parent).length} linked cards · the rest in the chips below · shift-click a card to add it
           </span>
         )}
         <span className="grow" />
@@ -561,7 +581,7 @@ function CanvasInner(p: CanvasProps) {
             {canvas.chips.map(c => (
               <button
                 key={c.area}
-                className={`sys-chip${routeChips.has(c.area) ? ' route' : ''}${p.hl && canvas.where.get(ix.fn.get(p.hl)?.cls ?? p.hl) === `chip:${c.area}` ? ' hl' : ''}`}
+                className={`sys-chip${routeChips.has(c.area) ? ' route' : ''}${p.lit && [...p.lit].some(x => canvas.where.get(x) === `chip:${c.area}`) ? ' peek' : ''}${p.hl && canvas.where.get(ix.fn.get(p.hl)?.cls ?? p.hl) === `chip:${c.area}` ? ' hl' : ''}`}
                 onClick={() => onAct('expand', `chip:${c.area}`)}
                 onDoubleClick={() => onAct('focus', `area:${c.area}`)}
                 title={`${c.hidden} class${c.hidden === 1 ? '' : 'es'} not drawn, with ${c.links} links to what is${routeChips.has(c.area) ? '; the route from the engine passes through it' : ''}. Click to draw it, double-click to look at it.`}
@@ -570,6 +590,13 @@ function CanvasInner(p: CanvasProps) {
                 {c.links > 0 && <span className="muted"> · {c.links}↔</span>}
               </button>
             ))}
+            <span className="sys-legend small" aria-label="Colours">
+              <span><i className="lg new" />new</span>
+              <span><i className="lg chg" />changed</span>
+              <span><i className="lg gone" />removed</span>
+              <span><i className="lg sel" />selected</span>
+              <span><i className="lg lit" />hovered</span>
+            </span>
             <span className="sys-hint muted small" title="Click to inspect · double-click to look at it · shift-click to add · right-click or ⋯ for more · drag a card's corner to resize it · Esc goes back">
               {model.dense ? 'Many lines: hover or click a function to see its own · ' : ''}double-click to look at a card · right-click or ⋯ for more · drag a corner to resize
             </span>
@@ -594,15 +621,17 @@ function CanvasInner(p: CanvasProps) {
     if (!u) return [];
     const out: { label: string; hint?: string; run: () => void }[] = [];
     const looked = u.role === 'focus' || u.role === 'frame';
+    if (u.role === 'open') out.push({ label: 'Close it', hint: 'back to one card', run: () => onAct('close', id) });
     if (looked) out.push({ label: 'Stop looking at it', hint: 'it goes back among the rest', run: () => onAct('unfocus', id) });
     else {
       out.push({ label: 'Look at it', hint: 'double-click', run: () => onAct('focus', id) });
       out.push({ label: 'Also look at it', hint: 'shift-click', run: () => onAct('add', id) });
     }
     const kids = childrenOf(ix, t, id).length;
-    if (!looked && kids > 1) out.push({ label: `Split into its ${kids} ${isAreaId(id) && t.groups.has(id.slice(5)) ? 'groups' : 'classes'}`, run: () => onAct('expand', id) });
+    if (u.role === 'near' && kids > 1 && (isAreaId(id) || isGroupId(id))) out.push({ label: 'Open it here', hint: 'see inside; the view stays', run: () => onAct('open', id) });
+    if (u.role === 'near' && kids > 1) out.push({ label: `Split into its ${kids} ${isAreaId(id) && t.groups.has(id.slice(5)) ? 'groups' : 'classes'}`, run: () => onAct('expand', id) });
     const parent = parentOf(ix, t, id);
-    if (!looked && parent && parent !== u.parent && !model.units.has(parent)) out.push({ label: `Fold into ${unitName(parent)}`, run: () => onAct('shrink', id) });
+    if (u.role === 'near' && parent && parent !== u.parent && !model.units.has(parent)) out.push({ label: `Fold into ${unitName(parent)}`, run: () => onAct('shrink', id) });
     if (!looked && !u.parent) out.push({ label: 'Hide it', hint: 'it joins the chips below', run: () => onAct('hide', id) });
     out.push({ label: 'Show in the panel', hint: 'click', run: () => onAct('select', id) });
     if ((model.more.get(id) ?? 0) > 0) out.push({ label: `Show all ${model.more.get(id)} more pins`, run: () => (setSize(id, undefined), setMoreOpen(s => new Set(s).add(id))) });
@@ -631,7 +660,8 @@ function CardMenu({ x, y, title, why, items, onClose }: { x: number; y: number; 
 
 /** What the person changed about the view, each undoable: cards split, folded, drawn from the chips, hidden. */
 function Adjustments({ nav, name, onNav }: { nav: SystemsNav; name: (id: string) => string; onNav: (n: Partial<SystemsNav>) => void }) {
-  const items: { key: 'expand' | 'fold' | 'show' | 'hide'; id: string; label: string; title: string }[] = [
+  const items: { key: 'open' | 'expand' | 'fold' | 'show' | 'hide'; id: string; label: string; title: string }[] = [
+    ...(nav.open ?? []).map(id => ({ key: 'open' as const, id, label: `opened ${name(id)}`, title: 'You opened this card in place. × closes it.' })),
     ...(nav.expand ?? []).map(id => ({ key: 'expand' as const, id, label: `split ${name(id)}`, title: 'You split this card into what it holds. × puts it back together.' })),
     ...(nav.fold ?? []).map(id => ({ key: 'fold' as const, id, label: `folded into ${name(id)}`, title: 'You folded cards into this one. × lets them show on their own again.' })),
     ...(nav.show ?? []).map(id => ({ key: 'show' as const, id, label: `drew ${name(id)}`, title: 'You drew this from the chips. × puts it back among them.' })),
@@ -649,7 +679,7 @@ function Adjustments({ nav, name, onNav }: { nav: SystemsNav; name: (id: string)
           </button>
         </span>
       ))}
-      <button className="text-link small" onClick={() => onNav({ expand: [], fold: [], show: [], hide: [] })}>
+      <button className="text-link small" onClick={() => onNav({ open: [], expand: [], fold: [], show: [], hide: [] })}>
         Undo all
       </button>
     </div>
@@ -670,6 +700,11 @@ function CardButtons({ d }: { d: CardData }) {
           ×
         </button>
       )}
+      {d.opens && d.role === 'near' && (
+        <button title="Open it here: see the cards inside it without changing what you look at" aria-label="Open it here" onClick={() => d.onAct('open')}>
+          ▾
+        </button>
+      )}
       <button title="What you can do with it, and why it's here" aria-label="Card menu" onClick={e => d.onMenu(e)}>
         ⋯
       </button>
@@ -678,7 +713,7 @@ function CardButtons({ d }: { d: CardData }) {
 }
 
 function Card({ data: d }: NodeProps<Node<CardData>>) {
-  const cls = ['sys-node', d.role, d.kind, d.on && 'on', d.hl && 'hl', d.route && 'route', d.isNew && 'added', d.w >= 320 && 'wide'].filter(Boolean).join(' ');
+  const cls = ['sys-node', d.role, d.kind, d.on && 'on', d.hl && 'hl', d.route && 'route', d.isNew ? 'added' : d.changed > 0 && 'changed', d.peek && `peek-${d.peek}`, d.w >= 320 && 'wide'].filter(Boolean).join(' ');
   return (
     <>
     <div className={cls} title={d.why}>
@@ -690,7 +725,7 @@ function Card({ data: d }: NodeProps<Node<CardData>>) {
           {d.title}
         </span>
         {d.isNew && <span className="pill done">new</span>}
-        {d.changed > 0 && <span className="pill decision" title={d.kind === 'class' ? 'Functions added or edited in this scope' : 'Classes the scope changed'}>~{d.changed}</span>}
+        {d.changed > 0 && <span className="pill chg" title={d.kind === 'class' ? 'Functions added or edited in this scope' : 'Classes the scope changed'}>~{d.changed}</span>}
         {d.role !== 'engine' && <CardButtons d={d} />}
       </div>
       <div className="node-sub mono muted ellipsis">{d.sub}</div>
@@ -766,19 +801,25 @@ function Card({ data: d }: NodeProps<Node<CardData>>) {
 
 function Frame({ data: d }: NodeProps<Node<FrameData>>) {
   return (
-    <div className={`sys-frame${d.on ? ' on' : ''}`}>
+    <div className={`sys-frame${d.on ? ' on' : ''}${d.open ? ' open' : ''}`}>
       <Handle type="target" position={Position.Left} id="i:*" style={{ top: headerY }} />
       <Handle type="source" position={Position.Right} id="o:*" style={{ top: headerY }} />
       <Handle type="source" position={Position.Left} id="ol:*" style={{ top: headerY }} />
       <Handle type="target" position={Position.Right} id="ir:*" style={{ top: headerY }} />
       <div className="node-head">
         <span className="node-title ellipsis">{d.title}</span>
-        {d.changed > 0 && <span className="pill decision">~{d.changed}</span>}
+        {d.changed > 0 && <span className="pill chg">~{d.changed}</span>}
         <span className="muted small ellipsis">{d.sub}</span>
         <span className="card-acts nodrag" onClick={stop}>
-          <button title="Stop looking at it" onClick={() => d.onAct('unfocus')}>
-            ×
-          </button>
+          {d.open ? (
+            <button title="Close it: back to one card" aria-label="Close it" onClick={() => d.onAct('close')}>
+              ▴
+            </button>
+          ) : (
+            <button title="Stop looking at it" onClick={() => d.onAct('unfocus')}>
+              ×
+            </button>
+          )}
           <button title="What you can do with it" aria-label="Frame menu" onClick={e => d.onMenu(e)}>
             ⋯
           </button>
@@ -933,8 +974,14 @@ function useElkLayout(goal: string, cards: CardSpec[], edges: Edge[]) {
         nodes.push({ ...base, type: 'frame', data: c.frame, style: { width: box.w, height: box.h }, zIndex: -1, selectable: false });
       } else nodes.push({ ...base, type: 'card', data: c.card!, style: { width: c.card!.w, height: c.card!.h } });
     }
-    // Frames before what they hold, as React Flow wants.
-    nodes.sort((a, b) => Number(!!a.parentId) - Number(!!b.parentId));
+    // Frames before what they hold, as React Flow wants (frames can sit in frames).
+    const parentOf = new Map(nodes.map(n => [n.id, n.parentId]));
+    const depth = (id: string) => {
+      let d = 0;
+      for (let p = parentOf.get(id); p; p = parentOf.get(p)) d++;
+      return d;
+    };
+    nodes.sort((a, b) => depth(a.id) - depth(b.id));
     setRf(old => {
       const prev = new Map(old.map(n => [n.id, n]));
       return nodes.map(n => {

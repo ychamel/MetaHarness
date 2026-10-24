@@ -602,6 +602,8 @@ export interface CanvasInput {
   /** Areas drawn even though nothing links them to the focus, and ones put away as chips. */
   show: string[];
   hide: string[];
+  /** Groups and areas opened in place: drawn as a frame around what they hold, nothing else changed. */
+  open?: string[];
   kinds: Set<LinkKind>;
   /** Classes to draw on their own (where two systems in focus meet). */
   single?: Set<string>;
@@ -609,8 +611,12 @@ export interface CanvasInput {
 
 export interface Unit {
   id: string;
-  /** focus: a class looked at, drawn with its functions; frame: a group or area looked at, its insides drawn in it; near: one step from the focus (or anything, with no focus). */
-  role: 'focus' | 'frame' | 'near';
+  /**
+   * focus: a class looked at, drawn with its functions; frame: a group or area looked at, its
+   * insides drawn in it; near: one step from the focus (or anything, with no focus); open: a near
+   * group or area opened in place, holding its cards.
+   */
+  role: 'focus' | 'frame' | 'near' | 'open';
   /** The frame it's drawn in. */
   parent?: string;
   /** The classes it stands for here. */
@@ -677,6 +683,7 @@ export function canvasOf(ix: CodeIndex, t: Tree, links: Link[], rails: Set<strin
   const fold = new Set(inp.fold);
   const show = new Set(inp.show);
   const hide = new Set(inp.hide);
+  const open = new Set(inp.open ?? []);
   // Down the class's path as far as it's opened, back up to the highest fold (not above `min`, a frame's insides).
   const refine = (path: string[], i: number, min = 0) => {
     while (i < path.length - 1 && expand.has(path[i])) i++;
@@ -691,6 +698,15 @@ export function canvasOf(ix: CodeIndex, t: Tree, links: Link[], rails: Set<strin
     return u;
   };
   for (const f of focus) if (!ix.cls.has(f)) unit(f, 'frame');
+  /** A card opened in place becomes a frame, and the class goes one level down inside it, as often as opened. */
+  const nest = (path: string[], id: string, parent?: string): [string, string | undefined] => {
+    for (let i = path.indexOf(id); open.has(id) && i >= 0 && i < path.length - 1; i = path.indexOf(id)) {
+      unit(id, 'open', parent);
+      parent = id;
+      id = refine(path, i + 1, i + 1);
+    }
+    return [id, parent];
+  };
   for (const c of ix.g.classes) {
     const path = pathOf(ix, t, c.id);
     const f = covered.get(c.id);
@@ -698,8 +714,8 @@ export function canvasOf(ix: CodeIndex, t: Tree, links: Link[], rails: Set<strin
       if (ix.cls.has(f)) unit(f, 'focus').classes.push(c.id), where.set(c.id, f);
       else {
         // Inside a frame: what the frame holds, split further where opened.
-        const id = refine(path, path.indexOf(f) + 1, path.indexOf(f) + 1);
-        unit(id, 'near', f).classes.push(c.id);
+        const [id, parent] = nest(path, refine(path, path.indexOf(f) + 1, path.indexOf(f) + 1), f);
+        unit(id, 'near', parent).classes.push(c.id);
         where.set(c.id, id);
       }
       continue;
@@ -727,12 +743,18 @@ export function canvasOf(ix: CodeIndex, t: Tree, links: Link[], rails: Set<strin
       where.set(c.id, `chip:${c.area}`);
       continue;
     }
-    unit(id, 'near').classes.push(c.id);
-    where.set(c.id, id);
+    const [inner, parent] = nest(path, id);
+    unit(inner, 'near', parent).classes.push(c.id);
+    where.set(c.id, inner);
   }
   // Lines: between pins; a focus card's pins are its functions.
   const wires = new Map<string, Wire>();
-  const inFocus = (u: Unit) => u.role !== 'near' || !!u.parent;
+  /** The frame of what's looked at that a card is in, through any cards opened in place. */
+  const lookedFrame = (u: Unit): string | undefined => {
+    for (let p = u.parent; p; p = units.get(p)?.parent) if (units.get(p)?.role === 'frame') return p;
+    return undefined;
+  };
+  const inFocus = (u: Unit) => u.role === 'focus' || u.role === 'frame' || !!lookedFrame(u);
   for (const l of live) {
     const a = where.get(l.from);
     const b = where.get(l.to);
@@ -741,14 +763,17 @@ export function canvasOf(ix: CodeIndex, t: Tree, links: Link[], rails: Set<strin
     let ub = units.get(b);
     if (ua && ub) {
       // A line leaving a frame leaves from its edge, as a collapsed graph's pins do; the card inside counts it.
-      if (ua.parent !== ub.parent) {
+      // (Cards opened in place keep their own lines: opening one is to see which of its cards link.)
+      const fa = lookedFrame(ua);
+      const fb = lookedFrame(ub);
+      if (fa !== fb) {
         const n = l.edges.length;
-        if (ua.parent) (ua.outside += n), (ua = units.get(ua.parent)!);
-        if (ub.parent) (ub.outside += n), (ub = units.get(ub.parent)!);
+        if (fa) (ua.outside += n), (ua = units.get(fa)!);
+        if (fb) (ub.outside += n), (ub = units.get(fb)!);
         if (ua === ub) continue;
       }
-      // With a focus, a line touches it (a focus card, or what a frame holds): what neighbours share isn't drawn.
-      if (focus.length && !inFocus(ua) && !inFocus(ub)) continue;
+      // With a focus, a line touches it (a focus card, or what a frame holds), or stays inside a card opened in place: what neighbours share isn't drawn.
+      if (focus.length && !inFocus(ua) && !inFocus(ub) && !(ua.parent && ua.parent === ub.parent)) continue;
       for (const end of wireEnds(ix, l)) {
         const fromPin = ua.role === 'focus' ? end.a : ub.id;
         const toPin = ub.role === 'focus' ? end.b : ua.id;

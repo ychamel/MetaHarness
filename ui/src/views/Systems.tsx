@@ -10,6 +10,7 @@ import {
 } from '../codeData.ts';
 import { areaLabel } from '../designData.ts';
 import { Splitter } from '../components/Splitter.tsx';
+import { ChangedFiles } from './Design.tsx';
 import { KIND_STYLE, SystemsCanvas, type Act } from './SystemsCanvas.tsx';
 
 /** Where the Systems lens is: what's looked at and how it's split, what's selected and traced, and a connection opened. */
@@ -20,6 +21,8 @@ export interface SystemsNav {
   focus?: string[];
   /** Whether what the scope changed is looked at too: on unless turned off. */
   changes?: boolean;
+  /** Groups and areas opened in place (a frame around their cards, nothing else changed). */
+  open?: string[];
   /** Cards split into what they hold, and units kept whole. */
   expand?: string[];
   fold?: string[];
@@ -47,6 +50,9 @@ interface Props {
   onNav: (n: SystemsNav) => void;
   /** The lens switch, drawn first in the toolbar. */
   lens: ReactNode;
+  /** Files lit for a moment (a commit or a file hovered), and lighting some. */
+  peek?: string[];
+  onPeek: (paths?: string[]) => void;
 }
 
 const graphs = new Map<string, Promise<CodeGraph>>();
@@ -73,6 +79,19 @@ function useGraph(goal: string, rev: string | undefined): { g?: CodeGraph; error
     };
   }, [goal, rev]);
   return s.rev === rev ? s : {};
+}
+
+/**
+ * The graphs before and after the scope, and the scope's change, kept as they were until the new
+ * ones have all arrived: the canvas changes once, in place, instead of blanking while they load.
+ */
+function useGraphs(goal: string, to: string | undefined, from: string | undefined, change: DesignScopeView['change']) {
+  const after = useGraph(goal, to);
+  const before = useGraph(goal, from);
+  const ready = !!after.g && (!from || !!before.g || !!before.error);
+  const last = useRef<{ after?: CodeGraph; before?: CodeGraph; change?: DesignScopeView['change'] }>({});
+  if (ready && (last.current.after !== after.g || last.current.before !== before.g || last.current.change !== change)) last.current = { after: after.g, before: from ? before.g : undefined, change };
+  return { ...last.current, loading: !ready && !after.error, error: last.current.after ? undefined : after.error };
 }
 
 const sources = new Map<string, Promise<string>>();
@@ -147,17 +166,23 @@ const plus = (l: string[] | undefined, x: string) => [...new Set([...(l ?? []), 
  * and chips for the rest; a function selected there shows its trace in the panel. Looking at two
  * systems shows where they meet.
  */
-export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
+export default function Systems({ goal, view, snap, nav, onNav, lens, peek, onPeek }: Props) {
   const tool = nav.tool ?? 'map';
   const [kinds, setKind] = useKinds();
   const [showChange, setShowChange] = useState(true);
   const [hl, setHl] = useState<string>();
-  const after = useGraph(goal.id, view.scope?.to);
-  const before = useGraph(goal.id, showChange && view.scope ? view.scope.from : undefined);
-  const ix = useMemo(() => (after.g ? indexGraph(after.g) : undefined), [after.g]);
-  const bix = useMemo(() => (before.g ? indexGraph(before.g) : undefined), [before.g]);
+  const gs = useGraphs(goal.id, view.scope?.to, showChange && view.scope ? view.scope.from : undefined, view.change);
+  const ix = useMemo(() => (gs.after ? indexGraph(gs.after) : undefined), [gs.after]);
+  const bix = useMemo(() => (gs.before ? indexGraph(gs.before) : undefined), [gs.before]);
   const links = useMemo(() => (ix ? classLinks(ix) : []), [ix]);
-  const chg = useMemo(() => (ix && showChange && bix ? codeChange(bix, ix, view.change) : undefined), [ix, bix, showChange, view.change]);
+  const chg = useMemo(() => (ix && showChange && bix ? codeChange(bix, ix, gs.change) : undefined), [ix, bix, showChange, gs.change]);
+  // The classes of the files lit for a moment.
+  const peekKey = (peek ?? []).join('\n');
+  const lit = useMemo(() => {
+    if (!ix || !peek) return undefined;
+    const files = new Set(peek);
+    return new Set(ix.g.classes.filter(c => files.has(c.file)).map(c => c.id));
+  }, [ix, peekKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const tree = useMemo(() => (ix ? makeTree(groupClasses(ix, links)) : undefined), [ix, links]);
   const rails = useMemo(() => (ix ? railClasses(ix, links) : new Set<string>()), [ix, links]);
   const changeFocus = useMemo(() => (ix && tree && chg ? changeFocusOf(ix, tree, chg) : []), [ix, tree, chg]);
@@ -175,11 +200,11 @@ export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
     () =>
       ix && tree
         ? canvasOf(ix, tree, links, rails, {
-            focus, expand: nav.expand ?? [], fold: nav.fold ?? [], show: nav.show ?? [], hide: nav.hide ?? [], kinds: lk,
+            focus, open: nav.open ?? [], expand: nav.expand ?? [], fold: nav.fold ?? [], show: nav.show ?? [], hide: nav.hide ?? [], kinds: lk,
             ...(meet ? { single: new Set(meet.meetings.filter(m => m.how !== 'shared').slice(0, 12).map(m => m.mid)) } : {}),
           })
         : undefined,
-    [ix, tree, links, rails, focus, nav.expand, nav.fold, nav.show, nav.hide, lkKey, meet], // eslint-disable-line react-hooks/exhaustive-deps
+    [ix, tree, links, rails, focus, nav.open, nav.expand, nav.fold, nav.show, nav.hide, lkKey, meet], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const route = useMemo(() => (ix && tree && nav.route !== false && focus.length ? routeTo(ix, tree, focus, chg) : []), [ix, tree, focus, chg, nav.route]);
   const hist = useRef<SystemsNav[]>([]);
@@ -213,11 +238,11 @@ export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
         return set({ sel: unit, link: undefined });
       case 'focus':
         if (unit.startsWith('chip:')) unit = areaNode(unit.slice(5));
-        return go({ focus: [unit], changes: false, expand: [], fold: [], show: [], sel: unit });
+        return go({ focus: [unit], changes: false, open: [], expand: [], fold: [], show: [], sel: unit });
       case 'add':
         return go({ focus: plus(nav.focus, unit), sel: unit });
       case 'unfocus':
-        if (unit === '*') return go({ focus: [], changes: false, expand: [], fold: [], show: [], sel: undefined });
+        if (unit === '*') return go({ focus: [], changes: false, open: [], expand: [], fold: [], show: [], sel: undefined });
         if (nav.focus?.includes(unit)) return go({ focus: without(nav.focus, unit), ...(nav.sel === unit ? { sel: undefined } : {}) });
         return go({ changes: false, focus: focus.filter(f => f !== unit) });
       case 'expand':
@@ -233,6 +258,10 @@ export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
         if (p) return go({ fold: plus(nav.fold, p), expand: without(nav.expand, p, unit) });
         return go({ hide: plus(nav.hide, unit), show: without(nav.show, unit) });
       }
+      case 'open':
+        return go({ open: plus(nav.open, unit), fold: without(nav.fold, unit) });
+      case 'close':
+        return go({ open: without(nav.open, unit) });
       case 'hide':
         return go({ hide: plus(nav.hide, unit), show: without(nav.show, unit), expand: without(nav.expand, unit), ...(nav.sel === unit ? { sel: undefined } : {}) });
     }
@@ -271,10 +300,11 @@ export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
         Changes in this scope
       </label>
       {ix && <Coverage ix={ix} />}
+      {gs.loading && ix && <span className="muted small nowrap reading">reading this scope…</span>}
     </div>
   );
 
-  if (after.error) return withToolbar(toolbar, <div className="empty warn-text">{after.error}</div>);
+  if (gs.error) return withToolbar(toolbar, <div className="empty warn-text">{gs.error}</div>);
   if (!ix || !tree || !canvas) return withToolbar(toolbar, <div className="empty">Reading how the code runs…</div>);
   if (!ix.g.classes.length) {
     return withToolbar(toolbar, <div className="empty">No code here that MetaHarness can follow yet. The Systems lens reads GDScript for now (a language pack with a code reader); the Areas lens still shows every file.</div>);
@@ -296,7 +326,7 @@ export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
           ) : (
             <SystemsCanvas
               goal={goal.id} ix={ix} t={tree} canvas={canvas} nav={nav} chg={chg} titles={titles} summaries={summaries} focus={nav.focus ?? []} changeFocus={changeFocus} changesOn={changesOn}
-              scopeTitle={view.scope?.title} route={route} hl={hl} canBack={hist.current.length > 0} onBack={back} onNav={set} onAct={act} onChanges={on => go({ changes: on })}
+              scopeTitle={view.scope?.title} route={route} hl={hl} lit={lit} canBack={hist.current.length > 0} onBack={back} onNav={set} onAct={act} onChanges={on => go({ changes: on })}
             />
           )}
         </div>
@@ -318,7 +348,7 @@ export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
             ) : meet && focus.length === 2 ? (
               <BetweenPanel ix={ix} res={meet} a={focus[0]} b={focus[1]} bpick={nav.bpick} name={un} onNav={set} onFn={lookAt} />
             ) : (
-              <StartPanel ix={ix} bix={bix} chg={chg} view={view} onNav={set} onFn={lookAt} onAct={act} />
+              <StartPanel ix={ix} bix={bix} chg={chg} view={view} onNav={set} onFn={lookAt} onAct={act} onPeek={onPeek} onHover={setHl} />
             )}
           </div>
         </aside>
@@ -826,7 +856,7 @@ function TraceRow({ ix, id, step, depth, loop, kids, open, sel, isNew, edited, o
         {f && '()'}
       </button>
       {isNew && <span className="pill done">new</span>}
-      {edited && <span className="pill decision" title="Its code changed in this scope">edited</span>}
+      {edited && <span className="pill chg" title="Its code changed in this scope">edited</span>}
       {step?.edge?.g && <span className="pill" title="Followed by its name only: the receiver's type isn't declared">by name</span>}
       {f?.mut && <span className="trace-mut" title="Changes its own object's state">✎</span>}
       {f?.engine && <span className="pill" title={engineWhen(f.name)}>engine</span>}
@@ -970,7 +1000,17 @@ function UnitActs({ id, onAct, split }: { id: string; onAct: ActFn; split?: bool
   );
 }
 
-function StartPanel({ ix, bix, chg, view, onNav, onFn, onAct }: { ix: CodeIndex; bix?: CodeIndex; chg?: CodeChange; view: DesignScopeView; onNav: (n: Partial<SystemsNav>) => void; onFn: (fn: string) => void; onAct: ActFn }) {
+function StartPanel({ ix, bix, chg, view, onNav, onFn, onAct, onPeek, onHover }: {
+  ix: CodeIndex;
+  bix?: CodeIndex;
+  chg?: CodeChange;
+  view: DesignScopeView;
+  onNav: (n: Partial<SystemsNav>) => void;
+  onFn: (fn: string) => void;
+  onAct: ActFn;
+  onPeek: (paths?: string[]) => void;
+  onHover: (id?: string) => void;
+}) {
   const groups = new Map<string, string[]>();
   for (const id of ix.entries) {
     const f = ix.fn.get(id)!;
@@ -1003,7 +1043,16 @@ function StartPanel({ ix, bix, chg, view, onNav, onFn, onAct }: { ix: CodeIndex;
           </ul>
         </details>
       ))}
-      {chg && <CodeChanges ix={ix} bix={bix} chg={chg} title={view.scope?.title} onNav={onNav} onFn={onFn} onAct={onAct} />}
+      {chg && <CodeChanges ix={ix} bix={bix} chg={chg} title={view.scope?.title} onNav={onNav} onFn={onFn} onAct={onAct} onHover={onHover} />}
+      <ChangedFiles
+        files={view.report?.files ?? []} onPeek={onPeek}
+        onFile={(_, path) => {
+          // A file clicked: look at its classes.
+          const cs = ix.g.classes.filter(c => c.file === path).map(c => c.id);
+          if (cs.length === 1) onAct('focus', cs[0]);
+          else if (cs.length) onNav({ focus: cs, changes: false, sel: cs[0] });
+        }}
+      />
       <details className="more">
         <summary className="section-title">What it could follow</summary>
         <div className="small">
@@ -1026,7 +1075,7 @@ function StartPanel({ ix, bix, chg, view, onNav, onFn, onAct }: { ix: CodeIndex;
   );
 }
 
-function CodeChanges({ ix, bix, chg, title, onFn, onAct }: { ix: CodeIndex; bix?: CodeIndex; chg: CodeChange; title?: string; onNav: (n: Partial<SystemsNav>) => void; onFn: (fn: string) => void; onAct: ActFn }) {
+function CodeChanges({ ix, bix, chg, title, onFn, onAct, onHover }: { ix: CodeIndex; bix?: CodeIndex; chg: CodeChange; title?: string; onNav: (n: Partial<SystemsNav>) => void; onFn: (fn: string) => void; onAct: ActFn; onHover: (id?: string) => void }) {
   const cross = (e: CodeEdge, g: CodeIndex) => {
     const a = g.fn.get(e.f)?.cls ?? g.sig.get(e.f)?.cls;
     const b = g.fn.get(e.t)?.cls ?? g.sig.get(e.t)?.cls ?? g.field.get(e.t)?.cls ?? (e.k === 'new' ? e.t : undefined);
@@ -1047,7 +1096,7 @@ function CodeChanges({ ix, bix, chg, title, onFn, onAct }: { ix: CodeIndex; bix?
           {[...chg.newClasses].map(id => (
             <li key={'nc' + id}>
               <span className="def-sign add">+</span> class{' '}
-              <button className="text-link mono" onClick={() => onAct('focus', id)}>
+              <button className="text-link mono" onClick={() => onAct('focus', id)} onMouseEnter={() => onHover(id)} onMouseLeave={() => onHover(undefined)}>
                 {ix.cls.get(id)?.name}
               </button>
             </li>
@@ -1065,7 +1114,7 @@ function CodeChanges({ ix, bix, chg, title, onFn, onAct }: { ix: CodeIndex; bix?
           {added.slice(0, 14).map(e => (
             <li key={'a' + edgeKey(e)}>
               <span className="def-sign add">+</span>{' '}
-              <button className="text-link sys-sentence" onClick={() => onFn(e.k === 'listen' ? e.t : e.f)}>
+              <button className="text-link sys-sentence" onClick={() => onFn(e.k === 'listen' ? e.t : e.f)} onMouseEnter={() => onHover(e.k === 'listen' ? e.t : e.f)} onMouseLeave={() => onHover(undefined)}>
                 {edgeSentence(ix, e)}
               </button>
             </li>
@@ -1112,7 +1161,7 @@ function AreaInfo({ ix, t, snap, area, chg, onNav, onAct }: { ix: CodeIndex; t: 
               <li key={g.id}>
                 <button className="def-row" onClick={() => onNav({ sel: g.id })} title={g.text}>
                   <span className="ellipsis">{g.name}</span>
-                  {g.classes.some(c => chg?.touched.has(c)) && <span className="pill decision">changed</span>}
+                  {g.classes.some(c => chg?.touched.has(c)) && <span className="pill chg">changed</span>}
                   <span className="muted small def-file">{g.classes.length}</span>
                 </button>
               </li>
@@ -1138,7 +1187,7 @@ function ClassList({ ix, cs, chg, onNav }: { ix: CodeIndex; cs: string[]; chg?: 
           <li key={id}>
             <button className="def-row" onClick={() => onNav({ sel: id })} title={c.doc}>
               <span className="mono ellipsis">{c.name}</span>
-              {chg?.touched.has(id) && <span className="pill decision">changed</span>}
+              {chg?.touched.has(id) && <span className="pill chg">changed</span>}
               <span className="muted small def-file">{ix.fnsOf.get(id)?.length ?? 0} fn</span>
             </button>
           </li>
@@ -1232,7 +1281,7 @@ function ClassPanel({ ix, links, chg, id, onNav, onAct, onFn }: { ix: CodeIndex;
               <span className="mono ellipsis">{f.name}</span>
               {f.engine && <span className="pill" title={engineWhen(f.name)}>⏵ {engineWhen(f.name)}</span>}
               {f.mut && <span className="muted small">changes state</span>}
-              {(chg?.edited.has(f.id) || chg?.newFns.has(f.id)) && <span className="pill decision">{chg?.newFns.has(f.id) ? 'new' : 'edited'}</span>}
+              {(chg?.edited.has(f.id) || chg?.newFns.has(f.id)) && <span className={`pill ${chg?.newFns.has(f.id) ? 'done' : 'chg'}`}>{chg?.newFns.has(f.id) ? 'new' : 'edited'}</span>}
               <span className="muted small def-file">:{f.line}</span>
             </button>
           </li>
@@ -1351,7 +1400,7 @@ function FnPanel({ goal, rev, ix, bix, chg, id, up, docked, onNav, onAct, onStep
         {f.static && <span className="pill">static</span>}
         {f.mut && <span className="pill" title="It, or a method of its own it calls, assigns its object's variables">changes {c.name}'s state</span>}
         {chg?.newFns.has(id) && <span className="pill done">new in this scope</span>}
-        {chg?.edited.has(id) && !chg.newFns.has(id) && <span className="pill decision">edited in this scope</span>}
+        {chg?.edited.has(id) && !chg.newFns.has(id) && <span className="pill chg">edited in this scope</span>}
       </div>
       {f.doc && <p className="area-text doc-text">{f.doc}</p>}
       <div className="row-wrap">
