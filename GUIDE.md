@@ -254,7 +254,12 @@ You review the result in your checkout like any other change, and push it yourse
           hangs below in the order things are made and called. Each card says when the engine
           calls into it (every frame, on input, when it redraws). Double-click an area to open
           it into its classes, a class to isolate it with only what it's linked to. Tick the
-          links to draw: **Calls**, **Signals**, **Creates**, **State**.
+          links to draw: **Calls**, **Signals**, **Creates**, **State**. Drag cards where you
+          like (kept per goal in your browser; **Reset layout** puts them back). **Click a
+          connection** to open it on its own: the classes on each side, an arrow per pair, and
+          in the panel every place in the code behind it with its file and line; click an
+          arrow to keep to that pair, a line to trace the function it's in. In **Between**,
+          clicking an arrow lists the same for that arrow.
         - **Trace** follows one function (pick it from the search box, a class's functions, or
           an entry point): **What it does** lists its calls, the objects it makes and the
           signals it emits in the order its lines do them, a signal going on to its handlers,

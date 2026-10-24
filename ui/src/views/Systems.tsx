@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { applyNodeChanges, Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { api } from '../api.ts';
 import type { CodeEdge, CodeGraph, DesignScopeView, DesignSnapshot, Goal } from '../types.ts';
@@ -20,6 +20,11 @@ export interface SystemsNav {
   up?: boolean;
   a?: string;
   b?: string;
+  /** A connection on the map opened on its own (nodes as on the map: a class or area:<path>), and the pair of classes picked in it. */
+  link?: { from: string; to: string; kind: LinkKind };
+  pick?: string;
+  /** A connection picked in Between: `<a|b>|<kind>|<middle class>` or `<ab|ba>|<kind>`. */
+  bpick?: string;
 }
 
 interface Props {
@@ -196,9 +201,9 @@ export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
       {toolbar}
       <div className="design-body">
         <div className="view">
-          {tool === 'map' && <MapView ix={ix} links={links} kinds={linkKinds(kinds)} nav={nav} chg={chg} titles={titles} onNav={set} />}
+          {tool === 'map' && <MapView goal={goal.id} ix={ix} links={links} kinds={linkKinds(kinds)} nav={nav} chg={chg} titles={titles} onNav={set} />}
           {tool === 'trace' && <TraceView ix={ix} bix={bix} chg={chg} root={nav.trace} up={!!nav.up} sel={sel} onNav={set} />}
-          {tool === 'between' && <BetweenView ix={ix} links={links} a={nav.a} b={nav.b} titles={titles} onNav={set} />}
+          {tool === 'between' && <BetweenView goal={goal.id} ix={ix} links={links} a={nav.a} b={nav.b} bpick={nav.bpick} titles={titles} onNav={set} />}
         </div>
         <Splitter pane="design-side" grow="left" min={280} max={820} label="Systems panel" />
         <aside className="design-side">
@@ -211,8 +216,10 @@ export default function Systems({ goal, view, snap, nav, onNav, lens }: Props) {
               <SignalPanel ix={ix} id={sel} onNav={set} />
             ) : sel && isArea(sel) ? (
               <AreaInfo ix={ix} snap={snap} area={sel.slice(5)} nav={nav} chg={chg} onNav={set} />
+            ) : tool === 'map' && nav.link ? (
+              <LinkPanel ix={ix} links={links} link={nav.link} pick={nav.pick} titles={titles} onNav={set} />
             ) : tool === 'between' ? (
-              <BetweenPanel ix={ix} links={links} a={nav.a} b={nav.b} titles={titles} onNav={set} />
+              <BetweenPanel ix={ix} links={links} a={nav.a} b={nav.b} bpick={nav.bpick} titles={titles} onNav={set} />
             ) : (
               <StartPanel ix={ix} bix={bix} chg={chg} view={view} onNav={set} />
             )}
@@ -291,8 +298,8 @@ type SysData = {
 const NW = 210;
 const NH = 96;
 
-function MapView({ ix, links, kinds, nav, chg, titles, onNav }: { ix: CodeIndex; links: Link[]; kinds: Set<LinkKind>; nav: SystemsNav; chg?: CodeChange; titles: Map<string, string>; onNav: (n: Partial<SystemsNav>) => void }) {
-  const { nodes, edges } = useMemo(() => {
+function MapView({ goal, ix, links, kinds, nav, chg, titles, onNav }: { goal: string; ix: CodeIndex; links: Link[]; kinds: Set<LinkKind>; nav: SystemsNav; chg?: CodeChange; titles: Map<string, string>; onNav: (n: Partial<SystemsNav>) => void }) {
+  const computed = useMemo(() => {
     const open = new Set(nav.open ?? []);
     const nodeOf = (cls: string) => {
       const c = ix.cls.get(cls);
@@ -364,7 +371,7 @@ function MapView({ ix, links, kinds, nav, chg, titles, onNav }: { ix: CodeIndex;
     const edges: Edge[] = [];
     for (const l of engineLinks) {
       const st = KIND_STYLE.engine;
-      edges.push({ id: `engine->${l.to}`, source: 'engine', target: l.to, ...handles(pos.get('engine')!, pos.get(l.to)!), style: { stroke: st.stroke, strokeWidth: 1.5, opacity: sel && !near.has(l.to) ? 0.15 : 0.7 }, markerEnd: { type: MarkerType.ArrowClosed, color: st.stroke } });
+      edges.push({ id: `engine->${l.to}`, source: 'engine', target: l.to, data: { auto: true }, ...handles(pos.get('engine')!, pos.get(l.to)!), style: { stroke: st.stroke, strokeWidth: 1.5, opacity: sel && !near.has(l.to) ? 0.15 : 0.7 }, markerEnd: { type: MarkerType.ArrowClosed, color: st.stroke } });
     }
     for (const l of vis) {
       if (!shownSet.has(l.from) || !shownSet.has(l.to)) continue;
@@ -373,15 +380,17 @@ function MapView({ ix, links, kinds, nav, chg, titles, onNav }: { ix: CodeIndex;
       const isNew = l.links.some(x => x.edges.some(e => added.has(edgeKey(e))));
       const label = on || few || isNew ? `${isNew ? 'new · ' : ''}${l.kind === 'signal' ? '⚡ ' + l.names.slice(0, 2).join(', ') + (l.names.length > 2 ? '…' : '') : `${st.word} ${l.n}`}` : undefined;
       edges.push({
-        id: `${l.kind}:${l.from}->${l.to}`, source: l.from, target: l.to, ...handles(pos.get(l.from)!, pos.get(l.to)!),
-        label, labelStyle: { fill: isNew ? 'var(--accent)' : st.stroke, fontSize: 11 }, labelBgStyle: { fill: 'var(--panel)' },
+        id: `${l.kind}:${l.from}->${l.to}`, source: l.from, target: l.to, ...handles(pos.get(l.from)!, pos.get(l.to)!), data: { auto: true, link: { from: l.from, to: l.to, kind: l.kind } },
+        interactionWidth: 16, label, labelStyle: { fill: isNew ? 'var(--accent)' : st.stroke, fontSize: 11 }, labelBgStyle: { fill: 'var(--panel)' },
         style: { stroke: isNew ? 'var(--accent)' : st.stroke, strokeDasharray: st.dash, strokeWidth: on || isNew ? 2.25 : 1.25, opacity: sel && !on ? 0.12 : 0.85 },
         markerEnd: { type: MarkerType.ArrowClosed, color: isNew ? 'var(--accent)' : st.stroke },
       });
     }
     return { nodes, edges };
   }, [ix, links, kinds, nav.open, nav.isolate, nav.sel, chg, titles]);
+  const lay = useLayout(`mh.systems.layout.${goal}.map`, computed.nodes, computed.edges);
 
+  if (nav.link) return <LinkView goal={goal} ix={ix} links={links} link={nav.link} pick={nav.pick} sel={nav.sel} chg={chg} titles={titles} onNav={onNav} />;
   const toggle = (id: string) => {
     if (!isArea(id)) return;
     const a = id.slice(5);
@@ -400,12 +409,20 @@ function MapView({ ix, links, kinds, nav, chg, titles, onNav }: { ix: CodeIndex;
           </button>
         </div>
       )}
+      {lay.moved && (
+        <button className="btn ghost small sys-reset" onClick={lay.reset} title="Put every card back where the layout puts it">
+          Reset layout
+        </button>
+      )}
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={lay.nodes}
+        edges={lay.edges}
         nodeTypes={SYS_TYPES}
+        onNodesChange={lay.onNodesChange}
+        onNodeDragStop={lay.onNodeDragStop}
         onNodeClick={(_, n) => onNav({ sel: n.id === 'engine' ? undefined : n.id })}
         onNodeDoubleClick={(_, n) => (isArea(n.id) ? toggle(n.id) : ix.cls.has(n.id) && onNav({ isolate: [n.id], sel: n.id }))}
+        onEdgeClick={(_, e) => e.data?.link && onNav({ link: e.data.link as SystemsNav['link'], pick: undefined, sel: undefined })}
         onPaneClick={() => onNav({ sel: undefined })}
         fitView
         fitViewOptions={{ padding: 0.1, maxZoom: 1 }}
@@ -416,7 +433,7 @@ function MapView({ ix, links, kinds, nav, chg, titles, onNav }: { ix: CodeIndex;
         <Background gap={20} size={1} color="var(--line)" />
         <Controls showInteractive={false} />
       </ReactFlow>
-      <div className="sys-hint muted small">Click to inspect · double-click an area to open it into classes, a class to isolate it</div>
+      <div className="sys-hint muted small">Click to inspect · drag to move · double-click an area to open it, a class to isolate it · click a connection to open it</div>
     </div>
   );
 }
@@ -464,6 +481,240 @@ function handles(a: { x: number; y: number }, b: { x: number; y: number }): { so
   if (b.y > a.y) return { sourceHandle: 'b', targetHandle: 't' };
   if (b.y < a.y) return { sourceHandle: 'u', targetHandle: 'd' };
   return b.x > a.x ? { sourceHandle: 'r', targetHandle: 'l' } : { sourceHandle: 'fl', targetHandle: 'fr' };
+}
+
+/* ---------------- one connection ---------------- */
+
+/** A connection of the map on its own: the classes on each side and each pair's link, the rest left out. */
+function LinkView({ goal, ix, links, link, pick, sel, chg, titles, onNav }: {
+  goal: string;
+  ix: CodeIndex;
+  links: Link[];
+  link: NonNullable<SystemsNav['link']>;
+  pick?: string;
+  sel?: string;
+  chg?: CodeChange;
+  titles: Map<string, string>;
+  onNav: (n: Partial<SystemsNav>) => void;
+}) {
+  const ls = useMemo(() => linksOf(ix, links, link), [ix, links, link]);
+  const computed = useMemo(() => {
+    const left = [...new Set(ls.map(l => l.from))].sort((a, b) => (ix.cls.get(a)?.name ?? a).localeCompare(ix.cls.get(b)?.name ?? b));
+    const right = [...new Set(ls.map(l => l.to))].sort((a, b) => (ix.cls.get(a)?.name ?? a).localeCompare(ix.cls.get(b)?.name ?? b));
+    const added = new Set(chg?.added.map(edgeKey));
+    const card = (id: string, side: 'L' | 'R', i: number, n: number, other: number): Node<SysData> => {
+      const c = ix.cls.get(id)!;
+      const k = ls.filter(l => (side === 'L' ? l.from : l.to) === id).reduce((s, l) => s + l.edges.length, 0);
+      return {
+        id: `${side}:${id}`, type: 'sys', position: { x: side === 'L' ? 0 : 560, y: (i + Math.max(0, other - n) / 2) * (NH - 6) },
+        data: { id, title: c.name, sub: c.file, kind: 'class', badges: [], when: [], count: `${k} ${KIND_STYLE[link.kind].word}`, changed: 0, isNew: !!chg?.newClasses.has(id), on: sel === id, faded: false, isolated: false },
+      };
+    };
+    const nodes = [...left.map((id, i) => card(id, 'L', i, left.length, right.length)), ...right.map((id, i) => card(id, 'R', i, right.length, left.length))];
+    const st = KIND_STYLE[link.kind];
+    const edges: Edge[] = ls.map(l => {
+      const k = `${l.from}\n${l.to}`;
+      const on = pick === k;
+      const isNew = l.edges.some(e => added.has(edgeKey(e)));
+      const names = [...l.names];
+      return {
+        id: `${l.from}->${l.to}`, source: `L:${l.from}`, target: `R:${l.to}`, sourceHandle: 'r', targetHandle: 'l', data: { auto: true, pick: k }, interactionWidth: 16,
+        label: `${isNew ? 'new · ' : ''}${link.kind === 'signal' ? '⚡ ' : ''}${names.slice(0, 2).join(', ')}${names.length > 2 ? ` +${names.length - 2}` : ''}`,
+        labelStyle: { fill: isNew ? 'var(--accent)' : st.stroke, fontSize: 11, fontWeight: on ? 700 : 400 }, labelBgStyle: { fill: 'var(--panel)' },
+        style: { stroke: isNew ? 'var(--accent)' : st.stroke, strokeDasharray: st.dash, strokeWidth: on ? 3 : 1.5, opacity: pick && !on ? 0.2 : 0.9 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: isNew ? 'var(--accent)' : st.stroke },
+      };
+    });
+    return { nodes, edges };
+  }, [ix, ls, link, pick, sel, chg]);
+  const lay = useLayout(`mh.systems.layout.${goal}.link`, computed.nodes, computed.edges);
+  return (
+    <div className="sys-map">
+      <div className="sys-banner">
+        <button className="btn ghost small" onClick={() => onNav({ link: undefined, pick: undefined, sel: undefined })}>
+          ← The map
+        </button>
+        <span>
+          <b>{nodeName(ix, link.from, titles)}</b> {KIND_STYLE[link.kind].word} <b>{nodeName(ix, link.to, titles)}</b>
+        </span>
+        <span className="muted small">
+          {ls.length} pair{ls.length === 1 ? '' : 's'} of classes · {ls.reduce((s, l) => s + l.edges.length, 0)} {link.kind === 'signal' ? 'emits and handlers' : 'places in the code'}
+        </span>
+        {lay.moved && (
+          <button className="btn ghost small" onClick={lay.reset}>
+            Reset layout
+          </button>
+        )}
+      </div>
+      {!ls.length ? (
+        <div className="empty">Nothing joins them this way any more.</div>
+      ) : (
+        <ReactFlow
+          nodes={lay.nodes}
+          edges={lay.edges}
+          nodeTypes={SYS_TYPES}
+          onNodesChange={lay.onNodesChange}
+          onNodeDragStop={lay.onNodeDragStop}
+          onNodeClick={(_, n) => onNav({ sel: n.data.id })}
+          onEdgeClick={(_, e) => onNav({ pick: pick === e.data?.pick ? undefined : (e.data?.pick as string), sel: undefined })}
+          onPaneClick={() => onNav({ sel: undefined, pick: undefined })}
+          fitView
+          fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
+          minZoom={0.1}
+          proOptions={{ hideAttribution: true }}
+          nodesConnectable={false}
+        >
+          <Background gap={20} size={1} color="var(--line)" />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      )}
+    </div>
+  );
+}
+
+/** The inspector for a connection: every place in the code behind it, by pair of classes. */
+function LinkPanel({ ix, links, link, pick, titles, onNav }: { ix: CodeIndex; links: Link[]; link: NonNullable<SystemsNav['link']>; pick?: string; titles: Map<string, string>; onNav: (n: Partial<SystemsNav>) => void }) {
+  const ls = linksOf(ix, links, link)
+    .filter(l => !pick || `${l.from}\n${l.to}` === pick)
+    .sort((a, b) => b.edges.length - a.edges.length);
+  return (
+    <>
+      <div className="area-panel-head">
+        <div>
+          <div className="kicker">Connection</div>
+          <b>
+            {nodeName(ix, link.from, titles)} {KIND_STYLE[link.kind].word} {nodeName(ix, link.to, titles)}
+          </b>
+        </div>
+        <button className="btn ghost small" onClick={() => onNav({ link: undefined, pick: undefined })} aria-label="Back to the map">
+          ✕
+        </button>
+      </div>
+      <p className="area-text small">
+        {pick ? 'One pair of classes. ' : 'Each pair of classes, and every place in the code behind it. '}Click a line to trace the function it's in; click an arrow on the left to keep to that pair.
+      </p>
+      {pick && (
+        <button className="text-link small" onClick={() => onNav({ pick: undefined })}>
+          Show every pair
+        </button>
+      )}
+      {ls.map(l => (
+        <div key={l.from + l.to}>
+          <div className="section-title">
+            <button className="text-link" onClick={() => onNav({ sel: l.from })}>
+              {ix.cls.get(l.from)?.name}
+            </button>{' '}
+            → <button className="text-link" onClick={() => onNav({ sel: l.to })}>
+              {ix.cls.get(l.to)?.name}
+            </button>{' '}
+            <span className="muted">{l.edges.length}</span>
+          </div>
+          <EdgeList ix={ix} edges={l.edges} onNav={onNav} />
+        </div>
+      ))}
+    </>
+  );
+}
+
+/* ---------------- dragging ---------------- */
+
+type XY = { x: number; y: number };
+
+function loadLayout(key: string): Record<string, XY> {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? '{}');
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Where the person dragged each card, kept in the browser per goal and view, over the computed
+ * layout. Arrows marked `auto` leave and enter by the sides facing where the cards are now.
+ */
+function useLayout(key: string, nodes: Node<SysData>[], edges: Edge[]) {
+  const moved = useRef<Record<string, XY>>(loadLayout(key));
+  const [count, setCount] = useState(() => Object.keys(moved.current).length);
+  const place = (ns: Node<SysData>[], old: Node<SysData>[] = []) => {
+    // React Flow keeps each card's measured size on its node: a card that loses it is hidden until measured again.
+    const prev = new Map(old.map(n => [n.id, n]));
+    return ns.map(n => {
+      const o = prev.get(n.id);
+      return { ...o, ...n, position: moved.current[n.id] ?? n.position, ...(o?.measured ? { measured: o.measured } : {}) };
+    });
+  };
+  const [rf, setRf] = useState<Node<SysData>[]>(() => place(nodes));
+  const seen = useRef({ key, nodes });
+  useEffect(() => {
+    if (seen.current.key === key && seen.current.nodes === nodes) return;
+    if (seen.current.key !== key) moved.current = loadLayout(key);
+    seen.current = { key, nodes };
+    setCount(Object.keys(moved.current).length);
+    setRf(old => place(nodes, old));
+  }, [key, nodes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const routed = useMemo(() => {
+    const at = new Map(rf.map(n => [n.id, n.position]));
+    return edges.map(e => (e.data?.auto && at.has(e.source) && at.has(e.target) ? { ...e, ...handles(at.get(e.source)!, at.get(e.target)!) } : e));
+  }, [rf, edges]);
+  const save = () => {
+    try {
+      localStorage.setItem(key, JSON.stringify(moved.current));
+    } catch {
+      // Kept for this visit only.
+    }
+  };
+  return {
+    nodes: rf,
+    edges: routed,
+    onNodesChange: (chs: NodeChange<Node<SysData>>[]) => {
+      for (const c of chs) if (c.type === 'position' && c.position) moved.current[c.id] = c.position;
+      setRf(ns => applyNodeChanges(chs, ns));
+    },
+    onNodeDragStop: () => (save(), setCount(Object.keys(moved.current).length)),
+    moved: count > 0,
+    reset: () => {
+      moved.current = {};
+      save();
+      setCount(0);
+      setRf(old => place(nodes, old));
+    },
+  };
+}
+
+/** Whether a class is in a node of the map: the class itself, or the area it's in. */
+const inNode = (ix: CodeIndex, cls: string, node: string) => (isArea(node) ? ix.cls.get(cls)?.area === node.slice(5) : cls === node);
+
+const nodeName = (ix: CodeIndex, id: string, titles: Map<string, string>) => (isArea(id) ? titles.get(id.slice(5)) ?? areaLabel(id.slice(5)) : ix.cls.get(id)?.name ?? id);
+
+/** The links behind a connection on the map. */
+function linksOf(ix: CodeIndex, links: Link[], c: { from: string; to: string; kind: LinkKind }): Link[] {
+  return links.filter(l => l.kind === c.kind && inNode(ix, l.from, c.from) && inNode(ix, l.to, c.to));
+}
+
+/** Where an edge is in the code: the file of the function it starts in (where a handler was connected, for a signal's), and the line. */
+function edgeWhere(ix: CodeIndex, e: CodeEdge): string {
+  const f = ix.fn.get(e.k === 'listen' ? e.via ?? '' : e.f);
+  return f ? `${f.file.split('/').pop()}:${e.l}` : '';
+}
+
+/** The function to trace for an edge: its caller, or for a handler, the handler. */
+const edgeFn = (e: CodeEdge) => (e.k === 'listen' ? e.t : e.f);
+
+function EdgeList({ ix, edges, onNav }: { ix: CodeIndex; edges: CodeEdge[]; onNav: (n: Partial<SystemsNav>) => void }) {
+  return (
+    <ul className="edge-list small">
+      {edges.slice(0, 200).map(e => (
+        <li key={edgeKey(e) + e.via}>
+          <button className="text-link sys-sentence" onClick={() => onNav({ tool: 'trace', trace: edgeFn(e), sel: edgeFn(e), up: false })} title="Trace it">
+            {edgeSentence(ix, e)}
+          </button>
+          {e.n && e.n > 1 && <span className="muted"> ×{e.n}</span>}
+          <span className="muted mono"> {edgeWhere(ix, e)}</span>
+        </li>
+      ))}
+      {edges.length > 200 && <li className="muted">and {edges.length - 200} more</li>}
+    </ul>
+  );
 }
 
 /* ---------------- trace ---------------- */
@@ -644,7 +895,7 @@ const TOUCH_STYLE: Record<Touch['kind'], { stroke: string; dash?: string }> = {
   reads: { stroke: 'var(--waiting)', dash: '2 4' },
 };
 
-function BetweenView({ ix, links, a, b, titles, onNav }: { ix: CodeIndex; links: Link[]; a?: string; b?: string; titles: Map<string, string>; onNav: (n: Partial<SystemsNav>) => void }) {
+function BetweenView({ goal, ix, links, a, b, bpick, titles, onNav }: { goal: string; ix: CodeIndex; links: Link[]; a?: string; b?: string; bpick?: string; titles: Map<string, string>; onNav: (n: Partial<SystemsNav>) => void }) {
   const [shared, setShared] = useState(false);
   const A = useMemo(() => systemOf(ix, a), [ix, a]);
   const B = useMemo(() => systemOf(ix, b), [ix, b]);
@@ -685,11 +936,13 @@ function BetweenView({ ix, links, a, b, titles, onNav }: { ix: CodeIndex; links:
           const into = kind !== 'reads';
           const near = key === 'a' ? { out: 'r', in: 'l' } : { out: 'fl', in: 'fr' };
           const midH = key === 'a' ? { out: 'fl', in: 'l' } : { out: 'r', in: 'fr' };
+          const pk = `${key}|${kind}|${m.mid}`;
+          const on = bpick === pk;
           edges.push({
-            id: `${key}${kind}${m.mid}`, source: into ? key : `m:${m.mid}`, target: into ? `m:${m.mid}` : key,
+            id: pk, data: { bpick: pk }, interactionWidth: 16, source: into ? key : `m:${m.mid}`, target: into ? `m:${m.mid}` : key,
             sourceHandle: into ? near.out : midH.out, targetHandle: into ? midH.in : key === 'a' ? 'fr' : 'l',
             label: `${kind} ${names(list)}`, labelStyle: { fill: st.stroke, fontSize: 10.5 }, labelBgStyle: { fill: 'var(--panel)' },
-            style: { stroke: st.stroke, strokeDasharray: st.dash, strokeWidth: 1.5, opacity: m.how === 'shared' ? 0.4 : 0.9 }, markerEnd: { type: MarkerType.ArrowClosed, color: st.stroke },
+            style: { stroke: st.stroke, strokeDasharray: st.dash, strokeWidth: on ? 3 : 1.5, opacity: bpick && !on ? 0.2 : m.how === 'shared' ? 0.4 : 0.9 }, markerEnd: { type: MarkerType.ArrowClosed, color: st.stroke },
           });
         }
       }
@@ -700,26 +953,33 @@ function BetweenView({ ix, links, a, b, titles, onNav }: { ix: CodeIndex; links:
       for (const [kind, ls] of byKind) {
         const st = KIND_STYLE[kind];
         const n = [...new Set(ls.flatMap(l => [...l.names]))];
+        const pk = `${dir}|${kind}`;
         edges.push({
-          id: `${dir}${kind}`, source: dir === 'ab' ? 'a' : 'b', target: dir === 'ab' ? 'b' : 'a', type: 'smoothstep',
+          id: pk, data: { bpick: pk }, interactionWidth: 16, source: dir === 'ab' ? 'a' : 'b', target: dir === 'ab' ? 'b' : 'a', type: 'smoothstep',
           sourceHandle: 'u', targetHandle: 't',
           label: `${kind === 'signal' ? '⚡' : st.word} ${n.slice(0, 3).join(', ')}${n.length > 3 ? '…' : ''}`, labelStyle: { fill: st.stroke, fontSize: 10.5 }, labelBgStyle: { fill: 'var(--panel)' },
-          style: { stroke: st.stroke, strokeDasharray: st.dash, strokeWidth: 2 }, markerEnd: { type: MarkerType.ArrowClosed, color: st.stroke },
+          style: { stroke: st.stroke, strokeDasharray: st.dash, strokeWidth: bpick === pk ? 3 : 2, opacity: bpick && bpick !== pk ? 0.2 : 1 }, markerEnd: { type: MarkerType.ArrowClosed, color: st.stroke },
         });
       }
     }
     return { nodes, edges };
-  }, [res, shared, ix, a, b, A, B, titles]);
+  }, [res, shared, ix, a, b, A, B, titles, bpick]);
+  const lay = useLayout(`mh.systems.layout.${goal}.between`, nodes, edges);
   return (
     <div className="sys-map">
       <div className="sys-banner">
-        <SystemPick ix={ix} value={a} titles={titles} label="A system" onPick={v => onNav({ a: v || undefined, sel: undefined })} />
+        <SystemPick ix={ix} value={a} titles={titles} label="A system" onPick={v => onNav({ a: v || undefined, sel: undefined, bpick: undefined })} />
         <span className="muted">and</span>
-        <SystemPick ix={ix} value={b} titles={titles} label="another" onPick={v => onNav({ b: v || undefined, sel: undefined })} />
+        <SystemPick ix={ix} value={b} titles={titles} label="another" onPick={v => onNav({ b: v || undefined, sel: undefined, bpick: undefined })} />
         <label className="small">
           <input type="checkbox" checked={shared} onChange={e => setShared(e.target.checked)} /> also what both only read
         </label>
         {res && <span className="muted small">{res.meetings.length} meeting point{res.meetings.length === 1 ? '' : 's'}, {res.ab.length + res.ba.length} direct link{res.ab.length + res.ba.length === 1 ? '' : 's'}</span>}
+        {lay.moved && (
+          <button className="btn ghost small" onClick={lay.reset}>
+            Reset layout
+          </button>
+        )}
       </div>
       {!res ? (
         <div className="empty">
@@ -729,11 +989,14 @@ function BetweenView({ ix, links, a, b, titles, onNav }: { ix: CodeIndex; links:
         <div className="empty">These two don't touch: no calls, signals, objects or state between them, nor anything both use.</div>
       ) : (
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={lay.nodes}
+          edges={lay.edges}
           nodeTypes={SYS_TYPES}
+          onNodesChange={lay.onNodesChange}
+          onNodeDragStop={lay.onNodeDragStop}
           onNodeClick={(_, n) => onNav({ sel: n.data.id })}
-          onPaneClick={() => onNav({ sel: undefined })}
+          onEdgeClick={(_, e) => onNav({ bpick: bpick === e.data?.bpick ? undefined : (e.data?.bpick as string), sel: undefined })}
+          onPaneClick={() => onNav({ sel: undefined, bpick: undefined })}
           fitView
           fitViewOptions={{ padding: 0.1, maxZoom: 1 }}
           minZoom={0.1}
@@ -750,7 +1013,7 @@ function BetweenView({ ix, links, a, b, titles, onNav }: { ix: CodeIndex; links:
 
 const meetWord = (how: Meeting['how'], a: string, b: string) => (how === 'a⇒b' ? `${a} ⇒ ${b}` : how === 'b⇒a' ? `${b} ⇒ ${a}` : how === 'both' ? 'both ways' : 'both read it');
 
-function BetweenPanel({ ix, links, a, b, titles, onNav }: { ix: CodeIndex; links: Link[]; a?: string; b?: string; titles: Map<string, string>; onNav: (n: Partial<SystemsNav>) => void }) {
+function BetweenPanel({ ix, links, a, b, bpick, titles, onNav }: { ix: CodeIndex; links: Link[]; a?: string; b?: string; bpick?: string; titles: Map<string, string>; onNav: (n: Partial<SystemsNav>) => void }) {
   const A = systemOf(ix, a);
   const B = systemOf(ix, b);
   const res = useMemo(() => (A.size && B.size ? between(ix, links, A, B) : undefined), [ix, links, a, b]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -772,6 +1035,7 @@ function BetweenPanel({ ix, links, a, b, titles, onNav }: { ix: CodeIndex; links
       <b>
         {an} and {bn}
       </b>
+      {bpick && <PickedConnection ix={ix} res={res} pick={bpick} an={an} bn={bn} onNav={onNav} />}
       <p className="area-text small">
         Influence runs from what changes something to what reads it. When {an} changes a class that {bn} reads, {an} reaches {bn} through it, even if they never call each other.
       </p>
@@ -812,6 +1076,35 @@ function BetweenPanel({ ix, links, a, b, titles, onNav }: { ix: CodeIndex; links
       ))}
       {!res.meetings.length && <div className="muted small">Nothing in between.</div>}
     </>
+  );
+}
+
+/** The connection picked on the Between map: every place in the code behind that arrow. */
+function PickedConnection({ ix, res, pick, an, bn, onNav }: { ix: CodeIndex; res: ReturnType<typeof between>; pick: string; an: string; bn: string; onNav: (n: Partial<SystemsNav>) => void }) {
+  const [side, kind, mid] = pick.split('|');
+  let title: string;
+  let edges: CodeEdge[];
+  if (side === 'ab' || side === 'ba') {
+    const ls = (side === 'ab' ? res.ab : res.ba).filter(l => l.kind === kind);
+    title = `${side === 'ab' ? an : bn} ${KIND_STYLE[kind as LinkKind]?.word ?? kind} ${side === 'ab' ? bn : an}`;
+    edges = ls.flatMap(l => l.edges);
+  } else {
+    const m = res.meetings.find(x => x.mid === mid);
+    const ts = dedupe((side === 'a' ? m?.a : m?.b) ?? []).filter(t => t.kind === kind);
+    title = `${side === 'a' ? an : bn} ${kind} ${ix.cls.get(mid)?.name ?? mid}`;
+    edges = ts.map(t => t.edge);
+  }
+  return (
+    <div className="picked">
+      <div className="row-wrap">
+        <span className="kicker">Connection</span>
+        <button className="btn ghost small" onClick={() => onNav({ bpick: undefined })} aria-label="Close the connection">
+          ✕
+        </button>
+      </div>
+      <b>{title}</b>
+      <EdgeList ix={ix} edges={edges} onNav={onNav} />
+    </div>
   );
 }
 

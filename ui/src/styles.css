@@ -978,7 +978,9 @@ details.more { display: grid; gap: 6px; }
 .trace-label.sig { color: var(--paused); }
 .trace-state .w, .area-panel .w { color: var(--limited); }
 .trace-at { margin-left: auto; padding-left: 12px; flex: 0 1 auto !important; overflow: hidden; text-overflow: ellipsis; }
-.sys-sentence { text-align: left; }
+.sys-sentence { text-align: left; display: inline; padding: 0; }
+.edge-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 3px; }
+.edge-list li { line-height: 1.4; }
 .sys-banner select { max-width: 280px; }
 .trace-empty { padding: 24px; max-width: 560px; display: grid; gap: 8px; }
 .meeting > summary { cursor: pointer; padding: 3px 0; }
@@ -990,3 +992,6 @@ details.more { display: grid; gap: 6px; }
 .code-n { color: var(--text-3); width: 36px; text-align: right; flex: none; user-select: none; }
 .code-t { white-space: pre; tab-size: 4; }
 .code-go { display: inline-flex; gap: 6px; padding-left: 12px; font-family: inherit; }
+.sys-reset { position: absolute; top: 8px; right: 10px; z-index: 5; background: var(--panel); }
+.picked { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 6px 8px; display: grid; gap: 4px; }
+.picked .row-wrap { justify-content: space-between; }
