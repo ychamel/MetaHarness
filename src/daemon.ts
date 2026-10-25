@@ -2227,6 +2227,10 @@ export class Daemon {
         return { allow: false, reason: 'MetaHarness handles delegation: use its spawn tool (quick: true for a quick helper).' };
       case 'ask_user':
         return { allow: false, reason: 'Ask with the MetaHarness send tool, to: human. The answer arrives as a message.' };
+      case 'message':
+        return { allow: false, reason: 'Message teammates with the MetaHarness send tool (to: their name, or human); it reaches them on any harness.' };
+      case 'schedule':
+        return { allow: false, reason: 'To wait, use the MetaHarness wait tool (timeout in seconds, up to 600); a message ends it early.' };
       case 'read':
         return { allow: true };
       case 'mcp':

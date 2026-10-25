@@ -168,10 +168,18 @@ Findings from the run:
       hold) and `mh test antigravity` (every check passes). The probe now also passes an urgent
       message the running turn takes through a hook (agy 1.4.7 calls the model again soon enough
       that no pause is needed), and an account a report re-confirmed without changing it
-- [ ] agy 1.4.7 tools the policy reads as `other`: `send_message`, `manage_inbox`, `manage_task`,
-      `schedule`, `run_workflow`, `search_marketplace`, `generate_image`, `notebook_execution`,
-      `delete_knowledge`, `list_plugin_accounts`. Some look like native delegation or scheduling;
-      check each. 1.4.7 also has `--effort` (1.4.1 hung on it) and `--disable-slash-commands`
+- [x] agy 1.4.7's new tools mapped (its init event lists 60; the model is shown a subset, the
+      browser ones inside `browser_subagent`). Refused for MetaHarness's own: `send_message` (new
+      kind `message`, use send), `schedule` (new kind `schedule`, use wait), `run_workflow` (a
+      Python script that starts agents: delegate). Reads: `manage_inbox`, `search_marketplace`,
+      `list_plugin_accounts`, the browser's DOM, screenshots, console and network, and
+      `manage_task` but `send_input` (shell). The human is asked for `notebook_execution` (shell),
+      `delete_knowledge` (the user's knowledge, linked into the isolated HOME), browser actions (the
+      browser profile is the user's, signed in) and `generate_image` (spends quota).
+      `--disable-slash-commands` is passed when `agy --help` lists it: without it, a message
+      starting with `/` runs as agy's command, and under stream-json `/help` ends the process.
+      `--effort` now works with a bare model name; the per-effort model names stay, since 1.4.1
+      hangs on it. Checked with tests and `mh test antigravity` (every check passes)
 - [x] Change notices when shared files change, plus `shared/.history/` (`src/shared.ts`): a
       scan every 3 s keeps each version as `.history/<path>/<n>-<writer><ext>`, logs
       `shared.write` / `shared.delete` / `shared.clash`, and leaves notes for teammates that ride

@@ -57,6 +57,8 @@ export class AgyAdapter implements HarnessAdapter {
   private userHome: string;
   /** `agy models`, folded into models and their efforts (asked once). */
   private models?: Promise<ReturnType<typeof foldEfforts> | undefined>;
+  /** `agy --help` (asked once), for the flags this version has. */
+  private help?: Promise<string>;
 
   constructor(opts: { bin?: string; id?: string; hookScript?: string; isolate?: string; userHome?: string } = {}) {
     this.bin = opts.bin ?? 'agy';
@@ -87,7 +89,7 @@ export class AgyAdapter implements HarnessAdapter {
     if (!spec.mcpUrl || !spec.hookUrl) throw new Error('the daemon has no address for MCP and hooks yet (is the server running?)');
     writeAgentConfig(spec, this.hookScript, undefined, this.userHome);
     spec = { ...spec, model: await this.modelFor(spec.model, spec.effort) };
-    const s = new AgySession(this.bin, spec, this.env(), events, opts.resume, () => this.refreshQuota(true));
+    const s = new AgySession(this.bin, spec, this.env(), events, opts.resume, () => this.refreshQuota(true), await this.extraArgs());
     this.sessions.add(s);
     s.closed.then(() => this.sessions.delete(s));
     await s.ready;
@@ -109,6 +111,15 @@ export class AgyAdapter implements HarnessAdapter {
     const efforts = list?.efforts[model];
     if (efforts) return `${model}-${nearestEffort(effort ?? 'medium', efforts) ?? efforts[0]}`;
     return effort && !list ? `${model}-${effort}` : model;
+  }
+
+  /**
+   * Flags only some versions take. A message starting with `/` is otherwise run as agy's own
+   * command, and under stream-json one like /help ends the process (1.4.7).
+   */
+  private async extraArgs(): Promise<string[]> {
+    this.help ??= run(this.bin, ['--help'], process.env, 30_000).then(r => r.out, () => '');
+    return (await this.help).includes('--disable-slash-commands') ? ['--disable-slash-commands'] : [];
   }
 
   /** Reads the quota (at most once a minute unless forced) and tells every session where its pool stands. */
@@ -314,7 +325,7 @@ export function writeAgentConfig(spec: SessionSpec, hookScript: string, hidden =
   writeFileSync(join(dir, 'rules', 'metaharness.md'), `---\ntrigger: always_on\n---\n${spec.systemPrompt}\n`);
 }
 
-export function agyArgs(spec: SessionSpec, resume?: string): string[] {
+export function agyArgs(spec: SessionSpec, resume?: string, extra: string[] = []): string[] {
   const args = [
     '--input-format', 'stream-json',
     '--output-format', 'stream-json',
@@ -322,6 +333,7 @@ export function agyArgs(spec: SessionSpec, resume?: string): string[] {
     '--dangerously-skip-permissions',
     '--add-dir', spec.sharedDir,
     '--add-dir', spec.agentDir,
+    ...extra,
   ];
   if (spec.model) args.push('--model', spec.model);
   if (resume) args.push('--conversation', resume);
@@ -342,7 +354,27 @@ export function agyToolRequest(tool: string, args: Record<string, unknown>): Too
     case 'view_file': case 'list_dir': case 'grep_search': case 'find_by_name': case 'read_url_content': case 'search_web':
     case 'command_status': case 'list_resources': case 'read_resource': case 'list_permissions': case 'wait': case 'wait_5_seconds':
     case 'finish': case 'list_browser_pages': case 'read_browser_page':
+    // The browser's own state (agy's browser profile is the user's), its inbox (list and read),
+    // and the plugin marketplace and accounts, which only list.
+    case 'browser_get_dom': case 'capture_browser_screenshot': case 'capture_browser_console_logs':
+    case 'browser_list_network_requests': case 'browser_get_network_request':
+    case 'manage_inbox': case 'search_marketplace': case 'list_plugin_accounts':
       return { kind: 'read', tool, detail: path ?? JSON.stringify(args).slice(0, 300), path };
+    case 'manage_task': {
+      // Its own background commands and timers: listing, reading and stopping them stay inside the session.
+      const action = pick(args, 'Action') ?? '';
+      if (action === 'send_input') return { kind: 'shell', tool: 'Bash input', detail: JSON.stringify(args).slice(0, 8000) };
+      return { kind: 'read', tool, detail: `${action} ${pick(args, 'TaskId') ?? ''}`.trim() };
+    }
+    case 'notebook_execution':
+      return { kind: 'shell', tool: 'Notebook', detail: JSON.stringify(args).slice(0, 8000), path };
+    case 'delete_knowledge':
+      // Knowledge is the user's, shared by every agy session (the isolated HOME links to it).
+      return { kind: 'edit', tool: 'Delete knowledge', detail: JSON.stringify(args).slice(0, 8000) };
+    case 'send_message':
+      return { kind: 'message', tool, detail: `${pick(args, 'Recipient') ?? '?'}: ${pick(args, 'Message') ?? ''}`.slice(0, 300) };
+    case 'schedule':
+      return { kind: 'schedule', tool, detail: JSON.stringify(args).slice(0, 300) };
     case 'write_to_file': case 'replace_file_content': case 'multi_replace_file_content': case 'sed_file': case 'notebook_edit':
       return { kind: 'edit', tool: 'Edit', detail: path ?? JSON.stringify(args).slice(0, 8000), path };
     case 'run_command':
@@ -353,11 +385,14 @@ export function agyToolRequest(tool: string, args: Record<string, unknown>): Too
       const server = pick(args, 'ServerName', 'server') ?? '';
       return { kind: 'mcp', tool: `${server}.${pick(args, 'ToolName', 'tool') ?? '?'}`, detail: JSON.stringify(args.Arguments ?? {}).slice(0, 8000), server };
     }
-    case 'invoke_subagent': case 'define_subagent': case 'manage_subagents': case 'browser_subagent':
+    // run_workflow: a Python script that starts agents (and calls tools) of its own.
+    case 'invoke_subagent': case 'define_subagent': case 'manage_subagents': case 'browser_subagent': case 'run_workflow':
       return { kind: 'delegate', tool, detail: JSON.stringify(args).slice(0, 300) };
     case 'ask_question': case 'ask_permission': case 'ask_custom_permission':
       return { kind: 'ask_user', tool, detail: JSON.stringify(args).slice(0, 300) };
     default:
+      // The human decides: browser actions (open_browser_url, clicks, typing, scripts), which act
+      // as the user on their signed-in sites, generate_image, which spends quota, and new tools.
       return { kind: 'other', tool, detail: JSON.stringify(args).slice(0, 8000), path };
   }
 }
@@ -382,12 +417,12 @@ class AgySession implements Session {
   private toolsSeen = new Set<number>();
   private onError: () => void;
 
-  constructor(bin: string, spec: SessionSpec, env: NodeJS.ProcessEnv, ev: SessionEvents, resume: string | undefined, onError: () => void) {
+  constructor(bin: string, spec: SessionSpec, env: NodeJS.ProcessEnv, ev: SessionEvents, resume: string | undefined, onError: () => void, extra: string[] = []) {
     this.ev = ev;
     this.model = spec.model;
     this.onError = onError;
     if (resume) this.nativeId = resume;
-    this.proc = spawnTree(bin, agyArgs(spec, resume), {
+    this.proc = spawnTree(bin, agyArgs(spec, resume, extra), {
       cwd: spec.cwd,
       env: { ...env, ...spec.env, MH_HOOK_URL: spec.hookUrl },
       stdio: ['pipe', 'pipe', 'pipe'],

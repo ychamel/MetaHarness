@@ -40,10 +40,11 @@ export interface AssistantChoice {
 
 /**
  * What the assistant may do with its harness's own tools: read files and run commands that only
- * read; in write mode, anything but delegating (it works alone) and asking (it asks in its answer).
+ * read; in write mode, anything but delegating, messaging or scheduling (it works alone, one turn at
+ * a time) and asking (it asks in its answer).
  */
 export function assistantDecision(t: ToolRequest, write = false): { allow: boolean; message?: string } {
-  if (t.kind === 'delegate' || t.kind === 'ask_user') return { allow: false, message: 'The assistant works alone, and asks the human in its answer.' };
+  if (t.kind === 'delegate' || t.kind === 'ask_user' || t.kind === 'message' || t.kind === 'schedule') return { allow: false, message: 'The assistant works alone, and asks the human in its answer.' };
   if (write || t.kind === 'read' || (t.kind === 'shell' && readOnlyCommand(t.detail).readOnly)) return { allow: true };
   return { allow: false, message: 'The assistant only reads. To suggest a change, use the MetaHarness propose tool; the human can also turn on write mode in the panel.' };
 }

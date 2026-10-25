@@ -10,6 +10,11 @@ const args = process.argv.slice(2);
 if (process.env.FAKE_AGY_LOG) appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify(args) + '\n');
 const out = m => process.stdout.write(JSON.stringify(m) + '\n');
 
+if (args.includes('--help')) {
+  process.stderr.write('Usage of agy:\n  --disable-slash-commands  Disable slash command and skill expansion in print mode\n');
+  process.exit(0);
+}
+
 if (args.includes('-p=/quota')) {
   const g = (name, id, remaining) => ({ name, buckets: [{ id, window: '5h', remaining_fraction: remaining, reset_time: '2030-01-01T05:00:00Z' }] });
   out({ status: 'SUCCESS', command: { name: 'usage', data: { groups: [g('Gemini Models', 'gemini-5h', 0.05), g('Claude and GPT models', '3p-5h', 1)] } } });

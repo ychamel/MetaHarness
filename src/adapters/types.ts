@@ -169,11 +169,11 @@ export interface HarnessAdapter {
 
 /**
  * A tool call as the approval policy sees it. read: never needs asking. edit: allowed inside
- * the agent's own directories. shell: allowed when the role allows the command. delegate and
- * ask_user: refused, because MetaHarness provides those (spawn, send to human).
+ * the agent's own directories. shell: allowed when the role allows the command. delegate, ask_user,
+ * message and schedule: refused, because MetaHarness provides those (spawn, send, wait).
  */
 export interface ToolRequest {
-  kind: 'read' | 'edit' | 'shell' | 'mcp' | 'delegate' | 'ask_user' | 'other';
+  kind: 'read' | 'edit' | 'shell' | 'mcp' | 'delegate' | 'ask_user' | 'message' | 'schedule' | 'other';
   /** Name shown to the human, e.g. Bash or Edit. */
   tool: string;
   detail: string;
