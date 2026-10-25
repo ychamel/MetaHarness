@@ -159,8 +159,19 @@ Findings from the run:
       (1M for `[1m]`) until a turn ends. Live on haiku with the threshold at 35%: asked at 37%,
       notes written, fresh session at once, which read the notes and carried on where the old
       one stopped reading
-- [ ] Antigravity isolation from the user's own global plugins and MCP servers (like
-      `--strict-mcp-config`); none are set up on this machine yet
+- [x] **Antigravity isolation from the user's own customizations** (2026-10-25, agy 1.4.7):
+      agy reads its global MCP servers, hooks, plugins and workflows from `$HOME/.gemini/config`
+      with no switch, so it runs with a HOME of links (`~/.metaharness/homes/<harness>/home`)
+      that leaves those out; commands get the real HOME back through `BASH_ENV`. A role's server
+      without a MetaHarness definition is copied from the user's `mcp_config.json`. Checked live
+      with spy servers, hooks and a plugin (none fire; the sign-in, resume and the command's HOME
+      hold) and `mh test antigravity` (every check passes). The probe now also passes an urgent
+      message the running turn takes through a hook (agy 1.4.7 calls the model again soon enough
+      that no pause is needed), and an account a report re-confirmed without changing it
+- [ ] agy 1.4.7 tools the policy reads as `other`: `send_message`, `manage_inbox`, `manage_task`,
+      `schedule`, `run_workflow`, `search_marketplace`, `generate_image`, `notebook_execution`,
+      `delete_knowledge`, `list_plugin_accounts`. Some look like native delegation or scheduling;
+      check each. 1.4.7 also has `--effort` (1.4.1 hung on it) and `--disable-slash-commands`
 - [x] Change notices when shared files change, plus `shared/.history/` (`src/shared.ts`): a
       scan every 3 s keeps each version as `.history/<path>/<n>-<writer><ext>`, logs
       `shared.write` / `shared.delete` / `shared.clash`, and leaves notes for teammates that ride

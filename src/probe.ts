@@ -117,14 +117,18 @@ export async function probeHarness(d: Daemon, harness: string, model: string, o:
       const done2 = await until(isDone(urgentAt), 90_000);
       const how2 = seen.find(e => e.type === 'agent.interrupted' && e.seq > urgentAt)?.data.how;
       const paused = seen.find(e => e.type === 'agent.paused_between_steps' && e.seq > urgentAt);
+      // Or the running turn took it within the grace period (a hook or a tool result), so no pause was needed.
+      const joined = seen.find(e => e.type === 'message.delivered' && e.seq > urgentAt && ['inject', 'hook', 'tool_result', 'wait'].includes(String(e.data.via)));
       const sleeps = seen.filter(e => e.type === 'agent.tool_call' && e.seq > followAt && e.seq < (done2?.seq ?? Infinity) && /sleep 8/.test(String(e.data.summary))).length;
-      const ok = !!done2 && String(done2.data.note).includes(code2) && !!paused && sleeps < 3;
+      const ok = !!done2 && String(done2.data.note).includes(code2) && !!(paused || joined) && sleeps < 3;
       checks.push({
         name: 'Urgent message pauses the turn',
         ok,
         detail: ok
-          ? `paused after the running command finished${paused!.data.cut ? ' (cut: the command ran too long)' : ''}, ${how2 === 'restart' ? 'by restarting the session from its ID' : 'natively'}`
-          : !done2 ? 'no done call within 90s' : !paused ? 'the turn was never paused' : sleeps >= 3 ? 'it ran every step before answering' : 'paused, but the note lacks the codeword',
+          ? paused
+            ? `paused after the running command finished${paused.data.cut ? ' (cut: the command ran too long)' : ''}, ${how2 === 'restart' ? 'by restarting the session from its ID' : 'natively'}`
+            : `the running turn took it after the command (${joined!.data.via === 'hook' ? 'through a hook' : String(joined!.data.via)}), no pause needed`
+          : !done2 ? 'no done call within 90s' : !(paused || joined) ? 'the turn was never paused' : sleeps >= 3 ? 'it ran every step before answering' : 'paused, but the note lacks the codeword',
       });
     }
 
@@ -138,10 +142,13 @@ export async function probeHarness(d: Daemon, harness: string, model: string, o:
     });
     const account = d.accountOf(harness, model);
     const limit = d.store.since(undefined, 0).filter(e => e.type === 'account.limit' && e.data.account === account).at(-1);
+    // A report that matched what the daemon already knew logs no event, but still marks the account checked.
+    const known = d.accounts.get(account);
+    const state = limit ? { status: limit.data.status, usedPct: limit.data.usedPct } : known && (known.checkedAt ?? 0) >= started ? known : undefined;
     checks.push({
       name: 'Rate limits reported',
-      ok: limit ? true : undefined,
-      detail: limit ? `${account}: ${limit.data.status}${limit.data.usedPct != null ? `, ${limit.data.usedPct}% used` : ''}` : 'nothing reported during the test (some harnesses only report near the limit)',
+      ok: state ? true : undefined,
+      detail: state ? `${account}: ${state.status}${state.usedPct != null ? `, ${state.usedPct}% used` : ''}` : 'nothing reported during the test (some harnesses only report near the limit)',
     });
     return report();
   } finally {

@@ -1,11 +1,12 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { endTree, spawnTree } from '../procs.ts';
 import { foldEfforts, nearestEffort } from '../effort.ts';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseFrontMatter } from '../config.ts';
 import { MCP_SERVER_NAME } from '../mcp.ts';
+import { agyMcpDef } from '../mcpservers.ts';
 import { modelsFromLines, run } from '../harnesses.ts';
 import { nativeSkillNames } from '../skills.ts';
 import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, SessionEvents, SessionSpec, StartOptions, ToolRequest } from './types.ts';
@@ -22,10 +23,13 @@ import type { CapabilityManifest, HarnessAdapter, RateLimitInfo, Session, Sessio
  * - Our MCP server, the hooks and the role prompt live in the agent's own directory, added with
  *   --add-dir: every workspace is a customization root, so nothing touches the user's own
  *   agy config or the agent's worktree.
- * - agy has no switch for the user's global customizations (~/.gemini/config/), but a workspace
- *   skill wins over a global one of the same name, so each personal skill gets a stub there
- *   saying it's off (design §18); so do the repository's .agents/skills, which come through the
- *   skill tool. Its built-in skills stay.
+ * - agy has no switch for the user's global customizations (~/.gemini/config/: MCP servers,
+ *   hooks, plugins, workflows) and reads them from $HOME alone, so it runs with a HOME of ours
+ *   that links to everything of the user's but those (agyHome); its commands get the real HOME
+ *   back through BASH_ENV. The sign-in isn't in HOME, and conversations stay in the user's own
+ *   folder. Skills are linked: a workspace skill wins over a global one of the same name, so each
+ *   personal skill gets a stub saying it's off (design §18); so do the repository's
+ *   .agents/skills, which come through the skill tool. Its built-in skills stay.
  * - No interrupt: the daemon restarts the session from its conversation ID instead.
  * - Usage limits come from `agy -p=/quota`, per pool: Gemini models, Gemini 4 Argon, and
  *   Claude/GPT models each have their own.
@@ -48,13 +52,23 @@ export class AgyAdapter implements HarnessAdapter {
   private quotaRunning?: Promise<void>;
   private quotaTimer?: NodeJS.Timeout;
   private hookScript: string;
+  /** Where agy's own HOME is kept (agyHome); none runs it with the user's. */
+  private isolate?: string;
+  private userHome: string;
   /** `agy models`, folded into models and their efforts (asked once). */
   private models?: Promise<ReturnType<typeof foldEfforts> | undefined>;
 
-  constructor(opts: { bin?: string; id?: string; hookScript?: string } = {}) {
+  constructor(opts: { bin?: string; id?: string; hookScript?: string; isolate?: string; userHome?: string } = {}) {
     this.bin = opts.bin ?? 'agy';
     if (opts.id) this.manifest.harness = opts.id;
     this.hookScript = opts.hookScript ?? join(import.meta.dirname, 'agy-hook.ts');
+    this.isolate = opts.isolate;
+    this.userHome = opts.userHome ?? homedir();
+  }
+
+  /** The environment agy runs in: its own HOME when isolated, the user's for its commands. */
+  private env(): NodeJS.ProcessEnv {
+    return this.isolate ? { ...process.env, ...agyHome(this.isolate, this.userHome) } : process.env;
   }
 
   account(model: string): string {
@@ -71,9 +85,9 @@ export class AgyAdapter implements HarnessAdapter {
 
   async start(spec: SessionSpec, events: SessionEvents, opts: StartOptions = {}): Promise<Session> {
     if (!spec.mcpUrl || !spec.hookUrl) throw new Error('the daemon has no address for MCP and hooks yet (is the server running?)');
-    writeAgentConfig(spec, this.hookScript);
+    writeAgentConfig(spec, this.hookScript, undefined, this.userHome);
     spec = { ...spec, model: await this.modelFor(spec.model, spec.effort) };
-    const s = new AgySession(this.bin, spec, events, opts.resume, () => this.refreshQuota(true));
+    const s = new AgySession(this.bin, spec, this.env(), events, opts.resume, () => this.refreshQuota(true));
     this.sessions.add(s);
     s.closed.then(() => this.sessions.delete(s));
     await s.ready;
@@ -116,7 +130,8 @@ export class AgyAdapter implements HarnessAdapter {
 
   /** `agy -p=/quota` answers locally, without a turn. */
   private async quotaGroups(): Promise<{ name?: string; buckets?: Bucket[] }[]> {
-    const r = await run(this.bin, ['-p=/quota', '--output-format', 'json'], process.env, 60_000);
+    // Isolated too: print mode starts the global MCP servers even for /quota.
+    const r = await run(this.bin, ['-p=/quota', '--output-format', 'json'], this.env(), 60_000);
     try {
       return JSON.parse(r.stdout).command?.data?.groups ?? [];
     } catch {
@@ -182,6 +197,56 @@ export function quotaInfo(groups: { name?: string; buckets?: Bucket[] }[], model
   };
 }
 
+/**
+ * What agy sees of ~/.gemini/config: its state, and the skills (stubbed per role). Anything else
+ * there is a customization (mcp_config.json, hooks.json, plugins, workflows, sidecars), or a kind
+ * a newer agy adds, so it stays out.
+ */
+const AGY_CONFIG_KEPT = ['config.json', 'projects', '.migrated', 'skills', 'skills.json'];
+/** Kept out of ~/.gemini: the config (rebuilt above), global rules, and automations. */
+const AGY_GEMINI_HIDDEN = ['config', 'GEMINI.md', 'AGENTS.md', 'jetski'];
+
+/**
+ * agy's own HOME under `dir`, made of links to the user's: everything in their home but .gemini,
+ * everything in .gemini but the config, and the config's AGY_CONFIG_KEPT. Brought up to date on
+ * each start. Returns the variables to run agy with; a BASH_ENV file gives its commands the
+ * user's HOME back (agy runs them with `bash -c`), and still reads the user's own BASH_ENV.
+ */
+export function agyHome(dir: string, userHome = homedir()): { HOME: string; BASH_ENV: string } {
+  const home = join(dir, 'home');
+  const gemini = join(userHome, '.gemini');
+  linkEntries(userHome, home, name => name !== '.gemini');
+  linkEntries(gemini, join(home, '.gemini'), name => !AGY_GEMINI_HIDDEN.includes(name));
+  linkEntries(join(gemini, 'config'), join(home, '.gemini', 'config'), name => AGY_CONFIG_KEPT.includes(name));
+  const bashEnv = join(dir, 'bash-env.sh');
+  const userBashEnv = process.env.BASH_ENV;
+  writeFileSync(
+    bashEnv,
+    `# Written by MetaHarness: agy runs with a HOME of its own, its commands with the user's.\nexport HOME=${shq(userHome)}\n${userBashEnv ? `. ${shq(userBashEnv)}\n` : ''}`,
+  );
+  return { HOME: home, BASH_ENV: bashEnv };
+}
+
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/** Links in `dst` to each entry of `src` that `keep` takes; links that no longer fit go, agy's own files stay. */
+function linkEntries(src: string, dst: string, keep: (name: string) => boolean): void {
+  mkdirSync(dst, { recursive: true });
+  const want = new Set(existsSync(src) ? readdirSync(src).filter(name => keep(name) && join(src, name) !== dst) : []);
+  for (const name of readdirSync(dst)) {
+    const p = join(dst, name);
+    if (lstatSync(p).isSymbolicLink() && (!want.has(name) || readlinkSync(p) !== join(src, name))) rmSync(p, { force: true });
+  }
+  for (const name of want) {
+    try {
+      symlinkSync(join(src, name), join(dst, name));
+    } catch (e) {
+      // Another agent starting at the same time made it, or agy keeps a file of its own there.
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+  }
+}
+
 /** Where agy finds the user's own skills, one folder each. */
 export const AGY_PERSONAL_SKILLS = join(homedir(), '.gemini', 'config', 'skills');
 
@@ -211,7 +276,7 @@ export function agyHiddenSkills(spec: SessionSpec, personal = agyPersonalSkills(
  * The agent's own customization root: our MCP server, the hooks, the role prompt as an always-on
  * rule, and a stub for each hidden skill.
  */
-export function writeAgentConfig(spec: SessionSpec, hookScript: string, hidden = agyHiddenSkills(spec)): void {
+export function writeAgentConfig(spec: SessionSpec, hookScript: string, hidden = agyHiddenSkills(spec), userHome = homedir()): void {
   const dir = join(spec.agentDir, '.agents');
   mkdirSync(join(dir, 'rules'), { recursive: true });
   rmSync(join(dir, 'skills'), { recursive: true, force: true });
@@ -222,9 +287,13 @@ export function writeAgentConfig(spec: SessionSpec, hookScript: string, hidden =
       `---\nname: ${name}\ndescription: Turned off for this team by MetaHarness. Don't use it.\n---\nThis skill is turned off for MetaHarness agents, so every harness on the team has the same skills. Carry on without it.\n`,
     );
   }
-  // Ours, plus the role's servers MetaHarness has definitions for. Others come from agy's own config.
+  // Ours, plus the role's servers: MetaHarness's definition, else the user's own agy config, which
+  // agy itself doesn't see. One it starts gets the user's HOME, as commands do.
   const servers: Record<string, unknown> = { [MCP_SERVER_NAME]: { url: spec.mcpUrl } };
-  for (const s of spec.mcpServers ?? []) if (s.def && s.name !== MCP_SERVER_NAME) servers[s.name] = s.def;
+  for (const s of spec.mcpServers ?? []) {
+    const def = s.name === MCP_SERVER_NAME ? undefined : (s.def ?? agyMcpDef(s.name, userHome));
+    if (def) servers[s.name] = def.command ? { ...def, env: { HOME: userHome, ...def.env } } : def;
+  }
   writeFileSync(join(dir, 'mcp_config.json'), JSON.stringify({ mcpServers: servers }, null, 2));
   // The daemon's own Node, so the hook works whatever is on the agent's PATH.
   const hook = (event: string, timeout: number) => ({ type: 'command', command: `${JSON.stringify(process.execPath)} ${JSON.stringify(hookScript)} ${event}`, timeout });
@@ -313,14 +382,14 @@ class AgySession implements Session {
   private toolsSeen = new Set<number>();
   private onError: () => void;
 
-  constructor(bin: string, spec: SessionSpec, ev: SessionEvents, resume: string | undefined, onError: () => void) {
+  constructor(bin: string, spec: SessionSpec, env: NodeJS.ProcessEnv, ev: SessionEvents, resume: string | undefined, onError: () => void) {
     this.ev = ev;
     this.model = spec.model;
     this.onError = onError;
     if (resume) this.nativeId = resume;
     this.proc = spawnTree(bin, agyArgs(spec, resume), {
       cwd: spec.cwd,
-      env: { ...process.env, ...spec.env, MH_HOOK_URL: spec.hookUrl },
+      env: { ...env, ...spec.env, MH_HOOK_URL: spec.hookUrl },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let started!: () => void;
@@ -429,7 +498,7 @@ class AgySession implements Session {
   private result(r: any): void {
     if (r.conversation_id) this.nativeId = r.conversation_id;
     const u = r.usage ?? {};
-    const cached = u.cached_input_tokens ?? u.cache_read_input_tokens;
+    const cached = u.cache_read_tokens ?? u.cached_input_tokens ?? u.cache_read_input_tokens;
     this.ev.usage({
       tokensIn: u.input_tokens !== undefined && cached !== undefined ? Math.max(0, u.input_tokens - cached) : u.input_tokens,
       cacheRead: cached,

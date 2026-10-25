@@ -186,7 +186,7 @@ async function main(): Promise<void> {
         if (!bin) continue;
         if (p.transport === 'claude-stream') adapters[p.id] = new ClaudeAdapter({ id: p.id, bin, env: p.env });
         else if (p.transport === 'codex-app-server') adapters[p.id] = new CodexAdapter({ bin });
-        else if (p.transport === 'agy-stream') adapters[p.id] = new AgyAdapter({ id: p.id, bin });
+        else if (p.transport === 'agy-stream') adapters[p.id] = new AgyAdapter({ id: p.id, bin, isolate: join(HOME, 'homes', p.id) });
         else if (p.transport === 'acp') adapters[p.id] = new AcpAdapter({ id: p.id, bin, args: p.args ?? [], env: p.env, openCommand: p.openCommand });
       }
       const d = new Daemon({ home: HOME, repo: process.cwd(), adapters, harnessOverride: fake ? 'fake' : undefined });

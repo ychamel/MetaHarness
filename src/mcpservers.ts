@@ -63,4 +63,9 @@ export function claudeMcpNames(cwd: string, home = homedir()): string[] {
   ];
 }
 
-export const mcpJsonExists = (dir: string) => existsSync(join(dir, 'mcp.json'));
+/** A server from the user's own Antigravity config, which agy itself doesn't see under MetaHarness (src/adapters/agy.ts). */
+export function agyMcpDef(name: string, home = homedir()): McpServerDef | undefined {
+  return readJson(join(home, '.gemini', 'config', 'mcp_config.json'))?.mcpServers?.[name];
+}
+
+export const mcpJsonExists =(dir: string) => existsSync(join(dir, 'mcp.json'));

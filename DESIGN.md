@@ -1269,9 +1269,10 @@ What each harness brings falls in three tiers:
   plugins (checked: the claude.ai plugin's skills go, the bundled ones stay).
 - **Codex**: the adapter asks the app-server (`skills/list`) for the agent's folder and turns
   off each skill of scope `user` with `skills.config` entries (`enabled: false`) on the thread.
-- **Antigravity** has no switch for its global folder, but a workspace customization wins over
-  a global one of the same name, so the agent's own customization root gets a stub for each
-  personal skill saying it's off.
+- **Antigravity** runs with a HOME of MetaHarness's that leaves out the user's global
+  customizations (Appendix A) but still links their skills, so each role can have them back
+  with `native_skills`. A workspace skill wins over a global one of the same name, so the agent's
+  own customization root gets a stub for each personal skill saying it's off.
 - **The repository's skills** come through the `skill` tool, filtered by role and harness, so
   each harness's own copy is hidden: Claude Code gets `--disallowedTools Skill(<name>)` for each
   of `.claude/skills` (it still lists them, but calling one is refused); Codex turns off the
@@ -1330,6 +1331,7 @@ machine (last run: all three pass every check). (Antigravity CLI replaced Gemini
 | Models | Aliases `opus`, `sonnet`, `haiku`, `fable`, or full IDs | `model/list` on the app server: `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`, … | `agy models`: `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{low,medium,high}`, plus Claude and GPT-OSS models |
 | Rate-limit signal | `rate_limit_event` {status: allowed \| allowed_warning \| rejected, utilization 0–1, resetsAt, rateLimitType} (from the 2.1.284 binary's schema) | `account/rateLimits/updated` {primary/secondary: usedPercent, resetsAt; rateLimitReachedType}; turn errors `usageLimitExceeded`, `rateLimitExceeded`, `contextWindowExceeded` | `agy -p=/quota --output-format json` (no model call): remaining fraction and reset time per window, for three pools: Gemini models, Gemini 4 Argon, and Claude/GPT models. Polled every 5 minutes |
 | Login status | `claude auth status` (JSON: loggedIn, authMethod, subscriptionType) | `codex login status` | No status command; `agy models` only works when signed in |
+| The user's own MCP servers, hooks, plugins | Left out by `--strict-mcp-config` and `--setting-sources project,local` | Turned off by `config` overrides on `thread/start` (`mcp_servers.<name>.enabled`, `features.plugins`, `features.apps`) | No switch, and read from `$HOME/.gemini/config` alone (`ANTIGRAVITY_GEMINI_DIR` and `ANTIGRAVITY_CONFIG_REL_DIR` change nothing). A same-named workspace plugin hides a global one, but MCP servers don't override by name (both start) and a same-named hook group keeps the global one. So agy runs with `HOME` set to `~/.metaharness/homes/<harness>/home`: links to every entry of the user's home but `.gemini`, of `.gemini` but `config`, `GEMINI.md`, `AGENTS.md` and `jetski`, and of `config` only `config.json`, `projects`, `.migrated` and the skills. Its commands run with `bash -c`, so a `BASH_ENV` file gives them the real `HOME` back; a role's stdio servers get it in their `env`. The sign-in isn't under `HOME` (keyring) and conversations stay in the user's `antigravity-cli` folder, so resume and `agy --conversation` from a terminal work. A role's server MetaHarness has no definition for is copied from the user's `mcp_config.json`. `-p=/quota` runs there too: print mode starts the global MCP servers ✅ tested 2026-10-25 (1.4.7) with spy servers, hooks and a plugin |
 | Hooks | `PreToolUse`/`PostToolUse` in settings | Unknown | `SessionStart`, `PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop` in `.agents/hooks.json`; commands run with `sh -c` and inherit agy's environment ✅ tested |
 
 ### What this changes
@@ -1350,7 +1352,8 @@ machine (last run: all three pass every check). (Antigravity CLI replaced Gemini
     can replace it later if we need typed messages.
   - Codex: one shared `codex app-server` process, with one thread per agent.
   - Antigravity: one `agy` process per agent in print mode, with its MCP server, hooks and role
-    prompt in the agent's own directory (`~/.metaharness/goals/<goal>/agents/<name>/.agents/`).
+    prompt in the agent's own directory (`~/.metaharness/goals/<goal>/agents/<name>/.agents/`),
+    and a HOME of MetaHarness's that leaves out the user's own agy customizations (table above).
     Its hooks call the daemon at `/hook/<token>`, the same credential as MCP.
   - Each agent's MCP token goes in its server URL path, so one Codex process can host many
     agents.

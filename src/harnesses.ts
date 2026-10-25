@@ -184,7 +184,8 @@ export const BUILTIN_PROFILES: HarnessProfile[] = [
     probeModel: 'gemini-3.8-flash-low',
     listMcp: async (bin, env) => {
       const r = await run(bin, ['mcp', 'list'], env);
-      return r.code === 0 && !/no mcp servers/i.test(r.out) ? r.out.split('\n').map(l => l.trim().split(/[\s:]+/)[0]).filter(w => /^[\w-]+$/.test(w)) : [];
+      // One server a line, after a NAME TYPE STATUS header (agy 1.4.7).
+      return r.code === 0 && !/no mcp servers/i.test(r.out) ? r.out.split('\n').map(l => l.trim().split(/[\s:]+/)[0]).filter(w => /^[\w-]+$/.test(w) && w !== 'NAME') : [];
     },
     // agy has no status command; its model list only loads when it's signed in.
     listModels: async (bin, env) => {
