@@ -5,7 +5,7 @@ import type { Goal, MhEvent, SharedFileView } from '../types.ts';
 import { CopyText, Markdown } from '../components/common.tsx';
 import { Splitter } from '../components/Splitter.tsx';
 
-interface FileInfo {
+export interface FileInfo {
   path: string;
   version: number;
   owner?: string;
@@ -13,19 +13,22 @@ interface FileInfo {
   ts: string;
   deleted: boolean;
   clashes: number;
+  /** Who wrote it, and how many times, in the order they first did. */
+  writers: Record<string, number>;
 }
 
 /** The shared folder as the event log knows it: every file, its latest version, who owns and last wrote it. */
-function filesOf(events: MhEvent[]): FileInfo[] {
+export function filesOf(events: MhEvent[]): FileInfo[] {
   const files = new Map<string, FileInfo>();
   for (const e of events) {
     if (!e.type.startsWith('shared.')) continue;
     const path = String(e.data.path);
-    const f = files.get(path) ?? { path, version: 0, ts: e.ts, deleted: false, clashes: 0 };
+    const f = files.get(path) ?? { path, version: 0, ts: e.ts, deleted: false, clashes: 0, writers: {} };
     if (e.type === 'shared.write') {
       f.version = Number(e.data.version) || f.version + 1;
       f.lastBy = e.agent;
       f.owner ??= e.agent;
+      if (e.agent) f.writers[e.agent] = (f.writers[e.agent] ?? 0) + 1;
       f.ts = e.ts;
       f.deleted = false;
     } else if (e.type === 'shared.delete') {
@@ -64,7 +67,7 @@ export function Files({ goal, events, selected, onSelect, onSelectAgent }: { goa
   );
 }
 
-function Viewer({ goal, file, onSelectAgent }: { goal: Goal; file: FileInfo; onSelectAgent: (n: string) => void }) {
+export function Viewer({ goal, file, onSelectAgent }: { goal: Goal; file: FileInfo; onSelectAgent: (n: string) => void }) {
   const [version, setVersion] = useState<number>();
   const [view, setView] = useState<SharedFileView>();
   const [error, setError] = useState<string>();
@@ -88,12 +91,19 @@ function Viewer({ goal, file, onSelectAgent }: { goal: Goal; file: FileInfo; onS
         <div className="file-title">
           <b className="mono">{file.path}</b>
           <span className="muted">
-            {file.owner && (
+            {/* The first to write it owns it, so it leads the list. */}
+            {Object.keys(file.writers).length > 0 && (
               <>
-                owner{' '}
-                <button className="name-link" onClick={() => onSelectAgent(file.owner!)}>
-                  {file.owner}
-                </button>
+                written by{' '}
+                {Object.entries(file.writers).map(([by, n], i) => (
+                  <span key={by}>
+                    {i > 0 && ', '}
+                    <button className="name-link" title={by === file.owner ? 'Owns it: wrote it first' : undefined} onClick={() => by !== 'human' && onSelectAgent(by)}>
+                      {who(by)}
+                    </button>
+                    {n > 1 && ` ×${n}`}
+                  </span>
+                ))}
               </>
             )}
             {file.deleted && ' · deleted'}
@@ -126,4 +136,10 @@ function Viewer({ goal, file, onSelectAgent }: { goal: Goal; file: FileInfo; onS
       </div>
     </>
   );
+}
+
+/** A shared file read in a side panel, by its path. */
+export function FileSide({ goal, events, path, onSelectAgent }: { goal: Goal; events: MhEvent[]; path: string; onSelectAgent: (n: string) => void }) {
+  const info = useMemo(() => filesOf(events).find(f => f.path === path), [events, path]);
+  return <div className="file-view side-file">{info ? <Viewer goal={goal} file={info} onSelectAgent={onSelectAgent} /> : <div className="empty">Nobody has written {path}.</div>}</div>;
 }

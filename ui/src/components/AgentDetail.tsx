@@ -150,12 +150,15 @@ interface Props {
   onSpawnUnder: (name: string) => void;
   onEditRole: (role: string) => void;
   onOpenGit?: (sel: GitSel) => void;
+  onOpenFile?: (path: string) => void;
 }
 
 type Tab = 'talk' | 'changes' | 'brief' | 'setup';
 
-export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnUnder, onEditRole, onOpenGit }: Props) {
+export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnUnder, onEditRole, onOpenGit, onOpenFile }: Props) {
   const items = useMemo(() => streamOf(events, agent.name), [events, agent.name]);
+  // The shared files it wrote, in the order it first did.
+  const wrote = useMemo(() => [...new Set(events.filter(e => e.type === 'shared.write' && e.agent === agent.name).map(e => String(e.data.path)))], [events, agent.name]);
   const rows = useMemo(() => rowsOf(items), [items]);
   const [tab, setTab] = useState<Tab>('talk');
   const [detail, setDetail] = useState<Detail>();
@@ -214,6 +217,16 @@ export function AgentDetail({ goal, agent, events, manifest, onCommand, onSpawnU
           {agent.awaitingApproval > 0 && <span className="warn-text">{agent.awaitingApproval} waiting for your approval</span>}
           {agent.unread > 0 && <span>{agent.unread} unread message{agent.unread > 1 ? 's' : ''}</span>}
         </div>
+        {wrote.length > 0 && onOpenFile && (
+          <div className="facts wrote">
+            <span className="muted">Wrote</span>
+            {wrote.map(path => (
+              <button key={path} className="file-link" onClick={() => onOpenFile(path)} title={`Read shared/${path}`}>
+                {path}
+              </button>
+            ))}
+          </div>
+        )}
 
         {goalLive && !gone && (
           <div className="row actions">

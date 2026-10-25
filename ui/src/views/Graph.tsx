@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Background, BaseEdge, Controls, getBezierPath, Handle, MarkerType, Position, ReactFlow, useReactFlow, ReactFlowProvider, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { clock, eventText, isOwnTool, modelLabel, money, oneLine, STATE_LABEL } from '../format.ts';
 import type { Agent, Goal, MhEvent } from '../types.ts';
 import { Ctx, Dot, useNow } from '../components/common.tsx';
 import { Splitter } from '../components/Splitter.tsx';
+import { FileSide } from './Files.tsx';
 
 const W = 240;
 const H = 175;
@@ -28,7 +29,7 @@ interface Live {
 }
 
 type AgentData = { agent: Agent; live?: Live; waiting?: string; helpers: number; open: boolean; faded: boolean; on: boolean; toggle: () => void };
-type FileData = { path: string; faded: boolean };
+type FileData = { path: string; faded: boolean; on: boolean };
 type MsgData = { pulses: string[]; color: string; picked: boolean };
 
 const short = (ms: number) => (ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m` : `${Math.floor(ms / 3_600_000)}h${String(Math.floor((ms % 3_600_000) / 60_000)).padStart(2, '0')}`);
@@ -132,7 +133,7 @@ function HumanCard() {
 
 function FileCard({ data }: NodeProps<Node<FileData>>) {
   return (
-    <div className={`file-node${data.faded ? ' faded' : ''}`} title={data.path}>
+    <div className={`file-node${data.faded ? ' faded' : ''}${data.on ? ' on' : ''}`} title={`${data.path}\n\nClick to read it beside the graph`}>
       <Handle type="target" position={Position.Top} />
       📄 {data.path}
     </div>
@@ -248,11 +249,45 @@ function sides(a?: Point, b?: Point): [string, string] {
 }
 
 /** How information flows: who spawned whom, who messaged whom (live), who waits on whom, who wrote which shared file. */
-function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: MhEvent[]; selected?: string; onSelect: (n: string) => void }) {
+function GraphInner({ goal, events, selected, agentPanel, file, onSelect, onFile, onFilesTab }: GraphProps) {
   const [windowMs, setWindowMs] = useState(Infinity);
   const [focus, setFocus] = useState(true);
   const [openHelpers, setOpenHelpers] = useState<Set<string>>(new Set());
   const [pair, setPair] = useState<[string, string]>();
+  // The side panel shows the open shared file (kept in the page's address), else the agent you
+  // picked while the page has no agent column, else the messages.
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [all, setAll] = useState(false);
+  const showAgent = (n: string) => {
+    onSelect(n);
+    if (agentPanel === undefined) return;
+    setAgentOpen(true);
+    if (file) onFile(undefined);
+  };
+  const closeSide = () => {
+    setAgentOpen(false);
+    if (file) onFile(undefined);
+  };
+  // An agent picked elsewhere on the page (the team column) shows here too; a file opened replaces it.
+  const lastSelected = useRef(selected);
+  useEffect(() => {
+    if (lastSelected.current === selected) return;
+    lastSelected.current = selected;
+    if (selected && agentPanel !== undefined) showAgent(selected);
+  }, [selected]);
+  useEffect(() => {
+    if (file) setAgentOpen(false);
+  }, [file]);
+  const sideOpen = !!file || (agentOpen && agentPanel !== undefined);
+  useEffect(() => {
+    if (!sideOpen) return;
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || (e.target as HTMLElement)?.closest?.('input, textarea, select') || document.querySelector('.backdrop')) return;
+      closeSide();
+    };
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  });
   const [tickN, tick] = useState(0);
   const flow = useReactFlow();
   // Recent messages animate; look again every few seconds so they stop.
@@ -350,7 +385,10 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
 
     // Focus: the selected agent, its parent and children, whoever it talked to or waits on, what it wrote.
     const related = new Set<string>();
-    if (focus && selected && shown.has(selected)) {
+    if (focus && file && files.includes(file)) {
+      related.add(`file:${file}`);
+      for (const w of writes.values()) if (w.path === file) related.add(w.by);
+    } else if (focus && selected && shown.has(selected)) {
       related.add(selected);
       const me = goal.agents.find(a => a.name === selected);
       if (me) related.add(me.parent);
@@ -397,7 +435,7 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
           id: `file:${path}`,
           type: 'file',
           position: pos.get(`file:${path}`)!,
-          data: { path, faded: faded(`file:${path}`) },
+          data: { path, faded: faded(`file:${path}`), on: path === file },
         }),
       ),
     ];
@@ -458,12 +496,13 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
           target: `file:${w.path}`,
           type: 'default',
           label: w.n > 1 ? `${w.n}×` : undefined,
-          style: { stroke: 'var(--text-3)', strokeDasharray: '4 3', opacity: dim(w.by, `file:${w.path}`) },
+          data: { path: w.path },
+          style: { stroke: 'var(--text-3)', strokeDasharray: '4 3', opacity: dim(w.by, `file:${w.path}`), cursor: 'pointer' },
         }),
       ),
     ].filter(e => nodes.some(n => n.id === e.source) && nodes.some(n => n.id === e.target));
     return { nodes, edges, nextPulseEnd };
-  }, [layout, moved, sizes, live, goal.agents, focus, selected, pair, tickN]);
+  }, [layout, moved, sizes, live, goal.agents, focus, selected, pair, file, tickN]);
 
   // Pulses go once they've arrived.
   useEffect(() => {
@@ -548,9 +587,17 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
             edges={edges}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
-            onNodeClick={(_, n) => n.type === 'agent' && onSelect(n.id)}
+            onNodeClick={(_, n) => {
+              if (n.type === 'agent') showAgent(n.id);
+              else if (n.type === 'file') {
+                const path = (n.data as FileData).path;
+                onFile(path === file ? undefined : path);
+              }
+            }}
             onEdgeClick={(_, e) => {
+              if (e.id.startsWith('write:')) return onFile(String(e.data?.path));
               if (!e.id.startsWith('msg:')) return;
+              closeSide();
               const p: [string, string] = [e.source, e.target];
               setPair(cur => (cur && cur[0] === p[0] && cur[1] === p[1]) || (cur && cur[0] === p[1] && cur[1] === p[0]) ? undefined : p);
             }}
@@ -567,7 +614,26 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
           </ReactFlow>
         </div>
         <Splitter pane="graph-side" grow="left" min={220} max={700} label="Messages panel" />
-        <Talk goal={goal} events={events} said={said} pair={pair} agent={focus ? selected : undefined} owner={layout.owner} onPair={setPair} onSelect={onSelect} />
+        {sideOpen ? (
+          <aside className="talk side-panel" aria-label={file ? 'File' : 'Agent'}>
+            <div className="talk-head">
+              <button className="btn ghost small" onClick={closeSide} title="Back to the messages (Esc)">
+                ← {all ? 'Activity' : 'Messages'}
+              </button>
+              <span className="spacer" />
+              {file ? (
+                <button className="btn ghost small" onClick={onFilesTab} title="Read it in the Files tab, with the whole shared folder beside it">
+                  Open in Files
+                </button>
+              ) : (
+                <span className="muted small">Agent</span>
+              )}
+            </div>
+            {file ? <FileSide key={file} goal={goal} events={events} path={file} onSelectAgent={showAgent} /> : <div className="side-agent">{agentPanel}</div>}
+          </aside>
+        ) : (
+          <Talk goal={goal} events={events} said={said} pair={pair} all={all} onAll={setAll} agent={focus ? selected : undefined} owner={layout.owner} onPair={setPair} onSelect={showAgent} onOpenFile={onFile} />
+        )}
       </div>
     </>
   );
@@ -578,8 +644,9 @@ function GraphInner({ goal, events, selected, onSelect }: { goal: Goal; events: 
  * ends of the line you clicked, briefs and done notes included. "Everything" adds the rest of
  * what the team does (steps, commits, files) to the feed.
  */
-function Talk({ goal, events, said, pair, agent, owner, onPair, onSelect }: { goal: Goal; events: MhEvent[]; said: Said[]; pair?: [string, string]; agent?: string; owner: (n: string) => string; onPair: (p?: [string, string]) => void; onSelect: (n: string) => void }) {
-  const [all, setAll] = useState(false);
+function Talk({ goal, events, said, pair, all, onAll: setAll, agent, owner, onPair, onSelect, onOpenFile }: { goal: Goal; events: MhEvent[]; said: Said[]; pair?: [string, string]; all: boolean; onAll: (all: boolean) => void; agent?: string; owner: (n: string) => string; onPair: (p?: [string, string]) => void; onSelect: (n: string) => void; onOpenFile: (path: string) => void }) {
+  const fileRe = useMemo(() => fileMentions(events), [events]);
+  const linked = (text: string) => withFileLinks(text, fileRe, onOpenFile);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const name = (n: string) => (n === 'human' ? 'you' : n);
@@ -656,7 +723,7 @@ function Talk({ goal, events, said, pair, agent, owner, onPair, onSelect }: { go
                 )}
                 <span className="muted small mono">{clock(l.said.ts)}</span>
               </div>
-              <div className="said-text">{oneLine(l.said.text, pair ? 2000 : 280)}</div>
+              <div className="said-text">{linked(oneLine(l.said.text, pair ? 2000 : 280))}</div>
             </div>
           ) : (
             <div key={l.key} className="did">
@@ -665,7 +732,7 @@ function Talk({ goal, events, said, pair, agent, owner, onPair, onSelect }: { go
                 {l.event!.agent ?? 'goal'}
               </button>
               <span className="ellipsis" title={eventText(l.event!)}>
-                {eventText(l.event!)}
+                {linked(eventText(l.event!))}
               </span>
             </div>
           ),
@@ -676,7 +743,42 @@ function Talk({ goal, events, said, pair, agent, owner, onPair, onSelect }: { go
   );
 }
 
-export default function Graph(props: { goal: Goal; events: MhEvent[]; selected?: string; onSelect: (n: string) => void }) {
+/** Every shared file's path, as a pattern that finds them in text, with or without the `shared/` in front. */
+function fileMentions(events: MhEvent[]): RegExp | undefined {
+  const paths = [...new Set(events.filter(e => e.type === 'shared.write').map(e => String(e.data.path)))];
+  if (!paths.length) return undefined;
+  // Longest first, so a path wins over a shorter one it ends with.
+  const alts = paths.sort((a, b) => b.length - a.length).map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`(?<![\\w./-])(?:shared/)?(${alts.join('|')})(?![\\w/-]|\\.\\w)`, 'g');
+}
+
+/** Text with each shared file it names turned into a link that opens the file. */
+function withFileLinks(text: string, re: RegExp | undefined, onOpen: (path: string) => void): ReactNode {
+  if (!re) return text;
+  const out: ReactNode[] = [];
+  let at = 0;
+  for (const m of text.matchAll(re)) {
+    out.push(text.slice(at, m.index));
+    const path = m[1];
+    out.push(
+      <button key={m.index} className="file-link" onClick={() => onOpen(path)} title={`Read shared/${path}`}>
+        {m[0]}
+      </button>,
+    );
+    at = m.index + m[0].length;
+  }
+  if (!out.length) return text;
+  out.push(text.slice(at));
+  return out;
+}
+
+/**
+ * `agentPanel` is the selected agent's detail, given when the page has no agent column to show it
+ * in: the side panel shows it then. `file` is the shared file open in the side panel.
+ */
+type GraphProps = { goal: Goal; events: MhEvent[]; selected?: string; agentPanel?: ReactNode; file?: string; onSelect: (n: string) => void; onFile: (path?: string) => void; onFilesTab: () => void };
+
+export default function Graph(props: GraphProps) {
   return (
     <ReactFlowProvider>
       <GraphInner {...props} />

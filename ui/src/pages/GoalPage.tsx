@@ -74,7 +74,7 @@ interface Props {
   tab: GoalTab;
   file?: string;
   onTab: (t: GoalTab) => void;
-  onFile: (path: string) => void;
+  onFile: (path?: string) => void;
   onAgent: (name?: string) => void;
   onGoal: (id: string) => void;
   onCommand: (body: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>;
@@ -99,11 +99,16 @@ export function GoalPage(p: Props) {
   // Where the Design view is (its scope, area and focus) outlasts switching tabs, not goals.
   const [designNav, setDesignNav] = useState<DesignNav>({});
   const [room, setRoom] = useRoom();
-  // With its column put away, an agent picked slides in over the tab.
+  // With its column put away, an agent picked slides in over the tab; the graph shows it in its own side panel instead.
   const [drawer, setDrawer] = useState(false);
   const onAgent = (name?: string) => {
-    if (room.agent && name) setDrawer(true);
+    if (room.agent && name && p.tab !== 'graph') setDrawer(true);
     p.onAgent(name);
+  };
+  // The graph reads a shared file in its side panel; elsewhere it opens in the Files tab.
+  const openFile = (path: string) => {
+    p.onFile(path);
+    if (p.tab !== 'graph') p.onTab('files');
   };
   useEffect(() => setDrawer(false), [p.tab]);
   useEffect(() => {
@@ -153,6 +158,7 @@ export function GoalPage(p: Props) {
       onSpawnUnder={name => p.onSpawn(name)}
       onEditRole={p.onEditRole}
       onOpenGit={openGit}
+      onOpenFile={openFile}
     />
   ) : (
     <div className="empty">Pick an agent to see what it's doing.</div>
@@ -212,16 +218,16 @@ export function GoalPage(p: Props) {
                 goal={goal}
                 events={events}
                 onSelectAgent={onAgent}
-                onOpenFile={f => {
-                  p.onFile(f);
-                  p.onTab('files');
-                }}
+                onOpenFile={openFile}
               />
             )}
             {p.tab === 'design' && <Design goal={goal} events={events} nav={designNav} onNav={setDesignNav} onCommand={p.onCommand} onSelectAgent={onAgent} onOpenCommit={sha => openGit({ kind: 'commit', sha })} />}
             {p.tab === 'git' && <Git goal={goal} events={events} sel={gitSel} onSel={setGitSel} onSelectAgent={onAgent} onOpenDesign={(sha, area) => openDesign({ scope: { kind: 'commit', sha }, area })} />}
             {p.tab === 'files' && <Files goal={goal} events={events} selected={p.file} onSelect={p.onFile} onSelectAgent={onAgent} />}
-            {p.tab === 'graph' && <Graph goal={goal} events={events} selected={agent?.name} onSelect={onAgent} />}
+            {p.tab === 'graph' && (
+              // With the agent's column put away, the graph shows the agent in its own side panel.
+              <Graph goal={goal} events={events} selected={agent?.name} agentPanel={room.agent ? agentDetail : undefined} file={p.file} onSelect={onAgent} onFile={p.onFile} onFilesTab={() => p.onTab('files')} />
+            )}
             {p.tab === 'sequence' && <Sequence goal={goal} events={events} onSelect={onAgent} />}
             {p.tab === 'timeline' && <Timeline goal={goal} events={events} onSelect={onAgent} />}
             {p.tab === 'costs' && <Costs goal={goal} onSelect={onAgent} onSetup={p.onHarnesses} />}
