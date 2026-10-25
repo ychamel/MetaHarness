@@ -13,7 +13,7 @@ const MODES: [ApprovalMode, string, string][] = [
 
 interface Props extends Pick<SetupProps, 'config' | 'onSave'> {
   /** Opens the gatekeeper's or assistant's role in Roles, writing out the built-in one first if there's no file. */
-  onBuiltinRole: (which: 'gatekeeper' | 'assistant', scope: Scope, exists: boolean) => void;
+  onBuiltinRole: (which: 'gatekeeper' | 'assistant' | 'coordinator', scope: Scope, exists: boolean) => void;
 }
 
 /** How MetaHarness behaves: approvals and prompt-cache reminders (settings.json). */
@@ -25,7 +25,7 @@ export function Settings({ config, ...p }: Props) {
 function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: ConfigView }) {
   const eff = config.settings.effective;
   const [scope, setScope] = useState<Scope>(config.scopes.some(s => s.scope === 'repo') ? 'repo' : 'personal');
-  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes, limitCheckMinutes: eff.limitCheckMinutes, contextHandoffPct: eff.contextHandoffPct, stallMinutes: eff.stallMinutes }), [eff]);
+  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, coordinator: eff.coordinator, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes, limitCheckMinutes: eff.limitCheckMinutes, contextHandoffPct: eff.contextHandoffPct, stallMinutes: eff.stallMinutes }), [eff]);
   const { draft, set, dirty, revert } = useDraft<Draft>(saved);
   const [busy, setBusy] = useState(false);
   const from = (k: keyof Draft) => [...config.settings.files].reverse().find(f => f.values[k] !== undefined)?.scope;
@@ -94,6 +94,18 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
                 builtIn="Built in: Codex gpt-6-luna, with Claude haiku and Antigravity backups."
                 onChange={v => set('assistant', v)}
                 onEdit={exists => onBuiltinRole('assistant', scope, exists)}
+              />
+            </Section>
+
+            <Section title="Room coordinator" hint={where('coordinator')}>
+              <div className="hint">In a discussion room, after each round, it says whether the talk converges, develops or drifts, keeps the board, and suggests who to ask next. It only reads, and never answers the question itself.</div>
+              <RolePick
+                config={config}
+                label="Coordinator role"
+                value={draft.coordinator}
+                builtIn="Built in: Claude haiku, with Codex gpt-6-luna and Antigravity backups."
+                onChange={v => set('coordinator', v)}
+                onEdit={exists => onBuiltinRole('coordinator', scope, exists)}
               />
             </Section>
 

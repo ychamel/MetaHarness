@@ -8,6 +8,9 @@ import { AccountList, useOverview } from '../components/Accounts.tsx';
 
 interface Props {
   goals: GoalSummary[];
+  rooms: GoalSummary[];
+  onOpenRoom: (room: string) => void;
+  onNewRoom: () => void;
   loaded: boolean;
   config?: ConfigView;
   onOpen: (goal: string, agent?: string) => void;
@@ -17,7 +20,8 @@ interface Props {
   onAllGoals: () => void;
 }
 
-export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetup, onAllGoals }: Props) {
+export function Home({ goals, rooms, loaded, config, onOpen, onOpenRoom, onNewRoom, onStart, onCommand, onSetup, onAllGoals }: Props) {
+  const openRooms = rooms.filter(r => r.status === 'running');
   const overview = useOverview();
   const [query, setQuery] = useState('');
   const [showAll, setShowAll] = useState(false);
@@ -55,7 +59,13 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
       />
 
       <section className="panel">
-        <h2>Start a goal</h2>
+        <div className="section-h-row">
+          <h2>Start a goal</h2>
+          <span className="spacer" />
+          <button className="btn small" onClick={onNewRoom} title="A discussion you lead: ask a few agents, compare their views, settle what to do">
+            Or open a room to talk it over first
+          </button>
+        </div>
         {config && roles === 0 ? (
           <div className="empty">
             There are no roles yet, so there's nobody to lead.{' '}
@@ -84,6 +94,27 @@ export function Home({ goals, loaded, config, onOpen, onStart, onCommand, onSetu
                 <div className="muted small">
                   {g.working} of {g.agents} agent{g.agents === 1 ? '' : 's'} working
                   {g.workflow ? ` · ${g.workflow}` : ''}
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {openRooms.length > 0 && (
+        <section>
+          <h2 className="section-h">Open rooms</h2>
+          <div className="goal-cards">
+            {openRooms.map(r => (
+              <button key={r.id} className="goal-card" onClick={() => onOpenRoom(r.id)}>
+                <div className="goal-card-top">
+                  <span className="pill running">open {duration(r.createdAt)}</span>
+                  <span className="spacer" />
+                  <span className="muted">{money(r.cost)}</span>
+                </div>
+                <div className="goal-card-title">{firstLine(r.request)}</div>
+                <div className="muted small">
+                  {r.working} of {r.agents} participant{r.agents === 1 ? '' : 's'} working
                 </div>
               </button>
             ))}

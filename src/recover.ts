@@ -62,6 +62,11 @@ export interface InboxReplay {
 
 export interface GoalReplay {
   id: string;
+  /** A discussion room: no lead, so it's over only once ended. */
+  kind?: 'room';
+  roomBranch?: string;
+  /** What a room's coordinator has spent. */
+  coordinatorCost: number;
   request: string;
   dir: string;
   sharedDir: string;
@@ -97,7 +102,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
   if (!start) return undefined;
   const d = start.data;
   const g: GoalReplay = {
-    id: start.goal, request: str(d.request), dir: str(d.dir), sharedDir: str(d.sharedDir), createdAt: start.ts,
+    id: start.goal, ...(d.kind === 'room' ? { kind: 'room' as const, roomBranch: str(d.roomBranch) || undefined } : {}), coordinatorCost: 0, request: str(d.request), dir: str(d.dir), sharedDir: str(d.sharedDir), createdAt: start.ts,
     workflow: str(d.workflow) || undefined, branch: str(d.branch) || undefined, base: str(d.base) || undefined,
     ended: false, lead: '', agents: new Map(), counters: new Map(), inbox: [], refs: new Map(), seenOn: new Map(),
     conflicts: new Map(), shared: new Map(), gatekeeperCost: 0, notes: new Map(),
@@ -124,7 +129,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
           brief: str(x.brief), quick: x.quick === true, cwd: str(x.cwd) || g.dir, worktree: wt,
           startedFrom: str(x.startedFrom) || undefined, state: 'starting', status: '', lastText: '', undelivered: [],
         });
-        if (!g.lead && (e.parent ?? 'human') === 'human') g.lead = e.agent!;
+        if (!g.lead && !g.kind && (e.parent ?? 'human') === 'human') g.lead = e.agent!;
         if (wt) g.refs.set(wt.branch, wt.base);
         break;
       }
@@ -188,6 +193,9 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
       case 'gatekeeper.usage':
         if (typeof x.total === 'number') g.gatekeeperCost = x.total;
         break;
+      case 'coordinator.usage':
+        if (typeof x.total === 'number') g.coordinatorCost = x.total;
+        break;
       case 'message.sent':
         if (str(x.id) && str(x.to) && x.to !== 'human') {
           pending.set(str(x.id), { id: str(x.id), to: str(x.to), from: e.agent ?? 'human', text: str(x.text), urgent: x.urgent === true, ts: e.ts });
@@ -239,6 +247,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
 /** A goal is over once its lead has finished; there's nothing to resume after that. */
 export function goalOver(g: GoalReplay): boolean {
   if (g.ended) return true;
+  if (g.kind === 'room') return g.ended;
   const lead = g.agents.get(g.lead);
   return !lead || lead.doneNote !== undefined || ['done', 'ended', 'crashed'].includes(lead.state);
 }

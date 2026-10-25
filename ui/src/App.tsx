@@ -5,7 +5,8 @@ import type { ConfigView, GoalSummary } from './types.ts';
 import { SpawnDialog, StartGoalDialog } from './components/Dialogs.tsx';
 import { ConfirmProvider, ErrorBoundary, useToast } from './components/common.tsx';
 import { Home } from './pages/Home.tsx';
-import { GoalPage, type GoalTab } from './pages/GoalPage.tsx';
+import { GoalPage, type GoalTab, type RoomFrom } from './pages/GoalPage.tsx';
+import { NewRoomDialog } from './components/Room.tsx';
 import { Harnesses } from './pages/Harnesses.tsx';
 import { AssistantPanel } from './components/AssistantPanel.tsx';
 import { Settings } from './pages/Settings.tsx';
@@ -16,12 +17,13 @@ import { Rules } from './pages/Rules.tsx';
 import { Tools } from './pages/Tools.tsx';
 import { Goals } from './pages/Goals.tsx';
 
-type Page = 'home' | 'goal' | 'goals' | 'roles' | 'workflows' | 'rules' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
+type Page = 'home' | 'goal' | 'room' | 'goals' | 'roles' | 'workflows' | 'rules' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
 
 /** Where you are, kept in the address so a reload or a shared link comes back to it. */
 interface Place {
   page: Page;
   goal?: string;
+  room?: string;
   agent?: string;
   tab?: GoalTab;
   file?: string;
@@ -33,13 +35,13 @@ function readHash(): Place {
   const p = new URLSearchParams(location.hash.slice(1));
   const get = (k: string) => p.get(k) ?? undefined;
   const page = (get('page') as Page) ?? (get('goal') ? 'goal' : 'home');
-  return { page, goal: get('goal'), agent: get('agent'), tab: get('tab') as GoalTab, file: get('file'), item: get('item') };
+  return { page, goal: get('goal'), room: get('room'), agent: get('agent'), tab: get('tab') as GoalTab, file: get('file'), item: get('item') };
 }
 
 function writeHash(pl: Place): string {
   const p = new URLSearchParams();
   p.set('page', pl.page);
-  for (const k of ['goal', 'agent', 'tab', 'file', 'item'] as const) if (pl[k]) p.set(k, pl[k]!);
+  for (const k of ['goal', 'room', 'agent', 'tab', 'file', 'item'] as const) if (pl[k]) p.set(k, pl[k]!);
   return `#${p}`;
 }
 
@@ -58,7 +60,7 @@ function Shell() {
   const [loaded, setLoaded] = useState(false);
   const [config, setConfig] = useState<ConfigView>();
   const [place, setPlace] = useState<Place>(readHash);
-  const [dialog, setDialog] = useState<{ kind: 'goal'; workflow?: string } | { kind: 'spawn'; parent?: string }>();
+  const [dialog, setDialog] = useState<{ kind: 'goal'; workflow?: string; request?: string; fromRoom?: string } | { kind: 'spawn'; parent?: string } | { kind: 'room'; from?: RoomFrom }>();
   const { toast, say } = useToast();
   const [asking, setAsking] = useState(false);
   const refreshGoal = useRef<() => Promise<void>>(undefined);
@@ -96,13 +98,22 @@ function Shell() {
     return () => clearInterval(t);
   }, [token, loadGoals, loadConfig]);
 
-  // The goal page opens on the running goal, or the latest one.
-  // A goal that was deleted falls back to those.
-  const known = place.goal && (!loaded || goals.some(g => g.id === place.goal)) ? place.goal : undefined;
-  const goalId = known ?? (goals.find(g => g.status === 'running') ?? goals[0])?.id;
+  // Goals and rooms share the log; each tab lists its own.
+  const goalList = useMemo(() => goals.filter(g => g.kind !== 'room'), [goals]);
+  const rooms = useMemo(() => goals.filter(g => g.kind === 'room'), [goals]);
+  // The goal page opens on the running goal, or the latest one; the room page likewise.
+  // One that was deleted falls back to those.
+  const pick = (list: GoalSummary[], want?: string) => {
+    const known = want && (!loaded || list.some(g => g.id === want)) ? want : undefined;
+    return known ?? (list.find(g => g.status === 'running') ?? list[0])?.id;
+  };
+  const goalId = pick(goalList, place.goal);
+  const roomId = pick(rooms, place.room);
   const onGoalPage = place.page === 'goal';
-  const { snapshot, events, connected, error, refresh } = useGoal(token && !authFailed && onGoalPage ? goalId : undefined);
-  const goal = snapshot?.goals.find(g => g.id === goalId);
+  const onRoomPage = place.page === 'room';
+  const shownId = onGoalPage ? goalId : onRoomPage ? roomId : undefined;
+  const { snapshot, events, connected, error, refresh } = useGoal(token && !authFailed ? shownId : undefined);
+  const goal = snapshot?.goals.find(g => g.id === shownId);
   refreshGoal.current = refresh;
 
   // A browser notification when an agent starts waiting on you, if you've allowed them.
@@ -138,7 +149,7 @@ function Shell() {
     async (body: Record<string, unknown>) => {
       try {
         const r = await api.command(body);
-        if (typeof r.result === 'string' && !['agent.message', 'inbox.resolve'].includes(String(body.cmd))) say(r.result);
+        if (typeof r.result === 'string' && !['agent.message', 'inbox.resolve', 'room.post', 'room.board', 'room.suggestion', 'room.open', 'room.add', 'room.coordinate'].includes(String(body.cmd))) say(r.result);
         if (body.cmd === 'agent.message') say('Sent.');
         void refresh();
         void loadGoals();
@@ -165,10 +176,11 @@ function Shell() {
   const startGoal = useCallback(
     async (b: Record<string, unknown>) => {
       if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission();
-      const r = (await command(b)) as { goal?: string } | undefined;
+      const r = (await command(b)) as { goal?: string; room?: string } | undefined;
       if (!r?.goal) return false;
       setDialog(undefined);
-      go({ page: 'goal', goal: r.goal, agent: undefined, tab: 'story', file: undefined });
+      if (r.room) go({ page: 'room', room: r.room, agent: undefined, tab: 'thread', file: undefined });
+      else go({ page: 'goal', goal: r.goal, agent: undefined, tab: 'story', file: undefined });
       return true;
     },
     [command, go],
@@ -187,7 +199,9 @@ function Shell() {
     );
   }
 
-  const current = goals.find(g => g.id === goalId);
+  const current = goalList.find(g => g.id === goalId);
+  const currentRoom = rooms.find(g => g.id === roomId);
+  const allKind = place.page === 'goals' && place.item === 'rooms' ? 'room' : 'goal';
   const setup = (page: Page) => ({ selected: place.page === page ? place.item : undefined, onSelect: (item?: string) => go({ item }), onSave: saveConfig, onCommand: command, config });
 
   return (
@@ -201,9 +215,20 @@ function Shell() {
           </svg>
         </div>
         <RailButton icon={ICONS.home} label="Home" on={place.page === 'home'} badge={needs} onClick={() => go({ page: 'home', item: undefined })} />
-        <RailButton icon={ICONS.goal} label="Goal" on={onGoalPage} dot={current?.status === 'running'} disabled={!goals.length} onClick={() => go({ page: 'goal', goal: goalId, item: undefined })} />
-        <RailButton icon={ICONS.goals} label="Goals" on={place.page === 'goals'} disabled={!goals.length} onClick={() => go({ page: 'goals', item: undefined })} />
-        <RailButton icon={ICONS.plus} label="New goal" onClick={() => setDialog({ kind: 'goal' })} />
+        <RailButton
+          icon={ICONS.goal}
+          label="Goals"
+          on={onGoalPage || (place.page === 'goals' && allKind === 'goal')}
+          dot={current?.status === 'running'}
+          onClick={() => (goalList.length ? go({ page: 'goal', goal: goalId, item: undefined, tab: place.tab === 'thread' ? 'story' : place.tab }) : setDialog({ kind: 'goal' }))}
+        />
+        <RailButton
+          icon={ICONS.room}
+          label="Rooms"
+          on={onRoomPage || (place.page === 'goals' && allKind === 'room')}
+          dot={currentRoom?.status === 'running'}
+          onClick={() => go({ page: 'room', room: roomId, item: undefined, tab: 'thread' })}
+        />
         <RailButton icon={ICONS.ask} label="Ask" on={asking} onClick={() => setAsking(a => !a)} />
         <div className="rail-sep" />
         <div className="rail-group">Setup</div>
@@ -218,35 +243,68 @@ function Shell() {
 
       <main className="content">
         <ErrorBoundary resetKey={place.page}>
-        {error && onGoalPage && <div className="error-bar">{error}</div>}
+        {error && (onGoalPage || onRoomPage) && <div className="error-bar">{error}</div>}
         {place.page === 'home' && (
-          <Home goals={goals} loaded={loaded} config={config} onOpen={(g, agent) => go({ page: 'goal', goal: g, agent, tab: place.tab ?? 'story', file: undefined })} onStart={startGoal} onCommand={command} onSetup={() => go({ page: 'roles', item: 'new' })} onAllGoals={() => go({ page: 'goals', item: undefined })} />
+          <Home
+            goals={goalList}
+            rooms={rooms}
+            loaded={loaded}
+            config={config}
+            onOpen={(g, agent) => go({ page: 'goal', goal: g, agent, tab: place.tab === 'thread' ? 'story' : (place.tab ?? 'story'), file: undefined })}
+            onOpenRoom={r => go({ page: 'room', room: r, agent: undefined, tab: 'thread', file: undefined })}
+            onNewRoom={() => setDialog({ kind: 'room' })}
+            onStart={startGoal}
+            onCommand={command}
+            onSetup={() => go({ page: 'roles', item: 'new' })}
+            onAllGoals={() => go({ page: 'goals', item: undefined })}
+          />
         )}
         {place.page === 'goals' && (
           <Goals
-            goals={goals}
+            goals={allKind === 'room' ? rooms : goalList}
+            kind={allKind}
             loaded={loaded}
             config={config}
-            onOpen={(g, tab) => go({ page: 'goal', goal: g, agent: undefined, tab: tab ?? 'story', file: undefined })}
+            onKind={k => go({ page: 'goals', item: k === 'room' ? 'rooms' : undefined })}
+            onNew={() => setDialog({ kind: allKind })}
+            onOpen={(g, tab) => (allKind === 'room' ? go({ page: 'room', room: g, agent: undefined, tab: tab ?? 'thread', file: undefined }) : go({ page: 'goal', goal: g, agent: undefined, tab: tab ?? 'story', file: undefined }))}
             onCommand={command}
             onChanged={() => void loadGoals()}
           />
         )}
-        {onGoalPage && (
+        {onRoomPage && !rooms.length && loaded && (
+          <div className="page">
+            <div className="empty big">
+              <div>
+                <b>Rooms</b> are discussions you lead: bring in a few agents (a scout, a designer, a reviewer, the same role on two models), ask them, compare their views and settle what to do. A patch job fixes small things on the room's own branch; a bigger plan becomes a goal.
+              </div>
+              <button className="btn primary" onClick={() => setDialog({ kind: 'room' })}>
+                New room
+              </button>
+            </div>
+          </div>
+        )}
+        {(onGoalPage || (onRoomPage && (rooms.length > 0 || !loaded))) && (
           <GoalPage
-            goals={goals}
+            goals={goalList}
+            rooms={rooms}
+            config={config}
+            onNewRoom={from => setDialog({ kind: 'room', from })}
+            onGoalFromRoom={(room, topic) => setDialog({ kind: 'goal', request: `Carry out what the room settled: ${topic.split('\n')[0]}`, fromRoom: room })}
+            onAllGoals={() => go({ page: 'goals', item: undefined })}
+            onAllRooms={() => go({ page: 'goals', item: 'rooms' })}
             loaded={loaded}
             goal={goal}
             snapshot={snapshot}
             events={events}
             connected={connected}
             agentName={place.agent}
-            tab={place.tab ?? 'story'}
+            tab={place.tab ?? (onRoomPage ? 'thread' : 'story')}
             file={place.file}
             onTab={tab => go({ tab }, true)}
             onFile={file => go({ file }, true)}
             onAgent={agent => go({ agent }, true)}
-            onGoal={g => go({ goal: g, agent: undefined, file: undefined })}
+            onGoal={g => go(onRoomPage ? { room: g, agent: undefined, file: undefined } : { goal: g, agent: undefined, file: undefined })}
             onCommand={command}
             onSpawn={parent => setDialog({ kind: 'spawn', parent })}
             onNewGoal={() => setDialog({ kind: 'goal' })}
@@ -278,7 +336,21 @@ function Shell() {
         </ErrorBoundary>
       </main>
 
-      {dialog?.kind === 'goal' && <StartGoalDialog key={dialog.workflow} config={config} initialWorkflow={dialog.workflow} onClose={() => setDialog(undefined)} onStart={startGoal} />}
+      {dialog?.kind === 'goal' && <StartGoalDialog key={dialog.workflow} config={config} initialWorkflow={dialog.workflow} initialRequest={dialog.request} fromRoom={dialog.fromRoom} onClose={() => setDialog(undefined)} onStart={startGoal} />}
+      {dialog?.kind === 'room' && (
+        <NewRoomDialog
+          config={config}
+          from={dialog.from}
+          initial={dialog.from ? { topic: dialog.from.kind === 'room' ? `Follow-up: ${dialog.from.topic?.split('\n')[0] ?? ''}` : dialog.from.topic, cast: dialog.from.cast } : undefined}
+          onClose={() => setDialog(undefined)}
+          onStart={startGoal}
+          onCommand={async b => {
+            const r = await command(b);
+            if ((r as { config?: ConfigView } | undefined)?.config) setConfig((r as { config: ConfigView }).config);
+            return r;
+          }}
+        />
+      )}
       {dialog?.kind === 'spawn' && goal && (
         <SpawnDialog
           config={config}
@@ -302,9 +374,9 @@ function Shell() {
           void refresh();
         }}
         context={
-          onGoalPage && goal
-            ? `goal ${goal.id} ("${goal.request.split('\n')[0].slice(0, 60)}")${place.agent ? `, agent ${place.agent}` : ''}${place.tab ? `, its ${place.tab} tab` : ''}`
-            : place.page !== 'home' && place.page !== 'goal'
+          (onGoalPage || onRoomPage) && goal
+            ? `${onRoomPage ? 'room' : 'goal'} ${goal.id} ("${goal.request.split('\n')[0].slice(0, 60)}")${place.agent ? `, agent ${place.agent}` : ''}${place.tab ? `, its ${place.tab} tab` : ''}`
+            : place.page !== 'home' && place.page !== 'goal' && place.page !== 'room'
               ? `the ${place.page} page${place.item ? ` (${place.item})` : ''}`
               : undefined
         }
@@ -340,8 +412,12 @@ const ICONS = {
       <circle cx="12" cy="12" r="0.8" fill="currentColor" />
     </>,
   ),
-  plus: svg(<path d="M12 5v14M5 12h14" />),
-  goals: svg(<path d="M4 7h16M4 7v11a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V7M4 7l2-3h12l2 3M10 11h4" />),
+  room: svg(
+    <>
+      <path d="M4 6h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H8l-3 2.5V14H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z" />
+      <path d="M15 9.5h5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-1v2.5L16 17.5h-4a1 1 0 0 1-1-1V14" />
+    </>,
+  ),
   ask: svg(<path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9 10h.01M12 10h.01M15 10h.01" />),
   roles: svg(
     <>

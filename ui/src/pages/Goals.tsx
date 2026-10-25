@@ -6,8 +6,12 @@ import { useConfirm } from '../components/common.tsx';
 
 interface Props {
   goals: GoalSummary[];
+  /** Goals, or rooms: the list shows one kind at a time. */
+  kind: 'goal' | 'room';
   loaded: boolean;
   config?: ConfigView;
+  onKind: (k: 'goal' | 'room') => void;
+  onNew: () => void;
   onOpen: (goal: string, tab?: 'story' | 'files') => void;
   onCommand: (b: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>;
   onChanged: () => void;
@@ -21,7 +25,8 @@ type Sort = 'newest' | 'oldest' | 'largest' | 'cost';
  * Every goal MetaHarness has, in any folder: open one, open its files, see what it keeps on
  * disk, and delete the ones you're done with (one or many at once).
  */
-export function Goals({ goals, loaded, config, onOpen, onCommand, onChanged }: Props) {
+export function Goals({ goals, kind, loaded, config, onKind, onNew, onOpen, onCommand, onChanged }: Props) {
+  const noun = kind === 'room' ? 'room' : 'goal';
   const confirm = useConfirm();
   const [sizes, setSizes] = useState<Record<string, Size>>({});
   const [query, setQuery] = useState('');
@@ -105,11 +110,26 @@ export function Goals({ goals, loaded, config, onOpen, onCommand, onChanged }: P
     <div className="page goals-page">
       <div className="page-head">
         <div>
-          <h1>Goals</h1>
+          <h1>{kind === 'room' ? 'Rooms' : 'Goals'}</h1>
           <div className="muted intro">
-            Every goal MetaHarness has, from any folder. Open one to read its story, files and costs again; delete the ones you’re done with.
-            {total > 0 && <> They keep {bytes(total)} on disk.</>}
+            {kind === 'room'
+              ? 'Every discussion room, from any folder. Open one to read its thread and board again, or start a new room from it; delete the ones you’re done with.'
+              : 'Every goal MetaHarness has, from any folder. Open one to read its story, files and costs again; delete the ones you’re done with.'}
+            {total > 0 && <> Goals and rooms keep {bytes(total)} on disk.</>}
           </div>
+        </div>
+        <div className="row">
+          <span className="seg" role="group" aria-label="Show">
+            <button className={`btn small${kind === 'goal' ? ' on' : ''}`} onClick={() => onKind('goal')}>
+              Goals
+            </button>
+            <button className={`btn small${kind === 'room' ? ' on' : ''}`} onClick={() => onKind('room')}>
+              Rooms
+            </button>
+          </span>
+          <button className="btn primary" onClick={onNew}>
+            New {noun}
+          </button>
         </div>
       </div>
 
@@ -150,7 +170,7 @@ export function Goals({ goals, loaded, config, onOpen, onCommand, onChanged }: P
               onChange={e => setPicked(e.target.checked ? new Set(shown.filter(deletable).map(g => g.id)) : new Set())}
             />
           </span>
-          <span>Goal</span>
+          <span>{kind === 'room' ? 'Room' : 'Goal'}</span>
           <span>Started</span>
           <span className="num">Agents</span>
           <span className="num">Cost</span>
@@ -164,7 +184,7 @@ export function Goals({ goals, loaded, config, onOpen, onCommand, onChanged }: P
             </span>
             <button className="goals-title" onClick={() => onOpen(g.id)} title={g.request}>
               <span className="goals-title-top">
-                <span className={`pill ${g.status}`}>{g.status}</span>
+                <span className={`pill ${g.status}`}>{kind === 'room' && g.status === 'running' ? 'open' : g.status}</span>
                 <span className="ellipsis">{firstLine(g.request)}</span>
               </span>
               <span className="muted small mono ellipsis">
@@ -192,7 +212,7 @@ export function Goals({ goals, loaded, config, onOpen, onCommand, onChanged }: P
             </span>
           </div>
         ))}
-        {!shown.length && <div className="empty">{!loaded ? 'Loading…' : query || where !== 'all' ? 'No goal matches.' : 'No goals yet.'}</div>}
+        {!shown.length && <div className="empty">{!loaded ? 'Loading…' : query || where !== 'all' ? `No ${noun} matches.` : `No ${noun}s yet.`}</div>}
       </div>
 
       {orphans.length > 0 && (

@@ -475,6 +475,29 @@ Findings from the run:
     definition names in the code view, and file rows: the commit panel, changed files,
     hotspots, the file map and a file's definitions.
   Checked with tests (1 new) and a typecheck. Not yet in a real run.
+- [x] **One Goals tab, and discussion rooms** (DESIGN.md §21, brainstorm → "go" on 2026-10-25).
+  The rail's Goal, Goals and New goal are one **Goals** tab (opens on the running goal; the
+  goal menu has New goal and All goals…). **Rooms**: the human leads seats (role + optional
+  harness/model + stance) through ask, job, views, respond, debate, chain and patch; answers go
+  to the thread; led by default (participants' messages to each other become suggestions) or
+  open; a coordinator side session (built-in role) rates each round and keeps the board;
+  patches on `mh/<room>/room`, merged once, then the cartographer maps them; endings: design,
+  goal from the room (`fromRoom`), new room from a room or goal, end (keep or discard). Casts in
+  `casts/`. UI: Thread tab (thread, seats, composer, board), room header, New room dialog,
+  Rooms in Home and the Goals list; the other goal tabs work for rooms. Checked with tests
+  (6 new) and in headless Chrome against a scripted daemon. Not yet in a real run.
+- [x] **Rooms, round 2** (DESIGN.md §21, after the user's first real room, 2026-10-26). Fixed
+  from its log: nobody picked no longer means everyone; the coordinator now decides after
+  every answer instead of waiting for a quiet room (it never looked again); panel messages show
+  in the thread; side questions go through the coordinator instead of ping-ponging. New: the
+  coordinator routes and decides (back, forward, compare, note; waits for its own forwards;
+  check-in after 4); seats are a role or just a model, with a responsibility and a stance;
+  agents get the roster and a digest; `team` knows rooms; canvas + thread/board layout; `+ New
+  goal` / `+ New room` in the headers; the coordinator on Codex luna; a scripted coordinator for
+  `mh daemon --fake`. Then: the coordinator splits a question into parts per seat, running
+  them in parallel or waiting for the parts they need (`after`), one decision at the end.
+  Checked with tests (11 room tests) and in headless Chrome against a
+  scripted daemon. Not yet in a real run.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search
@@ -498,7 +521,7 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 126 tests, about half a minute, no model calls
+npm install && npm test        # 147 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```

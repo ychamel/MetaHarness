@@ -37,6 +37,8 @@ export interface Settings {
   gatekeeper: string;
   /** The role that answers the human's questions in the app. */
   assistant: string;
+  /** The role that keeps a discussion room's board and steers it. */
+  coordinator: string;
   /** Tell an agent's spawner when its prompt cache is about to expire. */
   cacheReminders: boolean;
   /** How long before expiry the reminder goes out, in seconds. */
@@ -65,6 +67,7 @@ export const DEFAULT_SETTINGS: Settings = {
   approvals: 'gatekeeper',
   gatekeeper: 'gatekeeper',
   assistant: 'assistant',
+  coordinator: 'coordinator',
   cacheReminders: true,
   cacheRemindSec: 60,
   cacheRemindMinTokens: 30_000,
@@ -119,6 +122,7 @@ function apply(s: Settings, raw: Record<string, unknown>): void {
   if (typeof raw.approvals === 'string' && APPROVAL_MODES.includes(raw.approvals as ApprovalMode)) s.approvals = raw.approvals as ApprovalMode;
   if (typeof raw.gatekeeper === 'string' && raw.gatekeeper.trim()) s.gatekeeper = raw.gatekeeper.trim();
   if (typeof raw.assistant === 'string' && raw.assistant.trim()) s.assistant = raw.assistant.trim();
+  if (typeof raw.coordinator === 'string' && raw.coordinator.trim()) s.coordinator = raw.coordinator.trim();
   if (typeof raw.cacheReminders === 'boolean') s.cacheReminders = raw.cacheReminders;
   if (typeof raw.design === 'boolean') s.design = raw.design;
   for (const k of ['cacheRemindSec', 'cacheRemindMinTokens', 'defaultCacheMinutes', 'limitCheckMinutes', 'contextHandoffPct', 'stallMinutes'] as const) if (num(raw[k]) !== undefined) s[k] = num(raw[k])!;

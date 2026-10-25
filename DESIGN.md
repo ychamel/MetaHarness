@@ -626,6 +626,7 @@ VS Code panel works the same way.
 | **Replay** | Time scrubber over a finished goal; every view replays | Improving roles and workflows |
 | **Search** | Across streams, messages and shared files | Finding anything |
 | **Goals** | Current and past goals, with retrospectives | History |
+| **Rooms** | Discussions the human leads (§21): a thread with ask modes, seats, the coordinator's read and the board; the goal tabs besides | Exploring and deciding before or after a goal |
 
 ### When the team gets big
 
@@ -1306,6 +1307,84 @@ Claude Code, and the team. Compare result quality, cost, time, and how often you
 4. Is one goal at a time enough at first, or are parallel goals needed early?
 5. How many warm helper sessions should each role keep, and does an idle harness process cost
    anything beyond memory?
+
+---
+
+## 21. Discussion rooms
+
+A goal hands the work to a lead. A **room** is for before or after that: the human leads a few
+agents through a question about the code (exploring a bug, understanding a part, choosing where
+to go), and either settles it there, fixes small things, or writes a design for a goal to carry
+out. Brainstormed and built on 2026-10-25, reworked on 2026-10-26 after a real room (every seat
+answered everything; side questions ran unseen and ping-ponged; the coordinator stopped looking).
+
+**Underneath, a room is a goal** (`kind: room` on `goal.started`) with no lead agent: the same
+agents, sessions, events, costs and views (Graph, Sequence, Timeline, Costs, Files, Git, Design,
+Log). Its request is the topic. It's one sitting: rooms aren't recovered after a daemon restart
+("New room from…" carries the board on).
+
+- **Seats** (`room.cast`): a **role**, or **just a model** (`on: harness/model@effort`, then a
+  responsibility is required, as it's all the seat is told), plus a **responsibility** (what it's
+  for in this room; the coordinator routes by it) and an optional **stance** (how to look at
+  things). A role's seat may run on another model. Responsibilities are inline text for now,
+  started from six presets (`RESPONSIBILITIES` in `src/rooms.ts`: Gather, Investigate, Big
+  picture, Review, Ideas, Patch), each role getting its usual one when none is given. "Ideas"
+  says not to read the code; nothing enforces it. A seat's session starts the first time it's
+  addressed; `@role` in a message (or `room.add`) seats a role on the fly. **Casts**:
+  `casts/<name>.md`, a `## <role or "model"> [as <name>]` heading per seat with `on:`,
+  `responsibility:` and `stance:` lines.
+- **What participants are told:** the room's own methodology in place of the team's, with the
+  **roster** (each seat's name, role or model, responsibility, started or not; new seats ride
+  along as a note), their responsibility and stance, the board and thread files, and how to
+  talk: answer to the room, end with `→ name: why` to suggest who goes next. Each message they
+  get ends with a **digest**: a line for each of the last eight things said since they last
+  spoke. The `team` tool answers with the room. What the human says from an agent's panel goes
+  through the thread too.
+- **Asking** (`room.post`): with seats picked (clicked, or `@name`), straight to them, as *ask*,
+  *job*, *views* (held until all are in), *respond* (to a quoted message), *debate ×N*, *chain*
+  or *patch*. With **nobody picked**, the coordinator routes it. Everyone owes an answer before
+  anyone is asked, since an answer can come back at once.
+- **Answers:** `done` (or the end of the turn without one) is posted to the thread, under what
+  it answers (`re`); never the Inbox. A question for a participant still ending the turn it
+  answered in waits for that turn to end.
+- **The coordinator** (built-in role on Codex luna, Sonnet the first backup; Settings → Room
+  coordinator) is a side session that answers in JSON, one job at a time:
+  - **route** a message nobody was picked for: who (by responsibility), and as ask, job, views
+    or a chain, with a line the human sees. It starts at once, without waiting for approval. A
+    question whose parts need different responsibilities it **splits**: each part goes to one
+    seat with its own ask (plus the whole question, for context only), and the coordinator
+    decides the order: parts that wait for nothing run in parallel, a part with `after` waits
+    for those parts and gets their answers. A part waits only for parts before it, so a plan
+    can't wait on itself. Once every part is answered it decides once, on all of them.
+  - **decide** after answers (a flow's answers once all are in, or a message said unasked):
+    *back* to the human with a summary (answered, only they can decide, or nothing new),
+    *forward* to a seat with what matters quoted (weighing any `→ name` hint), *compare* seats
+    that disagree, or *note*. While a step it started still owes answers, it waits and then
+    decides on everything at once. After four forwards without the human it's told to hand back
+    (a check-in, never a block).
+  - Every answer also carries a status (*converging*, *developing*, *drifting*, with why), board
+    changes and an ending when it sees one (*design*, *patch*, *goal*).
+- **Moderated or open:** moderated (the default), a participant never messages another: what it
+  `send`s (or a `spawn`) is posted as an aside and the coordinator decides. **Open**, they message
+  each other directly and whoever asked hears the answer; the coordinator only watches, keeps the
+  board, and steers a seat when the talk drifts.
+- **The board** (`room.board`, the whole list each time): findings, open questions, decisions,
+  files. The coordinator and the human edit it.
+- **Patches** go on the room's own branch, `mh/<room>/room`, in one worktree every participant
+  reads in. Only a participant on a patch job (anyone the human picks) may edit outside the
+  shared folder; its access ends with its answer. The human merges the branch once
+  (`room.merge`); then a cartographer (if the map rules are on) maps the result in the checkout.
+- **Endings:** *Write the design* (`shared/room/design.md`), *Start a goal from this*
+  (`fromRoom`: the lead's brief points at the board, the design and the thread), *New room from
+  this* (or *Discuss in a room* on a finished goal: the board carries over), *End room* (keep the
+  branch, or discard unmerged patches).
+
+The UI's **Rooms** tab opens on the open room. Its **Room** tab is a canvas (you in the middle,
+seats around with their responsibility, what they're doing and their last answer, the
+coordinator below; lines show who works for whom and what was just said; click to address,
+shift-click to add, drag one seat onto another to have it respond, double-click to open), the
+composer under it ("◆ the coordinator picks" when nobody is), and beside it the **Thread**
+(answers nested under what they answer, the coordinator's ◆ lines) and the **Board**.
 
 ---
 

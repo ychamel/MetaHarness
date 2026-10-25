@@ -4,9 +4,18 @@ import { Dialog, Field, Toggle } from './common.tsx';
 import { modelLabel } from '../format.ts';
 
 /** What a goal starts from: the request, who leads, and (optionally) the workflow the lead follows. */
-export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', autoFocus }: { config?: ConfigView; onStart: (b: Record<string, unknown>) => Promise<boolean>; onCancel?: () => void; initialWorkflow?: string; autoFocus?: boolean }) {
+export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', initialRequest = '', extra, autoFocus }: {
+  config?: ConfigView;
+  onStart: (b: Record<string, unknown>) => Promise<boolean>;
+  onCancel?: () => void;
+  initialWorkflow?: string;
+  initialRequest?: string;
+  /** Sent along with goal.start, e.g. the room it comes from. */
+  extra?: Record<string, unknown>;
+  autoFocus?: boolean;
+}) {
   const leads = config?.roles.filter(r => !r.helper) ?? [];
-  const [request, setRequest] = useState('');
+  const [request, setRequest] = useState(initialRequest);
   const [lead, setLead] = useState('');
   const [workflow, setWorkflow] = useState(initialWorkflow);
   const [busy, setBusy] = useState(false);
@@ -16,7 +25,7 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', a
   const start = async () => {
     if (!request.trim() || busy) return;
     setBusy(true);
-    const ok = await onStart({ cmd: 'goal.start', request: request.trim(), lead: leadName || undefined, workflow: workflow || undefined });
+    const ok = await onStart({ cmd: 'goal.start', request: request.trim(), lead: leadName || undefined, workflow: workflow || undefined, ...extra });
     setBusy(false);
     if (ok) setRequest('');
   };
@@ -67,10 +76,11 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', a
   );
 }
 
-export function StartGoalDialog({ config, initialWorkflow, onClose, onStart }: { config?: ConfigView; initialWorkflow?: string; onClose: () => void; onStart: (b: Record<string, unknown>) => Promise<boolean> }) {
+export function StartGoalDialog({ config, initialWorkflow, initialRequest, fromRoom, onClose, onStart }: { config?: ConfigView; initialWorkflow?: string; initialRequest?: string; fromRoom?: string; onClose: () => void; onStart: (b: Record<string, unknown>) => Promise<boolean> }) {
   return (
-    <Dialog title="New goal" onClose={onClose} wide>
-      <NewGoalForm config={config} onStart={onStart} onCancel={onClose} initialWorkflow={initialWorkflow} autoFocus />
+    <Dialog title={fromRoom ? 'New goal from the room' : 'New goal'} onClose={onClose} wide>
+      {fromRoom && <div className="dialog-body muted small">The lead is pointed at the room's board, its design if one was written, and the whole thread.</div>}
+      <NewGoalForm config={config} onStart={onStart} onCancel={onClose} initialWorkflow={initialWorkflow} initialRequest={initialRequest} extra={fromRoom ? { fromRoom } : undefined} autoFocus />
     </Dialog>
   );
 }

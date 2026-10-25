@@ -177,11 +177,17 @@ You review the result in your checkout like any other change, and push it yourse
 
 ## 6. Steering the team
 
-**The web app** has a rail on the left: **Home**, the current **Goal**, **New goal**, and
+**The web app** has a rail on the left: **Home**, **Goals**, **Rooms**, **Ask**, and
 **Setup** (roles, workflows, guidelines, tools).
 
-- **Home:** what needs you across every goal, a box to start a goal, the running goals, and
-  past goals with what came of each (searchable).
+- **Home:** what needs you across every goal, a box to start a goal (or open a room to talk it
+  over first), the running goals, the open rooms, and past goals with what came of each
+  (searchable).
+- **Goals** opens on the running goal (or the latest). **+ New goal** is the first button in its
+  header. The goal's name beside it is a menu: other goals and **All goals…**, the full list
+  with sizes on disk, where you delete the ones you're done with. A finished goal has
+  **Discuss in a room**.
+- **Rooms:** discussions you lead (below).
 - **Ask** (in the left rail, from any page): an assistant for questions about your goals and
   setup. It looks things up in the logs, shared files, costs and config. When you ask for a
   setup change, it suggests one with an **Apply** button; nothing changes until you click.
@@ -434,6 +440,48 @@ The terminal can do all of this too:
 - `mh pause|resume [agent]`, `mh stop <agent>`, `mh end`
 - `mh spawn <role> "<brief>"`, `mh open <agent>`
 - `mh respawn <agent> [note] [--fresh] [--on <harness/model>]`
+
+### Rooms: discussions you lead
+
+A room is for exploring a bug, understanding part of the code, or choosing what to do, with a
+few agents you pick, before (or after) a goal. **+ New room** (Rooms, Home, or a room's header):
+what to discuss, and the seats. A seat is a role or **just a model**; its harness, model and
+effort are picked from three lists (a role uses its own unless you pick others). Each seat has a
+**responsibility**, what it's for here (start from Gather, Investigate, Big picture, Review,
+Ideas or Patch and edit it; a model-only seat must have one), and optionally a **stance** ("look
+for what breaks"). Pick a saved **cast** or save the seats as one. A seat starts the first time
+it's asked something.
+
+- **The canvas:** you in the middle, the seats around you (their responsibility, what each is
+  doing now and its last answer), the coordinator below. Lines show who is working for whom and
+  what was just said.
+  - **Click** a seat to address your next message to it; **shift-click** adds more; click
+    yourself to clear. Nobody picked: **the coordinator picks** who answers.
+  - **Drag** one seat onto another: that one responds to the first's last answer.
+  - **Double-click** a seat to open its panel.
+- **How to ask** (under the canvas): **Ask**, **Job** (go and find out, then report), **Views**
+  (each answers on their own; shown together), **Debate** (rounds), **Chain** (one after
+  another, in the order you clicked them), **Patch** (one seat changes the code on the room's
+  branch and commits). **↩ Respond** on an answer, in the thread, has someone respond to it.
+- **The coordinator** decides who goes next. It routes what you didn't address, splitting a
+  question in parts when they need different seats (e.g. the scout finds what changed while the
+  reviewer checks the tests, then the designer judges it with both answers): parts that don't
+  need each other run at the same time, the rest wait for what they need. After the
+  answers come in it hands back to you (◆ back to you, with a summary), passes an answer to a
+  seat to check or build on, has two who disagree respond to each other, or just notes the facts.
+  Agents can end an answer with `→ name: why` to suggest who goes next. It says how the
+  discussion is going (converging, developing, drifting), keeps the **Board**, and ↻ makes it
+  look again. Its role is in Settings → Room coordinator (Codex luna by default).
+- **Thread** (beside the canvas): your messages, the coordinator's ◆ lines, and each answer
+  nested under what it answers. What you send a participant from its panel shows here too.
+- **Open discussion** (off by default): participants message each other directly, and the
+  coordinator only watches. Off, what they'd send each other goes to the coordinator.
+- **Where it goes** (on the Board tab): **Write the design** has the big-picture seat write
+  `room/design.md`; **Start a goal from this** points the goal's lead at the board, the design
+  and the thread; **New room from this** starts a fresh room with this board. **⤵ Merge**
+  brings the room's patches into your branch (the cartographer then maps them); **End room**
+  keeps or discards patches you didn't merge.
+- A room lasts one sitting: after a daemon restart, start a new room from it.
 
 ## 7. What agents can and can't do
 

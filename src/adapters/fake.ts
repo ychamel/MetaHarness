@@ -289,3 +289,26 @@ export const demoScripts: Record<string, FakeScript> = {
     await ctx.tool('done', { note: 'auth.ts, cors.ts and log.ts all use router.use(fn) before the handlers.' });
   },
 };
+
+/** A room's coordinator, scripted: routes to the first seat, then hands the answers back with a note on the board. */
+const demoCoordinator: FakeTurnScript = async (ctx, text) => {
+  const seat = /\nSeats:\n- ([\w.-]+)/.exec(text)?.[1];
+  const seats = [...(text.split('\nSeats:\n')[1]?.split('\n\n')[0] ?? '').matchAll(/^- ([\w.-]+)/gm)].map(m => m[1]);
+  // A question in two halves ("…, and …") is split: the first seat finds, the second builds on it.
+  const asked = /without picking anyone[^\n]*:\n([\s\S]*?)\n\n/.exec(text)?.[1] ?? '';
+  const halves = asked.split(/,? and (?=\w+ )/);
+  if (/without picking anyone/.test(text) && seats.length > 1 && halves.length > 1) {
+    ctx.say(JSON.stringify({ route: { mode: 'ask', line: `${seats[0]} looks into it, then ${seats[1]} builds on that`, parts: [{ to: seats[0], ask: halves[0].trim() }, { to: seats[1], ask: halves.slice(1).join(' and ').trim(), after: [seats[0]] }] }, status: 'developing', line: 'split in two' }));
+    return;
+  }
+  if (/without picking anyone/.test(text) && seat) {
+    ctx.say(JSON.stringify({ route: { to: [seat], mode: 'ask', line: `${seat} takes it first` }, status: 'developing', line: 'a first question is out' }));
+    return;
+  }
+  const said = /New, to decide on:\n\[[^\]]*\][^\n]*\n([^\n]+)/.exec(text)?.[1] ?? '';
+  ctx.say(JSON.stringify({ next: { action: 'back', text: `That answers it: ${said.slice(0, 160)}`, line: 'answered' }, status: 'converging', line: 'the question has an answer', board: said ? [{ op: 'add', kind: 'finding', text: said.slice(0, 160) }] : [] }));
+};
+
+/** Later turns of the demo roles (a room's coordinator is asked again and again). */
+export const demoTurns: Record<string, FakeTurnScript> = { coordinator: demoCoordinator };
+demoScripts.coordinator = ctx => demoCoordinator(ctx, ctx.spec.brief);

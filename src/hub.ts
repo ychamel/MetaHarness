@@ -140,6 +140,9 @@ export class Hub {
           ?? '(No brief was given. Ask whoever spawned you what they need.)';
         const name = str(pick(a, 'name', 'id'));
         if (truthy(pick(a, 'quick', 'helper', 'blocking'))) return (await d.quickSpawn(rec, role, brief, name)).text;
+        // In a room, a new participant is the human's to bring in (or, in an open discussion, takes a seat).
+        const seat = d.roomSpawn(rec, role, brief);
+        if (seat !== undefined) return seat;
         const from = str(pick(a, 'from', 'base', 'branch', 'start_from', 'starting_from'));
         const wt = pick(a, 'worktree', 'own_worktree', 'isolated', 'isolation');
         const worktree = wt === undefined ? undefined : truthy(wt) || /^worktree$/i.test(String(wt));
@@ -230,6 +233,8 @@ export class Hub {
   }
 
   private team(rec: AgentRec): string {
+    const room = this.d.roomTeam(rec);
+    if (room) return room;
     const g = this.d.goals.get(rec.goal)!;
     const lines = [`Goal: ${g.request}`, `Shared folder: ${g.sharedDir}`, '', 'Team:'];
     for (const a of g.agents.values()) {

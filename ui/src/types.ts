@@ -53,6 +53,10 @@ export interface CostSplit {
 
 export interface Goal {
   id: string;
+  /** room: a discussion the human leads (no lead agent); its request is the topic. */
+  kind: 'goal' | 'room';
+  /** A room's branch, where its patches go. */
+  roomBranch: string | null;
   request: string;
   status: GoalStatus;
   live: boolean;
@@ -125,6 +129,7 @@ export interface LimitCheck {
 
 export interface GoalSummary {
   id: string;
+  kind: 'goal' | 'room';
   request: string;
   status: GoalStatus;
   live: boolean;
@@ -264,6 +269,45 @@ export interface ConfigView {
   settings: { effective: Settings; files: { scope: Scope; dir: string; values: Partial<Settings> }[] };
   /** Every role runs on this harness instead (the daemon was started with --fake). */
   override: string | null;
+  /** Saved sets of participants for rooms (casts/<name>.md). */
+  casts: Cast[];
+  responsibilities: ResponsibilityPreset[];
+}
+
+/** One seat in a room: a role, optionally on another harness/model, with a stance. */
+export interface Participant {
+  /** None: the seat is just a model. */
+  role?: string;
+  name?: string;
+  /** harness/model[@effort] instead of the role's own. */
+  on?: string;
+  /** What it's for in this room. */
+  responsibility?: string;
+  stance?: string;
+}
+
+/** A responsibility to start a seat from. */
+export interface ResponsibilityPreset {
+  name: string;
+  text: string;
+  roles: string[];
+}
+
+export interface Cast {
+  name: string;
+  goodAt: string;
+  participants: Participant[];
+}
+
+export type AskMode = 'ask' | 'job' | 'views' | 'respond' | 'debate' | 'chain' | 'patch';
+export type BoardKind = 'finding' | 'question' | 'decision' | 'file';
+
+export interface BoardItem {
+  id: string;
+  kind: BoardKind;
+  text: string;
+  by: string;
+  closed?: boolean;
 }
 
 export interface SharedFileView {
@@ -332,6 +376,7 @@ export interface Settings {
   approvals: ApprovalMode;
   gatekeeper: string;
   assistant: string;
+  coordinator: string;
   cacheReminders: boolean;
   cacheRemindSec: number;
   cacheRemindMinTokens: number;

@@ -171,7 +171,7 @@ async function main(): Promise<void> {
   switch (cmd) {
     case 'daemon': {
       const { Daemon } = await import('./daemon.ts');
-      const { FakeAdapter, demoScripts } = await import('./adapters/fake.ts');
+      const { FakeAdapter, demoScripts, demoTurns } = await import('./adapters/fake.ts');
       const { ClaudeAdapter } = await import('./adapters/claude.ts');
       const { CodexAdapter } = await import('./adapters/codex.ts');
       const { AgyAdapter } = await import('./adapters/agy.ts');
@@ -180,7 +180,7 @@ async function main(): Promise<void> {
       const { startServer } = await import('./server.ts');
       const fake = opt.fake === true;
       // One adapter per profile MetaHarness can drive and that is installed here.
-      const adapters: Record<string, import('./adapters/types.ts').HarnessAdapter> = { fake: new FakeAdapter(demoScripts) };
+      const adapters: Record<string, import('./adapters/types.ts').HarnessAdapter> = { fake: new FakeAdapter(demoScripts, {}, demoTurns) };
       for (const p of loadProfiles(configDirs()).values()) {
         const bin = p.transport && findBin(p.bin);
         if (!bin) continue;
