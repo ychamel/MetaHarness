@@ -131,10 +131,10 @@ export function GoalPage(p: Props) {
     if (room.agent && name && tab !== 'graph') setDrawer(true);
     p.onAgent(name);
   };
-  // The graph reads a shared file in its side panel; elsewhere it opens in the Files tab.
+  // The graph and a room's thread read a shared file in their side panel; elsewhere it opens in the Files tab.
   const openFile = (path: string) => {
     p.onFile(path);
-    if (tab !== 'graph') p.onTab('files');
+    if (tab !== 'graph' && tab !== 'thread') p.onTab('files');
   };
   useEffect(() => setDrawer(false), [tab]);
   useEffect(() => {
@@ -253,7 +253,9 @@ export function GoalPage(p: Props) {
                 onCommand={p.onCommand}
                 onSelectAgent={onAgent}
                 onOpenCommit={sha => openGit({ kind: 'commit', sha })}
-                onOpenFile={openFile}
+                file={p.file}
+                onFile={p.onFile}
+                onFilesTab={() => p.onTab('files')}
                 onStartGoal={() => p.onGoalFromRoom(goal.id, goal.request)}
                 onNewRoom={() => p.onNewRoom({ id: goal.id, label: goal.request.split('\n')[0], kind: 'room', topic: goal.request, cast: roomView.cast })}
               />

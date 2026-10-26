@@ -59,7 +59,7 @@ test('seats, casts, responsibilities and the board read and write plainly', () =
   const dir = mkdtempSync(join(tmpdir(), 'mh-cast-'));
   const seats = [
     { role: 'reviewer', name: 'skeptic', on: 'codex/gpt-6.1-sol@high', stance: 'look for what breaks' },
-    { on: 'claude-code/opus', responsibility: 'Think about the player: what feels good.' },
+    { on: 'claude-code/opus', responsibility: 'Think about the player: what feels good.', scout: true },
   ];
   writeFileSync(join(dir, 'hunt.md'), castText({ goodAt: 'bug hunts', participants: seats }));
   const cast = parseCast(join(dir, 'hunt.md'));
@@ -301,5 +301,118 @@ test("a new room carries a past room's board over, and a goal started from a roo
   const goal = d.startGoal({ request: 'Build the walls', lead: 'designer', fromRoom: first });
   assert.match(d.agent(goal, 'designer')!.brief, /comes out of a discussion room/);
   assert.equal(d.listGoals().find(x => x.id === first)?.kind, 'room');
+  await d.close();
+});
+
+test('a seat stopped mid-answer keeps what it said as its answer, the coordinator sees it, and it can be asked again', async () => {
+  for (const interrupt of [true, false]) {
+    const prompts: string[] = [];
+    const { d, fake } = roomTeam({
+      decide: p => (prompts.push(p), { next: { action: 'note' } }),
+      scripts: {
+        designer: async (ctx, text) => {
+          if (/Think it through/.test(text)) {
+            ctx.say('First thoughts: wrap around.');
+            await ctx.run('sleep 30', 5000);
+            return;
+          }
+          await ctx.tool('done', { note: `designer on: ${text.split('\n')[0]}` });
+        },
+      },
+    });
+    (fake.manifest as { interrupt: boolean }).interrupt = interrupt;
+    const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }, { role: 'reviewer' }] });
+    d.roomPost(room, { text: 'Think it through', to: ['designer', 'reviewer'] });
+    await until(() => d.store.since(room).some(e => e.type === 'agent.text' && e.agent === 'designer'), 'the designer starts');
+    await next(d, room, e => e.type === 'room.message' && e.data.from === 'reviewer', 'the reviewer answers');
+    assert.match(d.roomStop(room, 'designer'), /Stopped designer/);
+    const stopped = await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer', 'the stopped answer');
+    assert.equal(stopped.data.stopped, true);
+    assert.equal(stopped.data.text, 'First thoughts: wrap around.', 'what it said so far is its answer');
+    await until(() => d.agent(room, 'designer')!.state === 'idle', 'its turn is over');
+    assert.equal(d.roomStop(room, 'designer'), "designer isn't working on anything.");
+
+    d.roomPost(room, { text: 'Now just answer', to: ['designer'] });
+    await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer' && !e.data.stopped, 'it answers the next question');
+    assert.equal(said(d, room, x => x.from === 'designer').length, 2, "the stopped turn's end isn't another answer");
+    if (!interrupt) assert.ok(fake.started.some(s => s.spec.agent === 'designer' && s.resume), 'without an interrupt, its session resumed');
+    await until(() => prompts.length > 0, 'the coordinator decides');
+    assert.equal(prompts.length, 1, 'the stop itself asks the coordinator nothing');
+    assert.match(prompts[0], /\[designer → human, stopped by the human mid-answer\] First thoughts/, 'the coordinator sees it was stopped');
+    await d.close();
+  }
+});
+
+test('a benched seat is skipped and rests (one at work finishes first); brought back, it resumes and hears what it missed', async () => {
+  const prompts: string[] = [];
+  const { d, fake } = roomTeam({
+    route: p => (prompts.push(p), { route: { to: ['designer'], mode: 'ask', line: 'designer' } }),
+    decide: () => ({ next: { action: 'note' } }),
+    scripts: {
+      designer: async (ctx, text) => {
+        if (/Slowly/.test(text)) await ctx.run('sleep 1', 150);
+        await ctx.tool('done', { note: `designer on: ${text.split('\n')[0]}` });
+      },
+    },
+  });
+  const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }, { role: 'scout' }] });
+  d.roomPost(room, { text: 'Slowly, what do you think?', to: ['designer'] });
+  await until(() => d.agent(room, 'designer')?.state === 'working', 'the designer works');
+  assert.match(d.roomBench(room, 'designer', true), /finishes what it's doing/);
+  await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer', 'it still answers');
+  await until(() => !d.agent(room, 'designer')!.session, 'then it rests');
+  assert.ok(d.agent(room, 'designer')!.resumeId, 'its session is kept to resume');
+  assert.equal(d.goals.get(room)!.room!.cast.find(c => c.name === 'designer')!.benched, true);
+
+  assert.throws(() => d.roomPost(room, { text: 'You there?', to: ['designer'] }), /designer is benched/);
+  d.roomPost(room, { text: 'Anyone?' });
+  await next(d, room, e => e.type === 'room.message' && e.data.kind === 'note' && /couldn't pick/.test(String(e.data.text)), 'the coordinator can’t route to it');
+  assert.match(prompts[0], /- designer \(designer · fake\/m, benched: never route to it\)/);
+  d.roomPost(room, { text: 'Scout, what changed?', to: ['scout'] });
+  await next(d, room, e => e.type === 'room.message' && e.data.from === 'scout', 'the scout answers');
+
+  assert.match(d.roomBench(room, 'designer', false), /designer is back/);
+  d.roomPost(room, { text: 'Welcome back', to: ['designer'] });
+  await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer' && /Welcome back/.test(String(e.data.text)), 'it answers again');
+  const resumed = fake.started.filter(s => s.spec.agent === 'designer');
+  assert.equal(resumed.length, 2);
+  assert.ok(resumed[1].resume, 'it resumed its session');
+  assert.match(resumed[1].spec.brief, /New in the room since you last spoke:[^]*- scout → the human: scout on: Scout, what changed\?/, 'it hears what it missed');
+  await d.close();
+});
+
+test("a seat's scout is the scout role, as a quick helper, only while the human has it on", async () => {
+  const { d } = roomTeam({
+    decide: () => ({ next: { action: 'note' } }),
+    scripts: {
+      designer: async (ctx, text) => {
+        const role = /reviewer/.test(text) ? 'reviewer' : 'scout';
+        await ctx.tool('done', { note: await ctx.tool('spawn', { role, quick: true, brief: 'Where is the clamp?' }) });
+      },
+    },
+  });
+  const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }] });
+  d.roomPost(room, { text: 'Look it up', to: ['designer'] });
+  let a = await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer', 'answer without a scout');
+  assert.match(String(a.data.text), /Your scout is off/);
+  assert.doesNotMatch(d.agent(room, 'designer')!.systemPrompt, /You have a scout/);
+
+  assert.match(d.roomScout(room, 'designer', true), /scout is on/);
+  d.roomPost(room, { text: 'Look it up again', to: ['designer'] });
+  a = await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer' && e.seq > a.seq, 'answer with a scout');
+  assert.match(String(a.data.text), /scout-1 answered:\nscout-1 on: Where is the clamp\?/);
+  const spawned = d.store.since(room).find(e => e.type === 'agent.spawned' && e.data.quick);
+  assert.equal(spawned?.parent, 'designer');
+  assert.equal(d.store.since(room).filter(e => e.type === 'room.message' && e.data.from === spawned?.agent).length, 0, "the scout's answer is the seat's, not the room's");
+
+  d.roomPost(room, { text: 'Ask the reviewer', to: ['designer'] });
+  a = await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer' && e.seq > a.seq, 'answer asking for another helper');
+  assert.match(String(a.data.text), /your helper is the scout/);
+
+  assert.match(d.roomAdd(room, { role: 'reviewer', scout: true }), /reviewer has a seat/);
+  d.roomPost(room, { text: 'Hello', to: ['reviewer'] });
+  await next(d, room, e => e.type === 'room.message' && e.data.from === 'reviewer', 'the reviewer answers');
+  assert.match(d.agent(room, 'reviewer')!.systemPrompt, /You have a scout for lookups: call `spawn` with role "scout", quick: true/);
+  assert.match(d.agent(room, 'reviewer')!.systemPrompt, /Keep your answer simple and conversational/);
   await d.close();
 });

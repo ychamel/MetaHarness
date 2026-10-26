@@ -1332,14 +1332,31 @@ Log). Its request is the topic. It's one sitting: rooms aren't recovered after a
   says not to read the code; nothing enforces it. A seat's session starts the first time it's
   addressed; `@role` in a message (or `room.add`) seats a role on the fly. **Casts**:
   `casts/<name>.md`, a `## <role or "model"> [as <name>]` heading per seat with `on:`,
-  `responsibility:` and `stance:` lines.
+  `responsibility:`, `stance:` and `scout: on` lines.
+- **Bench, stop, scout** (added 2026-10-26, round 3). **Bench** (`room.bench`) takes a seat out
+  of the discussion: nobody routes to it (the human's picks and `@name` are refused, `all` skips
+  it, the coordinator sees "benched: never route to it", the roster says so), and between turns
+  its process stops with its session kept to resume (on a harness that can). One at work
+  finishes its answer first. Brought back, it resumes and its digest says what it missed. There
+  is no removing a seat. **Stop** (`room.stop`) cuts what a seat is doing and keeps the seat: the
+  turn is interrupted (natively, else the process is stopped and resumed on the next message,
+  so the session keeps what it was thinking), what it said in that turn is posted as its answer
+  marked *stopped*, and the coordinator sees it in the thread without being asked to decide on
+  it, since the human usually asks again. What it was asked ends there (a chain or debate goes
+  no further), except a part of a split question, whose later parts go on with what it said.
+  **Scout** (per seat, `scout: true`, `room.scout`): the seat may hand lookups to the
+  configured `scout` role as a quick helper (`spawn` with `quick: true`), told so in its prompt;
+  off, a room seat's quick spawns are refused (harnesses' own subagents are off anyway). This is
+  the seat's own helper; a scout *seat* (the Gather responsibility) still looks things up for
+  the whole room. Its lookups show in the thread under what the seat was answering.
 - **What participants are told:** the room's own methodology in place of the team's, with the
   **roster** (each seat's name, role or model, responsibility, started or not; new seats ride
   along as a note), their responsibility and stance, the board and thread files, and how to
   talk: answer to the room, end with `→ name: why` to suggest who goes next. Each message they
   get ends with a **digest**: a line for each of the last eight things said since they last
   spoke. The `team` tool answers with the room. What the human says from an agent's panel goes
-  through the thread too.
+  through the thread too. Answers are kept simple and conversational (the answer first, then what
+  it rests on); details go in a report, `shared/reports/<name>-<n>.md`, named in the answer.
 - **Asking** (`room.post`): with seats picked (clicked, or `@name`), straight to them, as *ask*,
   *job*, *views* (held until all are in), *respond* (to a quoted message), *debate ×N*, *chain*
   or *patch*. With **nobody picked**, the coordinator routes it. Everyone owes an answer before
@@ -1384,7 +1401,11 @@ seats around with their responsibility, what they're doing and their last answer
 coordinator below; lines show who works for whom and what was just said; click to address,
 shift-click to add, drag one seat onto another to have it respond, double-click to open), the
 composer under it ("◆ the coordinator picks" when nobody is), and beside it the **Thread**
-(answers nested under what they answer, the coordinator's ◆ lines) and the **Board**.
+(answers nested under what they answer, the coordinator's ◆ lines) and the **Board**. A seat's
+card has Stop (while it works), Bench / Bring back and its scout switch. Shared files named in
+the thread (by path in the shared folder or the full path agents are given) are links, with a
+chip for each under the message; they open in the side panel in place of the thread, as in the
+Graph tab (← back or Esc; "Open in Files").
 
 ---
 

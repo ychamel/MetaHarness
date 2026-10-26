@@ -284,6 +284,10 @@ export interface Participant {
   /** What it's for in this room. */
   responsibility?: string;
   stance?: string;
+  /** It may hand lookups to MetaHarness's scout. */
+  scout?: boolean;
+  /** Out of the discussion for now. */
+  benched?: boolean;
 }
 
 /** A responsibility to start a seat from. */

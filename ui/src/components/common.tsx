@@ -1,6 +1,7 @@
 import { Component, createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { Agent } from '../types.ts';
 import { modelLabel } from '../format.ts';
+import { fileAt, withFileLinks, type FileLinks } from '../fileLinks.tsx';
 
 /**
  * Keeps a view that throws from blanking the whole app: it says what broke and offers to try
@@ -197,11 +198,12 @@ export function More({ lines = 4, children, className = '' }: { lines?: number; 
 }
 
 /** A little markdown, rendered as elements (never as HTML): headings, lists, quotes, code, emphasis, links. */
-export function Markdown({ text, className = '' }: { text: string; className?: string }) {
-  return <div className={`md ${className}`}>{blocks(text)}</div>;
+/** `files`: shared files named in it become links that open them. */
+export function Markdown({ text, className = '', files }: { text: string; className?: string; files?: FileLinks }) {
+  return <div className={`md ${className}`}>{blocks(text, files)}</div>;
 }
 
-function blocks(text: string): ReactNode[] {
+function blocks(text: string, files?: FileLinks): ReactNode[] {
   const out: ReactNode[] = [];
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   let i = 0;
@@ -225,7 +227,7 @@ function blocks(text: string): ReactNode[] {
     if (h) {
       const level = Math.min(h[1].length + 2, 6);
       const Tag = `h${level}` as 'h3';
-      out.push(<Tag key={key()}>{inline(h[2])}</Tag>);
+      out.push(<Tag key={key()}>{inline(h[2], files)}</Tag>);
       i++;
       continue;
     }
@@ -239,13 +241,13 @@ function blocks(text: string): ReactNode[] {
         i++;
       }
       const List = ordered ? 'ol' : 'ul';
-      out.push(<List key={key()}>{items.map((t, n) => <li key={n}>{inline(t)}</li>)}</List>);
+      out.push(<List key={key()}>{items.map((t, n) => <li key={n}>{inline(t, files)}</li>)}</List>);
       continue;
     }
     if (/^\s*>/.test(line)) {
       const q: string[] = [];
       while (i < lines.length && /^\s*>/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/, ''));
-      out.push(<blockquote key={key()}>{blocks(q.join('\n'))}</blockquote>);
+      out.push(<blockquote key={key()}>{blocks(q.join('\n'), files)}</blockquote>);
       continue;
     }
     if (/^\s*\|.*\|\s*$/.test(line)) {
@@ -259,7 +261,7 @@ function blocks(text: string): ReactNode[] {
           <table>
             <tbody>
               {rows.map((r, n) => (
-                <tr key={n}>{r.map((c, m) => (n === 0 ? <th key={m}>{inline(c)}</th> : <td key={m}>{inline(c)}</td>))}</tr>
+                <tr key={n}>{r.map((c, m) => (n === 0 ? <th key={m}>{inline(c, files)}</th> : <td key={m}>{inline(c, files)}</td>))}</tr>
               ))}
             </tbody>
           </table>
@@ -270,21 +272,28 @@ function blocks(text: string): ReactNode[] {
     const para: string[] = [];
     while (i < lines.length && lines[i].trim() && !/^\s*(```|#{1,6}\s|>|([-*+]|\d+[.)])\s+)/.test(lines[i])) para.push(lines[i++]);
     if (!para.length) para.push(lines[i++]);
-    out.push(<p key={key()}>{para.map((l, n) => <Fragment key={n}>{n > 0 && <br />}{inline(l)}</Fragment>)}</p>);
+    out.push(<p key={key()}>{para.map((l, n) => <Fragment key={n}>{n > 0 && <br />}{inline(l, files)}</Fragment>)}</p>);
   }
   return out;
 }
 
-function inline(s: string): ReactNode[] {
+function inline(s: string, files?: FileLinks): ReactNode[] {
   const parts = s.split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)\s]+\)|(?<![\w*])\*[^*\s][^*]*\*(?![\w*]))/g);
   return parts.map((p, n) => {
     if (!p) return null;
-    if (p.startsWith('`') && p.endsWith('`') && p.length > 1) return <code key={n}>{p.slice(1, -1)}</code>;
+    if (p.startsWith('`') && p.endsWith('`') && p.length > 1) return <code key={n}>{withFileLinks(p.slice(1, -1), files)}</code>;
     if (p.startsWith('**') && p.endsWith('**') && p.length > 4) return <b key={n}>{p.slice(2, -2)}</b>;
     const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(p);
+    const file = link && fileAt(link[2], files);
+    if (link && file)
+      return (
+        <button key={n} className="file-link" onClick={() => files!.open(file)} title={`Read shared/${file}`}>
+          {link[1]}
+        </button>
+      );
     if (link) return /^https?:\/\//.test(link[2]) ? <a key={n} href={link[2]} target="_blank" rel="noreferrer noopener">{link[1]}</a> : <span key={n}>{link[1]}</span>;
     if (p.startsWith('*') && p.endsWith('*') && p.length > 2) return <i key={n}>{p.slice(1, -1)}</i>;
-    return <Fragment key={n}>{p}</Fragment>;
+    return <Fragment key={n}>{withFileLinks(p, files)}</Fragment>;
   });
 }
 

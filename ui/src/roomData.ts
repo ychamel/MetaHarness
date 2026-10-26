@@ -33,13 +33,26 @@ export interface RoomMsg {
   part?: number;
   of?: number;
   after?: string[];
+  /** An answer the human stopped mid-way: what it had said by then. */
+  stopped?: boolean;
 }
 
 export type ThreadItem =
   | { kind: 'msg'; m: RoomMsg; children: ThreadItem[] }
   | { kind: 'commit'; e: MhEvent }
   | { kind: 'merged'; e: MhEvent }
-  | { kind: 'round'; e: MhEvent };
+  | { kind: 'round'; e: MhEvent }
+  | ScoutRun;
+
+/** A lookup a seat handed its scout: the question, and the answer once it's in. */
+export interface ScoutRun {
+  kind: 'scout';
+  name: string;
+  seat: string;
+  brief: string;
+  ts: string;
+  answer?: string;
+}
 
 export interface CoordinatorStatus {
   state: 'converging' | 'developing' | 'drifting';
@@ -75,6 +88,9 @@ export function roomOf(events: MhEvent[], roomBranch: string | null): RoomView {
   const v: RoomView = { open: false, cast: [], board: [], messages: [], byId: new Map(), thread: [], revealed: new Set(), writers: new Set(), ahead: 0 };
   const items: ThreadItem[] = [];
   const nodes = new Map<string, Extract<ThreadItem, { kind: 'msg' }>>();
+  // What each seat was last asked: its scout's lookups go under it.
+  const asking = new Map<string, Extract<ThreadItem, { kind: 'msg' }>>();
+  const scouts = new Map<string, ScoutRun>();
   for (const e of events) {
     const d = e.data as Record<string, unknown>;
     switch (e.type) {
@@ -114,6 +130,7 @@ export function roomOf(events: MhEvent[], roomBranch: string | null): RoomView {
           ...(typeof d.round === 'number' ? { round: d.round } : {}), ...(typeof d.rounds === 'number' ? { rounds: d.rounds } : {}), ...(d.held ? { held: true } : {}),
           ...(d.replyTo ? { replyTo: String(d.replyTo) } : {}), ...(Array.isArray(d.parts) ? { parts: d.parts as RoomMsg['parts'] } : {}),
           ...(typeof d.part === 'number' ? { part: d.part, of: Number(d.of) } : {}), ...(Array.isArray(d.after) ? { after: d.after as string[] } : {}),
+          ...(d.stopped ? { stopped: true } : {}),
         };
         v.messages.push(m);
         v.byId.set(m.id, m);
@@ -122,8 +139,24 @@ export function roomOf(events: MhEvent[], roomBranch: string | null): RoomView {
         const parent = m.re ? (nodes.get(m.re) ?? [...nodes.values()].find(n => n.m.flow === m.re)) : undefined;
         (parent ? parent.children : items).push(node);
         nodes.set(m.id, node);
+        for (const t of m.to) if (t !== m.from) asking.set(t, node);
         break;
       }
+      case 'agent.spawned':
+        if (d.quick && e.parent && v.cast.some(c => c.name === e.parent)) {
+          const run: ScoutRun = { kind: 'scout', name: e.agent!, seat: e.parent, brief: String(d.brief ?? ''), ts: e.ts };
+          (asking.get(e.parent)?.children ?? items).push(run);
+          scouts.set(run.name, run);
+        }
+        break;
+      case 'agent.done':
+      case 'agent.idle':
+        if (scouts.has(e.agent!)) scouts.get(e.agent!)!.answer = String(d.note ?? '');
+        break;
+      case 'agent.ended':
+      case 'agent.crashed':
+        if (scouts.has(e.agent!)) scouts.get(e.agent!)!.answer ??= `(it ${e.type === 'agent.ended' ? 'was stopped' : 'crashed'})`;
+        break;
       case 'git.commit':
         if (roomBranch && d.branch === roomBranch) {
           v.ahead++;

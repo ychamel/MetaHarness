@@ -135,6 +135,11 @@ export function SeatEditor({ seat, config, onChange, onRemove }: { seat: Partici
             + stance
           </button>
         )}
+        {config?.roles.some(r => r.name === 'scout') && (
+          <label className="check small" title="It may hand lookups to MetaHarness's scout (a quick helper), keeping its own turn for the thinking">
+            <input type="checkbox" checked={!!seat.scout} onChange={e => onChange({ ...seat, scout: e.target.checked || undefined })} /> scout
+          </label>
+        )}
       </div>
     </div>
   );
@@ -154,7 +159,7 @@ export function NewRoomDialog({ config, from, initial, onClose, onStart, onComma
   const casts = config?.casts ?? [];
   const firstRole = (want: string[]) => want.find(r => roles.includes(r)) ?? roles[0];
   const [topic, setTopic] = useState(initial?.topic ?? '');
-  const [cast, setCast] = useState<Participant[]>(() => initial?.cast?.map(({ role, on, responsibility, stance }) => ({ role, on, responsibility, stance })) ?? [firstRole(['scout', 'explorer']), firstRole(['designer', 'architect'])].filter((r, i, a): r is string => !!r && a.indexOf(r) === i).map(role => ({ role })));
+  const [cast, setCast] = useState<Participant[]>(() => initial?.cast?.map(({ role, on, responsibility, stance, scout }) => ({ role, on, responsibility, stance, scout })) ?? [firstRole(['scout', 'explorer']), firstRole(['designer', 'architect'])].filter((r, i, a): r is string => !!r && a.indexOf(r) === i).map(role => ({ role })));
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState<string>();

@@ -31,7 +31,7 @@ import { matchesPaths, onCommit, onDone, onToolCall, rulesPrompt, RuleState, too
 import { claimedSkills, skillsFor, skillsPrompt, withSkills, type Skill } from './skills.ts';
 import {
   ASK_MODES, applyBoard, boardMarkdown, castText, Coordinator, DECIDE_ANSWER, frame, framePart, modelRole, parseCoordinator, responsibilityLabel, responsibilityOf, RESPONSIBILITIES,
-  roomMethodology, rosterLines, ROUTE_ANSWER, seatName, type AskMode, type BoardItem, type BoardOp, type CoordinatorJob, type Flow, type Participant, type Plan, type RoomPaths, type RoomState,
+  roomMethodology, rosterLines, ROUTE_ANSWER, scoutLine, seatName, type AskMode, type BoardItem, type BoardOp, type CoordinatorJob, type Flow, type Participant, type Plan, type RoomPaths, type RoomState,
 } from './rooms.ts';
 
 export interface InboxEntry {
@@ -116,6 +116,8 @@ export interface AgentRec {
   limitTimer?: NodeJS.Timeout;
   /** An urgent message is waiting for the interrupted turn to end. */
   interrupting?: boolean;
+  /** A room seat the human stopped mid-turn: what it said is already its answer, so the turn's end isn't another. */
+  roomStopped?: boolean;
   /** Tool calls the harness reported as started and not yet finished, in the current turn. */
   toolsRunning: number;
   lastToolEnd: number;
@@ -786,7 +788,8 @@ export class Daemon {
 
   private buildPrompt(g: GoalRec, rec: AgentRec, workflow?: string, startedFrom = ''): string {
     const inRoom = !!g.room && !rec.quick;
-    const parts = [inRoom ? roomMethodology({ topic: g.request, open: g.room!.open, paths: this.roomPaths(g), roster: this.roster(g, rec.name) }) : rec.role.helper ? this.config.helperMethodology : this.config.methodology];
+    const scout = inRoom && g.room!.cast.find(c => c.name === rec.name)?.scout ? this.scoutRole() : undefined;
+    const parts = [inRoom ? roomMethodology({ topic: g.request, open: g.room!.open, paths: this.roomPaths(g), roster: this.roster(g, rec.name), scout }) : rec.role.helper ? this.config.helperMethodology : this.config.methodology];
     // A seat that's just a model has no role of its own: its responsibility says what it's for.
     if (rec.role.file !== '(room seat)') parts.push(`## Your role: ${rec.role.name}\n\n${rec.role.instructions}`);
     if (rec.responsibility) parts.push(`## Your responsibility in this room\n\n${rec.responsibility}`);
@@ -1225,6 +1228,7 @@ export class Daemon {
     const g = this.goals.get(rec.goal)!;
     // In a room, the turn's last message is its answer.
     if (g.room && rec.parent === 'human' && !rec.quick) {
+      if (rec.roomStopped) return void (rec.roomStopped = false);
       this.emit({ goal: rec.goal, agent: rec.name, type: 'agent.idle', data: { note: rec.lastText || '(no message)' } });
       return this.roomReply(g, rec, rec.lastText || '(no answer)', 'idle');
     }
@@ -2754,6 +2758,13 @@ export class Daemon {
 
   /** Spawns a quick helper and waits for its answer, up to quickTimeoutMs. */
   async quickSpawn(caller: AgentRec, role: string, brief: string, name?: string): Promise<{ text: string }> {
+    // A room seat's helper is its scout, when the human turned it on.
+    const room = this.goals.get(caller.goal)?.room;
+    if (room && caller.parent === 'human' && !caller.quick) {
+      const scout = this.scoutRole();
+      if (!room.cast.find(c => c.name === caller.name)?.scout || !scout) return { text: 'Your scout is off, so there are no helpers for you here: look it up yourself.' };
+      if (resolveName(role, this.teamRoles().map(r => r.name)).match !== scout) return { text: `In a room, your helper is the scout: spawn role "${scout}", quick: true.` };
+    }
     const r = this.spawnAgent(caller.goal, { role, brief, parent: caller.name, quick: true, name });
     if (!r.ok) return { text: r.error };
     const guessed = r.guessedRole ? `(Took "${role}" to mean ${r.guessedRole}.) ` : '';
@@ -2911,6 +2922,9 @@ export class Daemon {
   private checkSeat(p: Participant): Participant {
     const seat: Participant = { ...p };
     for (const k of ['role', 'name', 'on', 'responsibility', 'stance'] as const) if (typeof seat[k] !== 'string' || !seat[k]!.trim()) delete seat[k];
+    if (seat.scout !== true) delete seat.scout;
+    else if (!this.scoutRole()) throw new Error('There is no scout role to give seats: add a role called scout first.');
+    delete seat.benched;
     if (seat.role) {
       const res = resolveName(seat.role, this.teamRoles().map(r => r.name));
       if (!res.match) throw new Error(`There's no role called "${seat.role}". Roles: ${this.teamRoles().map(r => r.name).join(', ')}.`);
@@ -3012,11 +3026,12 @@ export class Daemon {
       if (!n) continue;
       const lower = n.toLowerCase();
       if (lower === 'all' || lower === 'everyone') {
-        out.push(...st.cast.map(c => c.name!));
+        out.push(...st.cast.filter(c => !c.benched).map(c => c.name!));
         continue;
       }
-      const seat = st.cast.find(c => c.name!.toLowerCase() === lower) ?? st.cast.find(c => c.role?.toLowerCase() === lower);
+      const seat = st.cast.find(c => c.name!.toLowerCase() === lower) ?? st.cast.find(c => c.role?.toLowerCase() === lower && !c.benched) ?? st.cast.find(c => c.role?.toLowerCase() === lower);
       if (seat) {
+        if (seat.benched) throw new Error(`${seat.name} is benched: bring it back first.`);
         out.push(seat.name!);
         continue;
       }
@@ -3034,7 +3049,7 @@ export class Daemon {
     const out: string[] = [];
     for (const m of text.matchAll(/(?:^|[\s(])@([\w.-]+)/g)) {
       const lower = m[1].toLowerCase().replace(/[.-]+$/, '');
-      if (lower === 'all' || lower === 'everyone') out.push(...st.cast.map(c => c.name!));
+      if (lower === 'all' || lower === 'everyone') out.push(...st.cast.filter(c => !c.benched).map(c => c.name!));
       else if (st.cast.some(c => c.name!.toLowerCase() === lower || c.role?.toLowerCase() === lower) || roles.some(r => r.toLowerCase() === lower)) out.push(...this.resolveSeats(g, [lower]));
     }
     return out;
@@ -3156,6 +3171,7 @@ export class Daemon {
       return false;
     };
     if (rec && FINISHED.includes(rec.state)) return fail(`${name} has ${rec.state}, so it wasn't asked. Respawn it from its page to carry on with it.`);
+    if (seat?.benched) return fail(`${name} is benched, so it wasn't asked.`);
     flow.waiting.add(name);
     if (flow.mode === 'patch' && !st.writers.has(name)) {
       st.writers.add(name);
@@ -3193,13 +3209,103 @@ export class Daemon {
   private roomTurnEnded(g: GoalRec, rec: AgentRec): void {
     const st = g.room!;
     const mine = (st.deferred ?? []).filter(d => d.name === rec.name);
-    if (!mine.length) return;
-    st.deferred = st.deferred!.filter(d => d.name !== rec.name);
+    st.deferred = st.deferred?.filter(d => d.name !== rec.name);
     for (const d of mine) this.askNow(g, rec, d.from, d.text);
+    // Benched while it worked: it rests now that it's finished.
+    if (st.cast.find(c => c.name === rec.name)?.benched) this.restSeat(rec);
+  }
+
+  /** A benched seat between turns: its process stops, its session kept to resume when it's asked again (if its harness can). */
+  private restSeat(rec: AgentRec): void {
+    const s = rec.session;
+    if (!s || s.busy() || !rec.adapter.manifest.resume || !s.nativeId) return;
+    rec.gen++;
+    rec.session = undefined;
+    rec.resumeId = s.nativeId;
+    this.carryOver(rec);
+    void s.stop().catch(() => {});
+  }
+
+  /** The human benches a seat (or brings it back). One at work finishes first. */
+  roomBench(goalId: string, name: string, on: boolean): string {
+    const g = this.goals.get(goalId)!;
+    const st = g.room!;
+    const seat = st.cast.find(c => c.name === name);
+    if (!seat) throw new Error(`There's no seat called ${name}.`);
+    if (!!seat.benched === on) return on ? `${name} is already benched.` : `${name} isn't benched.`;
+    if (on) seat.benched = true;
+    else delete seat.benched;
+    this.emitCast(g);
+    const note = on ? `${name} is benched: out of the discussion for now.` : `${name} is back in the discussion.`;
+    this.roomNote(g, note);
+    for (const r of g.agents.values()) if (r.parent === 'human' && !r.quick && r.name !== name && !FINISHED.includes(r.state)) r.ruleNotes.push(`[Room] ${note}`);
+    const rec = g.agents.get(name);
+    if (!on) return `${name} is back. When it's next asked, it hears what it missed.`;
+    if (rec?.session?.busy()) return `${name} finishes what it's doing, then rests.`;
+    if (rec) this.restSeat(rec);
+    return `Benched ${name}.`;
+  }
+
+  /** The human stops what a seat is doing: what it said so far is its answer, the coordinator sees it, and the seat stays to be asked again. */
+  roomStop(goalId: string, name: string): string {
+    const g = this.goals.get(goalId)!;
+    const st = g.room!;
+    const rec = g.agents.get(name);
+    const s = rec?.session;
+    if (!rec || !s?.busy()) return `${name} isn't working on anything.`;
+    const m = rec.adapter.manifest;
+    if (!(m.interrupt && s.interrupt) && !(m.resume && s.nativeId)) throw new Error(`${rec.harness} can't stop a turn and keep its session. Bench ${name} to have it rest once it's done.`);
+    // What it said since it was asked: whole messages, as it wrote them.
+    const said = this.store
+      .since(g.id, st.lastSeen.get(name) ?? 0)
+      .filter(e => e.type === 'agent.text' && e.agent === name)
+      .map(e => String(e.data.text).trim())
+      .filter(Boolean);
+    this.endPause(rec);
+    if (m.interrupt && s.interrupt) {
+      // The turn ends on its own; its end isn't another answer.
+      rec.roomStopped = true;
+      void s.interrupt().catch(() => {});
+    } else {
+      rec.gen++;
+      rec.session = undefined;
+      rec.resumeId = s.nativeId;
+      this.carryOver(rec);
+      void s.stop().catch(() => {});
+      this.setState(rec, 'idle');
+    }
+    this.emit({ goal: g.id, agent: name, type: 'agent.interrupted', data: { how: 'stopped', by: 'human' } });
+    this.roomReply(g, rec, said.join('\n\n') || '(stopped before it said anything)', 'stopped');
+    // Its old session's turn end won't come: what waited for it goes now.
+    if (!rec.roomStopped) {
+      this.roomTurnEnded(g, rec);
+      this.pump(rec);
+    }
+    return `Stopped ${name}. What it said so far is in the thread.`;
+  }
+
+  /** The human turns a seat's scout on or off. */
+  roomScout(goalId: string, name: string, on: boolean): string {
+    const g = this.goals.get(goalId)!;
+    const seat = g.room!.cast.find(c => c.name === name);
+    if (!seat) throw new Error(`There's no seat called ${name}.`);
+    const scout = this.scoutRole();
+    if (on && !scout) throw new Error('There is no scout role to give seats: add a role called scout first.');
+    if (!!seat.scout === on) return `${name}'s scout is already ${on ? 'on' : 'off'}.`;
+    if (on) seat.scout = true;
+    else delete seat.scout;
+    this.emitCast(g);
+    g.agents.get(name)?.ruleNotes.push(on ? `[Room] The human turned your scout on.\n${scoutLine(scout!)}` : "[Room] The human turned your scout off: do your lookups yourself.");
+    return `${name}'s scout is ${on ? 'on' : 'off'}.`;
+  }
+
+  /** The role room seats' scouts run as: the configured scout, if there is one. */
+  private scoutRole(): string | undefined {
+    return this.config.roles.has('scout') ? 'scout' : undefined;
   }
 
   /** A participant answered (its done, or the end of its turn): post it, and move what it was asked on. */
-  private roomReply(g: GoalRec, rec: AgentRec, text: string, how: 'done' | 'idle' | 'ended' | 'crashed'): void {
+  private roomReply(g: GoalRec, rec: AgentRec, text: string, how: 'done' | 'idle' | 'ended' | 'crashed' | 'stopped'): void {
     const st = g.room!;
     if (st.writers.delete(rec.name)) this.emit({ goal: g.id, agent: rec.name, type: 'room.writer', data: { on: false } });
     // One answer covers everything it was asked in that turn.
@@ -3212,7 +3318,7 @@ export class Daemon {
     this.emit({ goal: g.id, agent: rec.name, type: 'message.sent', data: { to: flow?.from === COORDINATOR ? 'coordinator' : 'human', text, room: true } });
     const id = this.say(g, {
       from: rec.name, to: [...(flow ? [flow.from === COORDINATOR ? 'coordinator' : 'human'] : ['room']), ...askers], text, kind: how === 'ended' || how === 'crashed' ? 'note' : 'answer',
-      ...(flow ? { flow: flow.id, re: flow.id, mode: flow.mode, round: flow.round } : {}), ...(held ? { held: true } : {}),
+      ...(flow ? { flow: flow.id, re: flow.id, mode: flow.mode, round: flow.round } : {}), ...(held ? { held: true } : {}), ...(how === 'stopped' ? { stopped: true } : {}),
     });
     st.lastSeen.set(rec.name, this.store.since(g.id).at(-1)?.seq ?? 0);
     for (const a of askers) if (g.agents.has(a)) this.deliver(g.id, rec.name, a, text, false, false, true);
@@ -3220,8 +3326,13 @@ export class Daemon {
       f.waiting.delete(rec.name);
       f.answers.set(rec.name, text);
       f.answerIds.push(id);
-      this.advanceFlow(g, f);
+      // Stopped, what it was asked ends there (a chain or a debate goes no further), and the human
+      // says what's next; a part of a split question still lets the parts after it go on.
+      if (how === 'stopped' && !f.plan && !f.waiting.size) st.flows.delete(f.id);
+      else this.advanceFlow(g, f);
     }
+    // A step the coordinator waited on may be over.
+    if (how === 'stopped') void this.runCoordinator(g);
     // Said without being asked (e.g. after a note woke it): the coordinator decides about it too.
     if (!flows.length && (how === 'done' || how === 'idle')) this.queueJob(g, { kind: 'decide', msgs: [id] });
   }
@@ -3274,6 +3385,7 @@ export class Daemon {
     const seat = st.cast.find(c => c.name!.toLowerCase() === t) ?? st.cast.find(c => c.role?.toLowerCase() === t);
     const role = seat || everyone || toCoordinator ? undefined : resolveName(to, this.teamRoles().map(r => r.name));
     if (!seat && !everyone && !toCoordinator && !role?.match) return undefined;
+    if (seat?.benched) return `${seat.name} is benched: the human took it out of the discussion for now.`;
     const target = seat?.name ?? (everyone ? 'everyone' : toCoordinator ? 'coordinator' : role!.match!);
     if (!st.open || toCoordinator) {
       const id = this.say(g, { from, to: [target], text, kind: 'aside', ...(seat || everyone || toCoordinator ? {} : { role: target }) });
@@ -3282,7 +3394,7 @@ export class Daemon {
         ? 'The coordinator has it.'
         : `The coordinator decides who goes next in this room: it has your message for ${target} and passes it on if it helps. Carry on with your answer.`;
     }
-    const names = everyone ? st.cast.map(c => c.name!).filter(n => n !== from) : [seat?.name ?? this.addSeat(g, { role: role!.match! })];
+    const names = everyone ? st.cast.filter(c => !c.benched).map(c => c.name!).filter(n => n !== from) : [seat?.name ?? this.addSeat(g, { role: role!.match! })];
     this.say(g, { from, to: names, text, kind: 'aside' });
     const lines: string[] = [];
     for (const name of names) {
@@ -3435,13 +3547,13 @@ export class Daemon {
     const who = (n: unknown) => (n === 'human' ? 'human' : n === COORDINATOR ? 'coordinator' : String(n));
     const seats = st.cast.map(c => {
       const a = g.agents.get(c.name!);
-      const state = !a ? 'not started' : ['starting', 'working'].includes(a.state) ? 'working' : st.writers.has(c.name!) ? 'patching' : a.state;
+      const state = c.benched ? 'benched: never route to it' : !a ? 'not started' : ['starting', 'working'].includes(a.state) ? 'working' : st.writers.has(c.name!) ? 'patching' : a.state;
       return `- ${c.name} (${c.role ?? 'model'} · ${a ? `${a.harness}/${a.model}` : (c.on ?? 'its role’s model')}, ${state}): ${responsibilityOf(c) || 'no responsibility given'}${c.stance ? ` Stance: ${c.stance}` : ''}`;
     });
     const messages = this.store.since(g.id).filter(e => e.type === 'room.message' && e.data.kind !== 'note');
     const fresh = job.kind === 'decide' ? job.msgs : [job.msg];
     const earlier = messages.filter(e => !fresh.includes(String(e.data.id))).slice(-12);
-    const line = (e: MhEvent) => `[${who(e.data.from)} → ${(e.data.to as string[]).map(who).join(', ')}${['route', 'part', 'forward', 'compare', 'back'].includes(String(e.data.kind)) ? `, ${e.data.kind}` : ''}] ${cut(String(e.data.text).replace(/\s+/g, ' '), 200)}`;
+    const line = (e: MhEvent) => `[${who(e.data.from)} → ${(e.data.to as string[]).map(who).join(', ')}${['route', 'part', 'forward', 'compare', 'back'].includes(String(e.data.kind)) ? `, ${e.data.kind}` : ''}${e.data.stopped ? ', stopped by the human mid-answer' : ''}] ${cut(String(e.data.text).replace(/\s+/g, ' '), 200)}`;
     const head = [
       `Room: ${g.request}`,
       `Mode: ${st.open ? 'open (participants talk to each other; you watch)' : 'moderated (you decide who goes next)'}. The whole thread: ${this.roomPaths(g).transcript}`,
@@ -4176,7 +4288,15 @@ export class Daemon {
       }
       case 'room.add': {
         if (!s('role') && !s('on')) throw new Error('room.add needs a role, or a model (on).');
-        return { result: this.roomAdd(this.roomId(s('goal')), { role: s('role'), name: s('name'), on: s('on'), responsibility: s('responsibility'), stance: s('stance') }) };
+        return { result: this.roomAdd(this.roomId(s('goal')), { role: s('role'), name: s('name'), on: s('on'), responsibility: s('responsibility'), stance: s('stance'), ...(b.scout === true ? { scout: true } : {}) }) };
+      }
+      case 'room.bench':
+      case 'room.scout':
+      case 'room.stop': {
+        const seat = s('seat');
+        if (!seat) throw new Error(`${b.cmd} needs "seat".`);
+        const id = this.roomId(s('goal'));
+        return { result: b.cmd === 'room.stop' ? this.roomStop(id, seat) : b.cmd === 'room.bench' ? this.roomBench(id, seat, b.on !== false) : this.roomScout(id, seat, b.on !== false) };
       }
       case 'room.board': {
         const ops = Array.isArray(b.ops) ? (b.ops as BoardOp[]) : [];

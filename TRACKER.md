@@ -498,6 +498,15 @@ Findings from the run:
   them in parallel or waiting for the parts they need (`after`), one decision at the end.
   Checked with tests (11 room tests) and in headless Chrome against a
   scripted daemon. Not yet in a real run.
+- [x] **Rooms, round 3** (DESIGN.md §21, brainstorm → answers on 2026-10-26). Seats can be
+  **benched** (skipped by routing; session rests, one at work finishes first; resumes with a
+  digest when brought back) and **stopped** mid-answer (what it said stays as its answer,
+  marked stopped; the coordinator sees it; the seat stays). A per-seat **scout** switch lets a
+  seat hand lookups to the `scout` role as a quick helper (refused when off); its lookups show
+  in the thread. Agents are told to answer simply with details in a report. Shared files named
+  in the thread are links and chips that open in the room's side panel, as in the Graph tab
+  (full shared-folder paths link too, there and in the Graph). Checked with tests (3 new, 150
+  in all) and in headless Chrome against a scripted daemon. Not yet in a real run.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search

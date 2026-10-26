@@ -459,6 +459,12 @@ it's asked something.
     yourself to clear. Nobody picked: **the coordinator picks** who answers.
   - **Drag** one seat onto another: that one responds to the first's last answer.
   - **Double-click** a seat to open its panel.
+  - A seat's buttons (on hover): **■ Stop** while it works stops what it's doing; what it said
+    so far stays in the thread as its answer (marked *stopped*), and you can ask it again
+    straight away. **Bench** takes it out of the discussion: nobody asks it and its session
+    rests (one at work finishes first); **Bring back** returns it, and it hears what it missed.
+    **🔍 scout** lets it hand lookups to the scout role while it does the thinking (also a
+    switch in the seat editor; needs a role called `scout`).
 - **How to ask** (under the canvas): **Ask**, **Job** (go and find out, then report), **Views**
   (each answers on their own; shown together), **Debate** (rounds), **Chain** (one after
   another, in the order you clicked them), **Patch** (one seat changes the code on the room's
@@ -474,6 +480,10 @@ it's asked something.
   look again. Its role is in Settings → Room coordinator (Codex luna by default).
 - **Thread** (beside the canvas): your messages, the coordinator's ◆ lines, and each answer
   nested under what it answers. What you send a participant from its panel shows here too.
+  Agents keep answers short and put the details in a report in the shared folder: a file named
+  in the thread is a link (and a 📄 chip under the message) that opens it beside the room, in
+  place of the thread; **←** or **Esc** goes back. A seat's scout lookups show under what it was
+  answering ("what it found" opens the answer).
 - **Open discussion** (off by default): participants message each other directly, and the
   coordinator only watches. Off, what they'd send each other goes to the coordinator.
 - **Where it goes** (on the Board tab): **Write the design** has the big-picture seat write

@@ -6,6 +6,7 @@ import type { Agent, Goal, MhEvent } from '../types.ts';
 import { Ctx, Dot, useNow } from '../components/common.tsx';
 import { Splitter } from '../components/Splitter.tsx';
 import { FileSide } from './Files.tsx';
+import { fileMentions, withFileLinks } from '../fileLinks.tsx';
 
 const W = 240;
 const H = 175;
@@ -645,8 +646,8 @@ function GraphInner({ goal, events, selected, agentPanel, file, onSelect, onFile
  * what the team does (steps, commits, files) to the feed.
  */
 function Talk({ goal, events, said, pair, all, onAll: setAll, agent, owner, onPair, onSelect, onOpenFile }: { goal: Goal; events: MhEvent[]; said: Said[]; pair?: [string, string]; all: boolean; onAll: (all: boolean) => void; agent?: string; owner: (n: string) => string; onPair: (p?: [string, string]) => void; onSelect: (n: string) => void; onOpenFile: (path: string) => void }) {
-  const fileRe = useMemo(() => fileMentions(events), [events]);
-  const linked = (text: string) => withFileLinks(text, fileRe, onOpenFile);
+  const fileRe = useMemo(() => fileMentions(events, goal.sharedDir), [events, goal.sharedDir]);
+  const linked = (text: string) => withFileLinks(text, { re: fileRe, open: onOpenFile });
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const name = (n: string) => (n === 'human' ? 'you' : n);
@@ -741,35 +742,6 @@ function Talk({ goal, events, said, pair, all, onAll: setAll, agent, owner, onPa
       </div>
     </aside>
   );
-}
-
-/** Every shared file's path, as a pattern that finds them in text, with or without the `shared/` in front. */
-function fileMentions(events: MhEvent[]): RegExp | undefined {
-  const paths = [...new Set(events.filter(e => e.type === 'shared.write').map(e => String(e.data.path)))];
-  if (!paths.length) return undefined;
-  // Longest first, so a path wins over a shorter one it ends with.
-  const alts = paths.sort((a, b) => b.length - a.length).map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  return new RegExp(`(?<![\\w./-])(?:shared/)?(${alts.join('|')})(?![\\w/-]|\\.\\w)`, 'g');
-}
-
-/** Text with each shared file it names turned into a link that opens the file. */
-function withFileLinks(text: string, re: RegExp | undefined, onOpen: (path: string) => void): ReactNode {
-  if (!re) return text;
-  const out: ReactNode[] = [];
-  let at = 0;
-  for (const m of text.matchAll(re)) {
-    out.push(text.slice(at, m.index));
-    const path = m[1];
-    out.push(
-      <button key={m.index} className="file-link" onClick={() => onOpen(path)} title={`Read shared/${path}`}>
-        {m[0]}
-      </button>,
-    );
-    at = m.index + m[0].length;
-  }
-  if (!out.length) return text;
-  out.push(text.slice(at));
-  return out;
 }
 
 /**

@@ -26,6 +26,10 @@ export interface Participant {
   responsibility?: string;
   /** How it should look at the question, e.g. "argue for the simplest fix". */
   stance?: string;
+  /** It may hand lookups to MetaHarness's scout (a quick helper), keeping its own turn for the thinking. */
+  scout?: boolean;
+  /** Out of the discussion for now: nobody routes to it, and its session rests until it's brought back. */
+  benched?: boolean;
 }
 
 /** A saved set of seats: casts/<name>.md. */
@@ -178,7 +182,7 @@ export interface RoomState {
 
 /**
  * casts/<name>.md: one `## <role, or "model"> [as <name>]` heading per seat, then `on:`,
- * `responsibility:` and `stance:` lines as needed.
+ * `responsibility:`, `stance:` and `scout: on` lines as needed.
  */
 export function parseCast(file: string): Cast {
   const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
@@ -191,8 +195,9 @@ export function parseCast(file: string): Cast {
       participants.push(seat);
       continue;
     }
-    const kv = /^(on|responsibility|stance):\s*(.*\S)\s*$/.exec(line);
-    if (seat && kv) seat[kv[1] as 'on' | 'responsibility' | 'stance'] = kv[2];
+    const kv = /^(on|responsibility|stance|scout):\s*(.*\S)\s*$/.exec(line);
+    if (seat && kv?.[1] === 'scout') seat.scout = /^(on|yes|true)$/i.test(kv[2]);
+    else if (seat && kv) seat[kv[1] as 'on' | 'responsibility' | 'stance'] = kv[2];
   }
   return { name: basename(file, '.md'), goodAt: meta.good_at ?? '', participants: participants.filter(p => p.role || p.on), file };
 }
@@ -204,6 +209,7 @@ export function castText(c: { goodAt?: string; participants: Participant[] }): s
       ...(p.on ? [`on: ${p.on}`] : []),
       ...(p.responsibility ? [`responsibility: ${p.responsibility.replace(/\s+/g, ' ')}`] : []),
       ...(p.stance ? [`stance: ${p.stance.replace(/\s+/g, ' ')}`] : []),
+      ...(p.scout ? ['scout: on'] : []),
     ].join('\n'),
   );
   return `---\ngood_at: ${(c.goodAt ?? '').replace(/\n/g, ' ')}\n---\n${seats.join('\n\n')}\n`;
@@ -293,12 +299,12 @@ export function rosterLines(cast: Participant[], started: (name: string) => bool
   return cast.map(p => {
     const what = p.role ?? modelWord(p.on) ?? 'model';
     const r = responsibilityOf(p);
-    return `- ${p.name} (${what}${r ? `: ${responsibilityLabel(r)}` : ''})${started(p.name!) ? '' : ', not started yet'}${p.name === you ? '  ← you' : ''}`;
+    return `- ${p.name} (${what}${r ? `: ${responsibilityLabel(r)}` : ''})${p.benched ? ', benched: out of the discussion for now' : started(p.name!) ? '' : ', not started yet'}${p.name === you ? '  ← you' : ''}`;
   });
 }
 
 /** The part of a participant's system prompt that replaces the team methodology. */
-export function roomMethodology(o: { topic: string; open: boolean; paths: RoomPaths; roster: string[] }): string {
+export function roomMethodology(o: { topic: string; open: boolean; paths: RoomPaths; roster: string[]; scout?: string }): string {
   const talk = o.open
     ? [
         '- Open discussion: you may `send` another participant a question or a point directly (by name); their answer comes back to you. Keep it to the point.',
@@ -319,7 +325,8 @@ export function roomMethodology(o: { topic: string; open: boolean; paths: RoomPa
     '',
     '- Each message you get is a turn: answer it, then call `done` with your answer as the note. That is what the room sees. Without `done`, your last message is taken as your answer.',
     '- Stick to your responsibility. Be focused and concrete: name files, functions and lines.',
-    `- Put long findings in the shared folder (${o.paths.reports}/<your name>-<n>.md) and give the gist.`,
+    `- Keep your answer simple and conversational: a few plain sentences, the answer first, then what it rests on. Details (analysis, lists of findings, code, logs) go in a report in the shared folder, ${o.paths.reports}/<your name>-<n>.md: name its path in your answer, and the human can open it from the thread.`,
+    ...(o.scout ? [scoutLine(o.scout)] : []),
     "- You read the code; you don't change it, unless you're given a patch job (it says so). Running the code or its tests to check something is fine.",
     `- Each message ends with what's new in the room since you last spoke. The board (findings, open questions, decisions) is ${o.paths.board}, and the whole thread ${o.paths.transcript}: read them when you need more.`,
     ...talk,
@@ -327,12 +334,17 @@ export function roomMethodology(o: { topic: string; open: boolean; paths: RoomPa
   ].join('\n');
 }
 
+/** What a seat with its scout on is told. */
+export function scoutLine(role: string): string {
+  return `- You have a scout for lookups: call \`spawn\` with role "${role}", quick: true, and a precise question (where something is, what calls what, what changed). It reads the code fast and answers inline; you do the thinking. Don't use it for what one file read answers.`;
+}
+
 /** How a message reaches a participant, by mode. */
 export function frame(mode: AskMode, text: string, o: { round?: number; rounds?: number; quote?: { from: string; text: string }; earlier?: { from: string; text: string }[]; worktree?: string; branch?: string } = {}): string {
   const said = (xs: { from: string; text: string }[]) => xs.map(x => `--- ${x.from}:\n${x.text}`).join('\n\n');
   switch (mode) {
     case 'job':
-      return `${text}\n\n[Room] This is a job: look into it with your tools, then answer with a report (the gist in your answer, details in the shared folder if long).`;
+      return `${text}\n\n[Room] This is a job: look into it with your tools, then answer simply, with the details in a report in the shared folder.`;
     case 'views':
       return `${text}\n\n[Room] Others are answering this too, each on their own: give your own view, without reading the thread first. You'll see theirs afterwards.`;
     case 'respond':

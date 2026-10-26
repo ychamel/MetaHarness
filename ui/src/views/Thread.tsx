@@ -1,10 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import type { Agent, BoardItem, ConfigView, Goal, MhEvent, Participant } from '../types.ts';
-import { BOARD_SECTIONS, COORDINATOR, isCoordinator, MODES, responsibilityLabel, seatWhat, type RoomMsg, type RoomView, type ThreadItem } from '../roomData.ts';
+import { BOARD_SECTIONS, COORDINATOR, isCoordinator, MODES, responsibilityLabel, seatWhat, type RoomMsg, type RoomView, type ScoutRun, type ThreadItem } from '../roomData.ts';
 import { clock, oneLine } from '../format.ts';
 import { Dot, Markdown, More, useNow } from '../components/common.tsx';
 import { SeatEditor, seatProblem } from '../components/Room.tsx';
+import { Splitter } from '../components/Splitter.tsx';
 import { agentColors } from '../agentColors.ts';
+import { FileSide } from './Files.tsx';
+import { fileMentions, filesNamed, type FileLinks } from '../fileLinks.tsx';
 
 interface Props {
   goal: Goal;
@@ -14,7 +17,10 @@ interface Props {
   onCommand: (body: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>;
   onSelectAgent: (name: string) => void;
   onOpenCommit: (sha: string) => void;
-  onOpenFile: (path: string) => void;
+  /** The shared file open in the side panel (the page's), and opening or closing one. */
+  file?: string;
+  onFile: (path?: string) => void;
+  onFilesTab: () => void;
   /** Starts a goal that carries out what the room settled. */
   onStartGoal: () => void;
   /** A new room that starts from this one's board. */
@@ -27,9 +33,9 @@ const SIDE_KEY = 'mh.room.side';
  * A room (design §21): the canvas shows who's in it and what each is doing, with you in the
  * middle and the coordinator below; click seats to pick who your next message is for (nobody:
  * the coordinator picks), drag one onto another to have it respond. Beside it, the thread
- * (answers nested under what they answer) and the board.
+ * (answers nested under what they answer) and the board; a shared file named anywhere opens there too.
  */
-export default function Thread({ goal, events, room, config, onCommand, onSelectAgent, onOpenCommit, onOpenFile, onStartGoal, onNewRoom }: Props) {
+export default function Thread({ goal, events, room, config, onCommand, onSelectAgent, onOpenCommit, file, onFile, onFilesTab, onStartGoal, onNewRoom }: Props) {
   const live = goal.live && goal.status !== 'ended';
   const color = useMemo(() => agentColors(goal), [goal]);
   const [to, setTo] = useState<string[]>([]);
@@ -50,6 +56,17 @@ export default function Thread({ goal, events, room, config, onCommand, onSelect
     }
   };
   const presets = config?.responsibilities ?? [];
+  const fileRe = useMemo(() => fileMentions(events, goal.sharedDir), [events, goal.sharedDir]);
+  const files: FileLinks = { re: fileRe, open: onFile };
+  useEffect(() => {
+    if (!file) return;
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || (e.target as HTMLElement)?.closest?.('input, textarea, select') || document.querySelector('.backdrop')) return;
+      onFile(undefined);
+    };
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  });
   const pick = (n: string, add: boolean) => setTo(t => (t.includes(n) ? t.filter(x => x !== n) : add ? [...t, n] : [n]));
   const respond = (m: RoomMsg, who?: string) => {
     setReplyTo(m);
@@ -90,7 +107,23 @@ export default function Thread({ goal, events, room, config, onCommand, onSelect
         />
         {live && <Composer goal={goal} room={room} to={to} setTo={setTo} replyTo={replyTo} onClearReply={() => setReplyTo(undefined)} onCommand={onCommand} />}
       </div>
+      <Splitter pane="room-side" grow="left" min={300} max={1000} label="Room panel" />
       <aside className="room-side">
+        {file ? (
+          <>
+            <div className="room-side-tabs">
+              <button className="btn ghost small" onClick={() => onFile(undefined)} title="Back (Esc)">
+                ← {side === 'board' ? 'Board' : 'Thread'}
+              </button>
+              <span className="grow" />
+              <button className="btn ghost small" onClick={onFilesTab} title="Read it in the Files tab, with the whole shared folder beside it">
+                Open in Files
+              </button>
+            </div>
+            <FileSide key={file} goal={goal} events={events} path={file} onSelectAgent={onSelectAgent} />
+          </>
+        ) : (
+          <>
         <div className="room-side-tabs">
           <button className={`tab${side === 'thread' ? ' on' : ''}`} onClick={() => pickSide('thread')}>
             Thread
@@ -106,9 +139,11 @@ export default function Thread({ goal, events, room, config, onCommand, onSelect
           )}
         </div>
         {side === 'thread' ? (
-          <ThreadList goal={goal} room={room} name={name} live={live} onRespond={respond} onPin={t => void onCommand({ cmd: 'room.board', goal: goal.id, ops: [{ op: 'add', kind: 'finding', text: oneLine(t, 400) }] })} onAnswer={n => setTo([n])} onOpenCommit={onOpenCommit} />
+          <ThreadList goal={goal} room={room} name={name} live={live} files={files} onRespond={respond} onPin={t => void onCommand({ cmd: 'room.board', goal: goal.id, ops: [{ op: 'add', kind: 'finding', text: oneLine(t, 400) }] })} onAnswer={n => setTo([n])} onOpenCommit={onOpenCommit} />
         ) : (
-          <Board goal={goal} room={room} live={live} events={events} onCommand={onCommand} onOpenFile={onOpenFile} onStartGoal={onStartGoal} onNewRoom={onNewRoom} />
+          <Board goal={goal} room={room} live={live} events={events} onCommand={onCommand} onOpenFile={onFile} onStartGoal={onStartGoal} onNewRoom={onNewRoom} />
+        )}
+          </>
         )}
       </aside>
     </div>
@@ -118,7 +153,8 @@ export default function Thread({ goal, events, room, config, onCommand, onSelect
 /* ---------------- the canvas ---------------- */
 
 const CARD_W = 184;
-const CARD_H = 92;
+// With its buttons showing (hovered, busy or benched).
+const CARD_H = 116;
 
 /** Where each seat sits: around you, over the top and sides, leaving the bottom to the coordinator. */
 function layout(n: number, w: number, h: number) {
@@ -224,8 +260,18 @@ function Canvas({ goal, room, presets, color, picked, live, config, onPick, onCl
   }, [room, goal.agents, now]);
 
   const lastAnswer = (n: string) => [...room.messages].reverse().find(m => m.from === n && m.kind === 'answer');
+  const scouting = (n: string) => goal.agents.find(a => a.quick && a.parent === n && ['starting', 'working'].includes(a.state));
+  const hasScout = !!config?.roles.some(r => r.name === 'scout');
+  const seatCmd = (cmd: string, seat: string, more: Record<string, unknown> = {}) => (e: MouseEvent) => {
+    e.stopPropagation();
+    void onCommand({ cmd, goal: goal.id, seat, ...more });
+  };
   const doing = (p: Participant, a?: Agent) => {
+    const busy = !!a && ['starting', 'working'].includes(a.state);
+    if (p.benched) return busy ? 'finishing, then benched' : 'benched';
     if (!a) return 'not started: starts when asked';
+    const s = scouting(p.name!);
+    if (s) return `its scout is looking${s.status ? `: ${s.status}` : '…'}`;
     if (room.writers.has(p.name!) && a.state === 'working') return `patching${a.status ? `: ${a.status}` : '…'}`;
     if (['starting', 'working'].includes(a.state)) return a.status ? a.status : 'working…';
     if (a.state === 'waiting') return 'waiting';
@@ -238,7 +284,7 @@ function Canvas({ goal, room, presets, color, picked, live, config, onPick, onCl
       <svg className="room-links" width={size.w} height={size.h} aria-hidden>
         {room.cast.map(c => {
           const p = at(c.name!);
-          return p ? <line key={`base-${c.name}`} x1={pos.you.x} y1={pos.you.y} x2={p.x} y2={p.y} className="base" /> : null;
+          return p ? <line key={`base-${c.name}`} x1={pos.you.x} y1={pos.you.y} x2={p.x} y2={p.y} className={`base${c.benched ? ' benched' : ''}`} /> : null;
         })}
         {links.map(l => {
           const a = at(l.from);
@@ -273,27 +319,27 @@ function Canvas({ goal, room, presets, color, picked, live, config, onPick, onCl
         return (
           <div
             key={p.name}
-            className={`seat-card-node${on ? ' on' : ''}${busy ? ' busy' : ''}${a ? '' : ' unstarted'}${dragging && dragging !== p.name ? ' drop' : ''}`}
+            className={`seat-card-node${on ? ' on' : ''}${busy ? ' busy' : ''}${a ? '' : ' unstarted'}${p.benched ? ' benched' : ''}${dragging && dragging !== p.name ? ' drop' : ''}`}
             style={{ left: xy.x, top: xy.y, width: CARD_W, borderColor: on ? color(p.name) : undefined }}
-            draggable={live && !!last}
+            draggable={live && !!last && !p.benched}
             onDragStart={e => {
               e.dataTransfer.setData('text/plain', p.name!);
               setDragging(p.name);
             }}
             onDragEnd={() => setDragging(undefined)}
-            onDragOver={e => dragging && dragging !== p.name && e.preventDefault()}
+            onDragOver={e => dragging && dragging !== p.name && !p.benched && e.preventDefault()}
             onDrop={e => {
               e.preventDefault();
               const from = e.dataTransfer.getData('text/plain');
               setDragging(undefined);
               if (from && from !== p.name) onRespond(from, p.name!);
             }}
-            onClick={e => live && onPick(p.name!, e.shiftKey || e.ctrlKey || e.metaKey)}
+            onClick={e => live && !p.benched && onPick(p.name!, e.shiftKey || e.ctrlKey || e.metaKey)}
             onDoubleClick={() => a && onOpen(p.name!)}
             role="button"
             tabIndex={0}
-            onKeyDown={e => e.key === 'Enter' && live && onPick(p.name!, e.shiftKey)}
-            title={`${p.name}: ${seatWhat(p)}${a ? ` · ${a.harness}/${a.model}` : p.on ? ` · ${p.on}` : ''}\n${p.responsibility ?? ''}${p.stance ? `\nStance: ${p.stance}` : ''}\n\nClick: your next message is for it (shift-click adds). Double-click: open it. Drag onto another seat: have that one respond to its last answer.`}
+            onKeyDown={e => e.key === 'Enter' && e.target === e.currentTarget && live && !p.benched && onPick(p.name!, e.shiftKey)}
+            title={`${p.name}: ${seatWhat(p)}${a ? ` · ${a.harness}/${a.model}` : p.on ? ` · ${p.on}` : ''}\n${p.responsibility ?? ''}${p.stance ? `\nStance: ${p.stance}` : ''}${p.scout ? '\nHas a scout for lookups.' : ''}${p.benched ? '\n\nBenched: nobody asks it until you bring it back.' : '\n\nClick: your next message is for it (shift-click adds). Double-click: open it. Drag onto another seat: have that one respond to its last answer.'}`}
           >
             <div className="top">
               {a ? <Dot state={a.state} /> : <span className="dot unstarted" />}
@@ -305,7 +351,24 @@ function Canvas({ goal, room, presets, color, picked, live, config, onPick, onCl
             </div>
             {resp && <div className="resp">{resp}</div>}
             <div className={`now${busy ? ' step' : ''}`}>{doing(p, a)}</div>
-            {last && <div className="last">“{oneLine(last.text, 90)}”</div>}
+            {last && !p.benched && <div className="last">“{oneLine(last.text, 90)}”</div>}
+            {live && (
+              <div className="seat-actions" onDoubleClick={e => e.stopPropagation()}>
+                {busy && (
+                  <button className="btn ghost small" onClick={seatCmd('room.stop', p.name!)} title="Stop what it's doing: what it said so far stays in the thread, and you can ask it again">
+                    ■ Stop
+                  </button>
+                )}
+                <button className="btn ghost small" onClick={seatCmd('room.bench', p.name!, { on: !p.benched })} title={p.benched ? 'Back in the discussion: it hears what it missed when next asked' : 'Out of the discussion for now: nobody asks it, and its session rests (one at work finishes first)'}>
+                  {p.benched ? 'Bring back' : 'Bench'}
+                </button>
+                {hasScout && (
+                  <button className={`btn ghost small${p.scout ? ' on' : ''}`} onClick={seatCmd('room.scout', p.name!, { on: !p.scout })} title={p.scout ? 'Its scout is on: it may hand lookups to MetaHarness’s scout. Click to turn it off.' : 'Give it a scout: it may hand lookups to MetaHarness’s scout'}>
+                    🔍 scout{p.scout ? ' on' : ''}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         );
       })}
@@ -447,26 +510,49 @@ function Composer({ goal, room, to, setTo, replyTo, onClearReply, onCommand }: {
 
 const MODE_LABEL: Record<string, string> = { job: 'job', views: 'views', respond: 'respond', debate: 'debate', chain: 'chain', patch: 'patch' };
 
-function ThreadList({ goal, room, name, live, onRespond, onPin, onAnswer, onOpenCommit }: {
+function ThreadList({ goal, room, name, live, files, onRespond, onPin, onAnswer, onOpenCommit }: {
   goal: Goal;
   room: RoomView;
   name: (n: string) => ReactNode;
   live: boolean;
+  files: FileLinks;
   onRespond: (m: RoomMsg) => void;
   onPin: (t: string) => void;
   onAnswer: (n: string) => void;
   onOpenCommit: (sha: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
-  const bottom = useRef<HTMLDivElement>(null);
-  const [stuck, setStuck] = useState(true);
-  const count = room.messages.length + room.thread.length;
-  useEffect(() => {
-    if (stuck) bottom.current?.scrollIntoView({ block: 'end' });
-  }, [count, stuck, room.coordinating]);
+  // At the bottom, the thread follows what's said; scrolled up, it stays put.
+  const stuck = useRef(true);
+  useLayoutEffect(() => {
+    // Content grows after it lands (a "Show more" appears, an answer comes in, the panel narrows):
+    // follow any change in size, not just new messages, or it ends up short of the bottom and stops following.
+    const s = scroller.current!;
+    const follow = () => {
+      if (stuck.current) s.scrollTop = s.scrollHeight;
+    };
+    const ro = new ResizeObserver(follow);
+    const watch = () => {
+      ro.disconnect();
+      ro.observe(s);
+      for (const c of s.children) ro.observe(c);
+    };
+    const mo = new MutationObserver(() => {
+      watch();
+      follow();
+    });
+    mo.observe(s, { childList: true });
+    watch();
+    follow();
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, []);
   const working = goal.agents.filter(a => !a.quick && ['starting', 'working'].includes(a.state));
 
   const item = (it: ThreadItem, depth: number): ReactNode => {
+    if (it.kind === 'scout') return <ScoutLine key={`s-${it.name}`} run={it} files={files} />;
     if (it.kind === 'round') return <div key={`r${it.e.seq}`} className="thread-round">Round {String(it.e.data.round)} of {String(it.e.data.rounds)}</div>;
     if (it.kind === 'merged')
       return (
@@ -495,7 +581,7 @@ function ThreadList({ goal, room, name, live, onRespond, onPin, onAnswer, onOpen
     }
     return (
       <div key={it.m.id} className={depth ? 'thread-child' : undefined}>
-        <Message m={it.m} room={room} name={name} live={live} onRespond={onRespond} onPin={onPin} onAnswer={onAnswer} />
+        <Message m={it.m} room={room} name={name} live={live} files={files} onRespond={onRespond} onPin={onPin} onAnswer={onAnswer} />
         {it.children.length > 0 && <div className={`thread-children${depth >= 3 ? ' flat' : ''}`}>{it.children.map(c => item(c, depth + 1))}</div>}
       </div>
     );
@@ -507,8 +593,7 @@ function ThreadList({ goal, room, name, live, onRespond, onPin, onAnswer, onOpen
       ref={scroller}
       onScroll={() => {
         const s = scroller.current!;
-        const at = s.scrollHeight - s.scrollTop - s.clientHeight < 60;
-        if (at !== stuck) setStuck(at);
+        stuck.current = s.scrollHeight - s.scrollTop - s.clientHeight < 60;
       }}
     >
       <div className="card goal-start">
@@ -531,12 +616,46 @@ function ThreadList({ goal, room, name, live, onRespond, onPin, onAnswer, onOpen
         </div>
       ))}
       {!room.messages.length && <div className="empty">Ask the room something below. Nobody picked: the coordinator picks who answers.</div>}
-      <div ref={bottom} />
     </div>
   );
 }
 
-function Message({ m, room, name, live, onRespond, onPin, onAnswer }: { m: RoomMsg; room: RoomView; name: (n: string) => ReactNode; live: boolean; onRespond: (m: RoomMsg) => void; onPin: (t: string) => void; onAnswer: (n: string) => void }) {
+/** A lookup a seat handed its scout, under what the seat was answering; what it found opens on a click. */
+function ScoutLine({ run, files }: { run: ScoutRun; files: FileLinks }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="thread-scout">
+      🔍 <b>{run.seat}</b>’s scout {run.answer === undefined ? 'is looking' : 'looked'}: {oneLine(run.brief, 160)}
+      {run.answer !== undefined && (
+        <button className="btn ghost small" onClick={() => setOpen(o => !o)} aria-expanded={open}>
+          {open ? 'hide' : 'what it found'}
+        </button>
+      )}
+      {open && (
+        <div className="quote">
+          <Markdown text={run.answer!} files={files} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The shared files a message names, as chips that open them: its report stays a click away when the text is folded. */
+function FileChips({ text, files }: { text: string; files: FileLinks }) {
+  const named = filesNamed(text, files);
+  if (!named.length) return null;
+  return (
+    <div className="file-chips">
+      {named.map(p => (
+        <button key={p} className="file-chip" onClick={() => files.open(p)} title={`Read shared/${p} beside the room`}>
+          📄 {p}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Message({ m, room, name, live, files, onRespond, onPin, onAnswer }: { m: RoomMsg; room: RoomView; name: (n: string) => ReactNode; live: boolean; files: FileLinks; onRespond: (m: RoomMsg) => void; onPin: (t: string) => void; onAnswer: (n: string) => void }) {
   const [open, setOpen] = useState(false);
   if (m.kind === 'note') return <div className="thread-note">{oneLine(m.text, 600)}</div>;
   const toList = m.to.map(t => (t === 'human' ? 'you' : t === 'coordinator' ? '◆' : t)).join(', ');
@@ -585,7 +704,8 @@ function Message({ m, room, name, live, onRespond, onPin, onAnswer }: { m: RoomM
           <b className="coord-name">◆ back to you</b>
           <span className="t meta">{clock(m.ts)}</span>
         </div>
-        <Markdown text={m.text} />
+        <Markdown text={m.text} files={files} />
+        <FileChips text={m.text} files={files} />
       </div>
     );
   }
@@ -613,8 +733,9 @@ function Message({ m, room, name, live, onRespond, onPin, onAnswer }: { m: RoomM
           <span className="t meta">{clock(m.ts)}</span>
         </div>
         <More lines={3}>
-          <Markdown text={m.text} />
+          <Markdown text={m.text} files={files} />
         </More>
+        <FileChips text={m.text} files={files} />
       </div>
     );
   }
@@ -624,6 +745,7 @@ function Message({ m, room, name, live, onRespond, onPin, onAnswer }: { m: RoomM
       <div className="card-head">
         {name(m.from)}
         {m.kind === 'question' && <span className="mode-tag question">asks you</span>}
+        {m.stopped && <span className="mode-tag stopped" title="You stopped it here: this is what it had said">stopped</span>}
         {m.mode && MODE_LABEL[m.mode] && <span className={`mode-tag ${m.mode}`}>{m.mode}{m.round && m.mode === 'debate' ? ` · round ${m.round}` : ''}</span>}
         <span className="t meta">{clock(m.ts)}</span>
       </div>
@@ -632,8 +754,9 @@ function Message({ m, room, name, live, onRespond, onPin, onAnswer }: { m: RoomM
       ) : (
         <>
           <More lines={8}>
-            <Markdown text={m.text} />
+            <Markdown text={m.text} files={files} />
           </More>
+          <FileChips text={m.text} files={files} />
           {live && (
             <div className="msg-actions">
               {m.kind === 'question' ? (
@@ -797,7 +920,7 @@ function Board({ goal, room, live, events, onCommand, onOpenFile, onStartGoal, o
                 className="btn small"
                 disabled={!savingCast.trim()}
                 onClick={async () => {
-                  const cast = room.cast.map(({ role, on, responsibility, stance }) => ({ role, on, responsibility, stance }));
+                  const cast = room.cast.map(({ role, on, responsibility, stance, scout }) => ({ role, on, responsibility, stance, scout }));
                   if (await onCommand({ cmd: 'cast.save', name: savingCast.trim(), participants: cast })) setSavingCast(undefined);
                 }}
               >
