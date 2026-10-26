@@ -149,7 +149,7 @@ function Shell() {
     async (body: Record<string, unknown>) => {
       try {
         const r = await api.command(body);
-        if (typeof r.result === 'string' && !['agent.message', 'inbox.resolve', 'room.post', 'room.board', 'room.suggestion', 'room.open', 'room.add', 'room.coordinate'].includes(String(body.cmd))) say(r.result);
+        if (typeof r.result === 'string' && !['agent.message', 'inbox.resolve', 'room.post', 'room.canvas', 'room.lens', 'room.lensOff', 'room.stop'].includes(String(body.cmd))) say(r.result);
         if (body.cmd === 'agent.message') say('Sent.');
         void refresh();
         void loadGoals();
@@ -276,7 +276,7 @@ function Shell() {
           <div className="page">
             <div className="empty big">
               <div>
-                <b>Rooms</b> are discussions you lead: bring in a few agents (a scout, a designer, a reviewer, the same role on two models), ask them, compare their views and settle what to do. A patch job fixes small things on the room's own branch; a bigger plan becomes a goal.
+                <b>Rooms</b> are brainstorms: you talk with a lead agent, which keeps a canvas of questions, ideas, findings and decisions, and sends lenses (a scout, a designer, a reviewer, the same role on two models) to look into things meanwhile. A lens can fix small things on the room's own branch; a topic can branch into a room of its own; a bigger plan becomes a goal.
               </div>
               <button className="btn primary" onClick={() => setDialog({ kind: 'room' })}>
                 New room
@@ -341,7 +341,6 @@ function Shell() {
         <NewRoomDialog
           config={config}
           from={dialog.from}
-          initial={dialog.from ? { topic: dialog.from.kind === 'room' ? `Follow-up: ${dialog.from.topic?.split('\n')[0] ?? ''}` : dialog.from.topic, cast: dialog.from.cast } : undefined}
           onClose={() => setDialog(undefined)}
           onStart={startGoal}
           onCommand={async b => {

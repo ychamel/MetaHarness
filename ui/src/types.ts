@@ -269,14 +269,14 @@ export interface ConfigView {
   settings: { effective: Settings; files: { scope: Scope; dir: string; values: Partial<Settings> }[] };
   /** Every role runs on this harness instead (the daemon was started with --fake). */
   override: string | null;
-  /** Saved sets of participants for rooms (casts/<name>.md). */
+  /** Saved sets of lenses for rooms (casts/<name>.md). */
   casts: Cast[];
   responsibilities: ResponsibilityPreset[];
 }
 
-/** One seat in a room: a role, optionally on another harness/model, with a stance. */
-export interface Participant {
-  /** None: the seat is just a model. */
+/** A lens the room's lead may send: a role, optionally on another harness/model, with a stance. */
+export interface Lens {
+  /** None: the lens is just a model. */
   role?: string;
   name?: string;
   /** harness/model[@effort] instead of the role's own. */
@@ -284,13 +284,11 @@ export interface Participant {
   /** What it's for in this room. */
   responsibility?: string;
   stance?: string;
-  /** It may hand lookups to MetaHarness's scout. */
-  scout?: boolean;
-  /** Out of the discussion for now. */
-  benched?: boolean;
+  /** Put away: the lead can't send it. */
+  off?: boolean;
 }
 
-/** A responsibility to start a seat from. */
+/** A responsibility to start a lens from. */
 export interface ResponsibilityPreset {
   name: string;
   text: string;
@@ -300,18 +298,29 @@ export interface ResponsibilityPreset {
 export interface Cast {
   name: string;
   goodAt: string;
-  participants: Participant[];
+  participants: Lens[];
 }
 
-export type AskMode = 'ask' | 'job' | 'views' | 'respond' | 'debate' | 'chain' | 'patch';
-export type BoardKind = 'finding' | 'question' | 'decision' | 'file';
+export type CardKind = 'question' | 'idea' | 'finding' | 'risk' | 'decision';
 
-export interface BoardItem {
+/** A card on a room's canvas (src/rooms.ts). */
+export interface CanvasCard {
   id: string;
-  kind: BoardKind;
-  text: string;
+  kind: CardKind;
+  title: string;
+  text?: string;
+  refs?: string[];
+  status?: 'settled' | 'dropped';
   by: string;
-  closed?: boolean;
+  notes?: { by: string; text: string }[];
+  /** Rooms branched off from it. */
+  branches?: string[];
+}
+
+export interface CanvasLink {
+  from: string;
+  to: string;
+  label?: string;
 }
 
 export interface SharedFileView {
@@ -380,7 +389,7 @@ export interface Settings {
   approvals: ApprovalMode;
   gatekeeper: string;
   assistant: string;
-  coordinator: string;
+  roomLead: string;
   cacheReminders: boolean;
   cacheRemindSec: number;
   cacheRemindMinTokens: number;

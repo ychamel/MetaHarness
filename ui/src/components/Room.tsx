@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ConfigView, Goal, GoalSummary, MhEvent, Participant, Snapshot } from '../types.ts';
+import type { ConfigView, Goal, GoalSummary, Lens, MhEvent, Snapshot } from '../types.ts';
 import { ago, duration, money } from '../format.ts';
 import { Dialog, Field, Toggle, useConfirm } from './common.tsx';
-import { MessageDialog } from './Dialogs.tsx';
 import { AccountChips, harnessOf } from './Accounts.tsx';
 import { EFFORTS, type RoomView } from '../roomData.ts';
 
-/** Roles a room can seat: the team's, without the built-in side sessions. */
-export function seatRoles(config?: ConfigView): string[] {
+/** Roles a lens can be: the team's, without the built-in side sessions and the room lead. */
+export function lensRoles(config?: ConfigView): string[] {
   const s = config?.settings.effective;
-  const side = new Set([s?.gatekeeper, s?.assistant, s?.coordinator].filter(Boolean));
+  const side = new Set([s?.gatekeeper, s?.assistant, s?.roomLead].filter(Boolean));
   return [...new Set((config?.roles ?? []).map(r => r.name))].filter(n => !side.has(n));
 }
 
@@ -34,37 +33,37 @@ export function splitOn(on?: string): { harness: string; model: string; effort: 
 }
 const joinOn = (harness: string, model: string, effort: string) => (harness && model ? `${harness}/${model}${effort ? `@${effort}` : ''}` : undefined);
 
-/** A seat that's just a model needs a responsibility: it's all it's told. */
-export const seatProblem = (p: Participant) => (!p.role && !p.on ? 'Pick a model for this seat.' : !p.role && !p.responsibility?.trim() ? 'A seat that’s just a model needs a responsibility.' : '');
+/** A lens that's just a model needs a responsibility: it's all it's told. */
+export const lensProblem = (p: Lens) => (!p.role && !p.on ? 'Pick a model for this lens.' : !p.role && !p.responsibility?.trim() ? 'A lens that’s just a model needs a responsibility.' : '');
 
 /**
- * One seat: a role (or just a model), the harness, model and effort it runs on, what it's
+ * One lens: a role (or just a model), the harness, model and effort it runs on, what it's
  * responsible for in this room, and optionally a stance and a name.
  */
-export function SeatEditor({ seat, config, onChange, onRemove }: { seat: Participant; config?: ConfigView; onChange: (p: Participant) => void; onRemove?: () => void }) {
-  const roles = seatRoles(config);
-  const def = config?.roles.find(r => r.name === seat.role);
+export function LensEditor({ lens, config, onChange, onRemove }: { lens: Lens; config?: ConfigView; onChange: (p: Lens) => void; onRemove?: () => void }) {
+  const roles = lensRoles(config);
+  const def = config?.roles.find(r => r.name === lens.role);
   const models = useMemo(() => modelsByHarness(config), [config]);
   const presets = config?.responsibilities ?? [];
-  const own = splitOn(seat.on);
-  // A role seat shows its role's route until another is picked.
-  const harness = own.harness || (seat.role ? '' : [...models.keys()][0] ?? '');
+  const own = splitOn(lens.on);
+  // A role lens shows its role's route until another is picked.
+  const harness = own.harness || (lens.role ? '' : [...models.keys()][0] ?? '');
   const shownHarness = harness || def?.harness || '';
   const choices = [...new Set([...(models.get(shownHarness) ?? []), ...(own.model ? [own.model] : []), ...(def?.model && shownHarness === def.harness ? [def.model] : [])])];
-  const fallbackDefault = presets.find(r => r.roles.some(x => seat.role?.toLowerCase().includes(x)));
-  const [stanceOpen, setStanceOpen] = useState(!!seat.stance);
+  const fallbackDefault = presets.find(r => r.roles.some(x => lens.role?.toLowerCase().includes(x)));
+  const [stanceOpen, setStanceOpen] = useState(!!lens.stance);
   const setRoute = (h: string, m: string, e: string) => {
-    // Nothing picked on a role seat: it runs as its role says.
-    if (seat.role && !h && !m && !e) return onChange({ ...seat, on: undefined });
+    // Nothing picked on a role lens: it runs as its role says.
+    if (lens.role && !h && !m && !e) return onChange({ ...lens, on: undefined });
     const hh = h || def?.harness || '';
     const mm = m || (hh === def?.harness ? def?.model : '') || models.get(hh)?.[0] || '';
-    onChange({ ...seat, on: joinOn(hh, mm, e) });
+    onChange({ ...lens, on: joinOn(hh, mm, e) });
   };
-  const preset = presets.find(r => r.text === seat.responsibility);
+  const preset = presets.find(r => r.text === lens.responsibility);
   return (
-    <div className="seat-card">
-      <div className="seat-row">
-        <select value={seat.role ?? ''} onChange={e => onChange({ ...seat, role: e.target.value || undefined, ...(e.target.value ? {} : { on: seat.on ?? joinOn(shownHarness, choices[0] ?? '', '') }) })} aria-label="Role">
+    <div className="lens-card">
+      <div className="lens-row">
+        <select value={lens.role ?? ''} onChange={e => onChange({ ...lens, role: e.target.value || undefined, ...(e.target.value ? {} : { on: lens.on ?? joinOn(shownHarness, choices[0] ?? '', '') }) })} aria-label="Role">
           <option value="">Just a model</option>
           {roles.map(r => (
             <option key={r} value={r}>
@@ -73,7 +72,7 @@ export function SeatEditor({ seat, config, onChange, onRemove }: { seat: Partici
           ))}
         </select>
         <select value={harness} onChange={e => setRoute(e.target.value, '', own.effort)} aria-label="Harness">
-          {seat.role && <option value="">{def ? `${def.harness} (role’s)` : 'role’s harness'}</option>}
+          {lens.role && <option value="">{def ? `${def.harness} (role’s)` : 'role’s harness'}</option>}
           {[...models.keys()].map(h => (
             <option key={h} value={h}>
               {h}
@@ -81,7 +80,7 @@ export function SeatEditor({ seat, config, onChange, onRemove }: { seat: Partici
           ))}
         </select>
         <select value={own.model} onChange={e => setRoute(shownHarness, e.target.value, own.effort)} aria-label="Model">
-          {seat.role && <option value="">{def?.model ? `${def.model} (role’s)` : 'role’s model'}</option>}
+          {lens.role && <option value="">{def?.model ? `${def.model} (role’s)` : 'role’s model'}</option>}
           {choices.map(m => (
             <option key={m} value={m}>
               {m}
@@ -89,30 +88,30 @@ export function SeatEditor({ seat, config, onChange, onRemove }: { seat: Partici
           ))}
         </select>
         <select value={own.effort} onChange={e => setRoute(own.harness, own.model, e.target.value)} aria-label="Effort">
-          <option value="">{seat.role && def?.effort ? `${def.effort} (role’s)` : 'default effort'}</option>
+          <option value="">{lens.role && def?.effort ? `${def.effort} (role’s)` : 'default effort'}</option>
           {EFFORTS.map(x => (
             <option key={x} value={x}>
               {x}
             </option>
           ))}
         </select>
-        <input type="text" className="seat-name" value={seat.name ?? ''} onChange={e => onChange({ ...seat, name: e.target.value.trim() || undefined })} placeholder="name" aria-label="Name" />
+        <input type="text" className="lens-name" value={lens.name ?? ''} onChange={e => onChange({ ...lens, name: e.target.value.trim() || undefined })} placeholder="name" aria-label="Name" />
         {onRemove && (
-          <button className="btn ghost small" onClick={onRemove} aria-label="Remove this seat" title="Remove">
+          <button className="btn ghost small" onClick={onRemove} aria-label="Remove this lens" title="Remove">
             ×
           </button>
         )}
       </div>
-      <div className="seat-row second">
+      <div className="lens-row second">
         <select
-          value={preset?.name ?? (seat.responsibility ? 'custom' : '')}
+          value={preset?.name ?? (lens.responsibility ? 'custom' : '')}
           onChange={e => {
             const p = presets.find(r => r.name === e.target.value);
-            onChange({ ...seat, responsibility: p ? p.text : e.target.value === 'custom' ? (seat.responsibility ?? '') : undefined });
+            onChange({ ...lens, responsibility: p ? p.text : e.target.value === 'custom' ? (lens.responsibility ?? '') : undefined });
           }}
           aria-label="Responsibility"
         >
-          <option value="">{seat.role ? `Usual${fallbackDefault ? `: ${fallbackDefault.name}` : ''}` : 'Responsibility…'}</option>
+          <option value="">{lens.role ? `Usual${fallbackDefault ? `: ${fallbackDefault.name}` : ''}` : 'Responsibility…'}</option>
           {presets.map(r => (
             <option key={r.name} value={r.name}>
               {r.name}
@@ -122,93 +121,108 @@ export function SeatEditor({ seat, config, onChange, onRemove }: { seat: Partici
         </select>
         <input
           type="text"
-          value={seat.responsibility ?? ''}
-          onChange={e => onChange({ ...seat, responsibility: e.target.value || undefined })}
-          placeholder={seat.role ? (fallbackDefault?.text ?? 'What this seat is for here (the coordinator routes by it)') : 'Required: what this seat is for here'}
+          value={lens.responsibility ?? ''}
+          onChange={e => onChange({ ...lens, responsibility: e.target.value || undefined })}
+          placeholder={lens.role ? (fallbackDefault?.text ?? 'What this lens is for here (the lead picks lenses by it)') : 'Required: what this lens is for here'}
           aria-label="What it's responsible for"
-          className={!seat.role && !seat.responsibility?.trim() ? 'needed' : undefined}
+          className={!lens.role && !lens.responsibility?.trim() ? 'needed' : undefined}
         />
         {stanceOpen ? (
-          <input type="text" value={seat.stance ?? ''} onChange={e => onChange({ ...seat, stance: e.target.value || undefined })} placeholder="Stance, e.g. argue for the simplest fix" aria-label="Stance" autoFocus={!seat.stance} />
+          <input type="text" value={lens.stance ?? ''} onChange={e => onChange({ ...lens, stance: e.target.value || undefined })} placeholder="Stance, e.g. argue for the simplest fix" aria-label="Stance" autoFocus={!lens.stance} />
         ) : (
           <button className="btn ghost small" onClick={() => setStanceOpen(true)} title="How it should look at things, besides what it's for">
             + stance
           </button>
-        )}
-        {config?.roles.some(r => r.name === 'scout') && (
-          <label className="check small" title="It may hand lookups to MetaHarness's scout (a quick helper), keeping its own turn for the thinking">
-            <input type="checkbox" checked={!!seat.scout} onChange={e => onChange({ ...seat, scout: e.target.checked || undefined })} /> scout
-          </label>
         )}
       </div>
     </div>
   );
 }
 
-/** Starts a room: the topic, who's in it (from a saved cast or by hand), and whether they may talk to each other. */
-export function NewRoomDialog({ config, from, initial, onClose, onStart, onCommand }: {
+/** Where a new room starts from: a past room (or some of its cards), or a goal. */
+export interface RoomFrom {
+  id: string;
+  label: string;
+  kind: 'room' | 'goal';
+  topic?: string;
+  lenses?: Lens[];
+  /** Cards branched off a room's canvas. */
+  cards?: { id: string; title: string }[];
+}
+
+/** Starts a room: the topic, and the lenses its lead may send (from a saved cast or by hand). */
+export function NewRoomDialog({ config, from, onClose, onStart, onCommand }: {
   config?: ConfigView;
-  /** A room or goal the new room carries on from. */
-  from?: { id: string; label: string; kind: 'room' | 'goal' };
-  initial?: { topic?: string; cast?: Participant[] };
+  from?: RoomFrom;
   onClose: () => void;
   onStart: (b: Record<string, unknown>) => Promise<boolean>;
   onCommand: (b: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>;
 }) {
-  const roles = seatRoles(config);
+  const roles = lensRoles(config);
   const casts = config?.casts ?? [];
-  const firstRole = (want: string[]) => want.find(r => roles.includes(r)) ?? roles[0];
-  const [topic, setTopic] = useState(initial?.topic ?? '');
-  const [cast, setCast] = useState<Participant[]>(() => initial?.cast?.map(({ role, on, responsibility, stance, scout }) => ({ role, on, responsibility, stance, scout })) ?? [firstRole(['scout', 'explorer']), firstRole(['designer', 'architect'])].filter((r, i, a): r is string => !!r && a.indexOf(r) === i).map(role => ({ role })));
-  const [open, setOpen] = useState(false);
+  const firstRole = (want: string[]) => want.find(r => roles.includes(r));
+  const branching = !!from?.cards?.length;
+  const [topic, setTopic] = useState(
+    () => (branching ? from!.cards!.map(c => c.title).join('; ') : from?.kind === 'room' ? `Follow-up: ${from.topic?.split('\n')[0] ?? ''}` : (from?.topic ?? '')),
+  );
+  const [lenses, setLenses] = useState<Lens[]>(
+    () =>
+      from?.lenses?.map(({ role, name, on, responsibility, stance }) => ({ role, name, on, responsibility, stance })) ??
+      [firstRole(['scout', 'explorer']), firstRole(['designer', 'architect']), firstRole(['reviewer'])].filter((r, i, a): r is string => !!r && a.indexOf(r) === i).map(role => ({ role })),
+  );
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState<string>();
+  const lead = config?.roles.find(r => r.name === config.settings.effective.roomLead);
   const start = async () => {
     if (!topic.trim() || busy) return;
     setBusy(true);
-    const ok = await onStart({ cmd: 'room.start', topic: topic.trim(), cast: cast.filter(p => p.role), open, from: from?.id });
+    const ok = await onStart({ cmd: 'room.start', topic: topic.trim(), lenses, from: from?.id, ...(branching ? { cards: from!.cards!.map(c => c.id) } : {}) });
     setBusy(false);
     if (ok) onClose();
   };
   return (
-    <Dialog title={from ? `New room from this ${from.kind}` : 'New room'} onClose={onClose} wide>
+    <Dialog title={branching ? 'Branch into a new room' : from ? `New room from this ${from.kind}` : 'New room'} onClose={onClose} wide>
       <div className="dialog-body muted small">
-        You lead: ask the participants, compare their views, settle what to do. They read the code; a patch job lets one change it on the room's own branch, which you merge at the end.
-        {from && (
+        You talk with the lead{lead ? ` (${lead.harness} · ${lead.model})` : ''}; it keeps the canvas and sends lenses to look into things. They read the code; a patch job lets one fix something on the room's own branch, which you merge.
+        {branching ? (
           <>
             {' '}
-            It starts with what <b>{from.label}</b> found on its board.
+            The new room starts with {from!.cards!.length > 1 ? 'these cards' : 'this card'} from <b>{from!.label}</b>, and the cards linked to {from!.cards!.length > 1 ? 'them' : 'it'}.
           </>
+        ) : (
+          from && (
+            <>
+              {' '}
+              It starts with what <b>{from.label}</b> {from.kind === 'room' ? 'has on its canvas' : 'came to'}.
+            </>
+          )
         )}
       </div>
-      <Field label="What to discuss">
+      <Field label="What to talk about">
         <textarea autoFocus rows={3} value={topic} onChange={e => setTopic(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && void start()} placeholder="e.g. Creatures die at the map edge: why, and what's the cleanest fix?" />
       </Field>
-      <Field
-        label="Participants"
-        hint="Each seat starts when you first address it. Run a role on another model to hear a second view from the same role."
-      >
+      <Field label="Lenses the lead can send" hint="Each starts the first time the lead sends it, and keeps what it learnt. Run a role on another model for a second view. You can add more in the room.">
         <div className="seats">
           {casts.length > 0 && (
             <div className="row start">
               <span className="muted small">Cast:</span>
               {casts.map(c => (
-                <button key={c.name} className="btn small" title={c.goodAt || c.participants.map(p => p.role ?? p.on).join(', ')} onClick={() => setCast(c.participants.map(p => ({ ...p })))}>
+                <button key={c.name} className="btn small" title={c.goodAt || c.participants.map(p => p.role ?? p.on).join(', ')} onClick={() => setLenses(c.participants.map(p => ({ ...p })))}>
                   {c.name}
                 </button>
               ))}
             </div>
           )}
-          {cast.map((p, i) => (
-            <SeatEditor key={i} seat={p} config={config} onChange={n => setCast(cs => cs.map((x, j) => (j === i ? n : x)))} onRemove={() => setCast(cs => cs.filter((_, j) => j !== i))} />
+          {lenses.map((p, i) => (
+            <LensEditor key={i} lens={p} config={config} onChange={n => setLenses(cs => cs.map((x, j) => (j === i ? n : x)))} onRemove={() => setLenses(cs => cs.filter((_, j) => j !== i))} />
           ))}
           <div className="row start">
-            <button className="btn small" onClick={() => setCast(cs => [...cs, { role: firstRole(['reviewer']) ?? '' }])} disabled={!roles.length}>
-              + Seat
+            <button className="btn small" onClick={() => setLenses(cs => [...cs, { role: firstRole(['reviewer']) ?? roles[0] }])} disabled={!roles.length}>
+              + Lens
             </button>
-            {cast.length > 0 &&
+            {lenses.length > 0 &&
               (saving === undefined ? (
-                <button className="btn ghost small" onClick={() => setSaving('')} title="Save these seats as a cast to pick next time">
+                <button className="btn ghost small" onClick={() => setSaving('')} title="Save these lenses as a cast to pick next time">
                   Save as a cast…
                 </button>
               ) : (
@@ -218,7 +232,7 @@ export function NewRoomDialog({ config, from, initial, onClose, onStart, onComma
                     className="btn small"
                     disabled={!saving.trim()}
                     onClick={async () => {
-                      if (await onCommand({ cmd: 'cast.save', name: saving.trim(), participants: cast })) setSaving(undefined);
+                      if (await onCommand({ cmd: 'cast.save', name: saving.trim(), participants: lenses })) setSaving(undefined);
                     }}
                   >
                     Save
@@ -228,14 +242,13 @@ export function NewRoomDialog({ config, from, initial, onClose, onStart, onComma
           </div>
         </div>
       </Field>
-      <Toggle checked={open} onChange={setOpen} label="Open discussion" hint="Participants message each other directly and the coordinator only watches. Off (the default): the coordinator decides who goes next, and routes what you don't address to anyone." />
       <div className="row end">
         <span className="muted kbd-hint">Ctrl+Enter to start</span>
         <button className="btn" onClick={onClose}>
           Cancel
         </button>
-        {cast.some(seatProblem) && <span className="warn-text small">{cast.map(seatProblem).find(Boolean)}</span>}
-        <button className="btn primary" disabled={!topic.trim() || busy || cast.some(seatProblem)} onClick={() => void start()}>
+        {lenses.some(lensProblem) && <span className="warn-text small">{lenses.map(lensProblem).find(Boolean)}</span>}
+        <button className="btn primary" disabled={!topic.trim() || busy || lenses.some(lensProblem)} onClick={() => void start()}>
           {busy ? 'Opening…' : 'Open the room'}
         </button>
       </div>
@@ -252,14 +265,19 @@ interface HeaderProps {
   connected: boolean;
   onGoal: (id: string) => void;
   onNewRoom: () => void;
+  /** A new room that starts with this one's canvas. */
+  onRoomFromThis: () => void;
+  /** A goal that carries out what the room settled. */
+  onStartGoal: () => void;
+  /** Opens the design the room wrote. */
+  onDesign: () => void;
   onAllRooms: () => void;
   onCommand: (body: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>;
 }
 
-/** The room's header: which room, how it's going, its branch, and merging or ending it. */
-export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onGoal, onNewRoom, onAllRooms, onCommand }: HeaderProps) {
+/** The room's header: which room, its branch, and where it goes from here: a design, a goal, another room, merging, ending. */
+export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onGoal, onNewRoom, onRoomFromThis, onStartGoal, onDesign, onAllRooms, onCommand }: HeaderProps) {
   const confirm = useConfirm();
-  const [messaging, setMessaging] = useState(false);
   const [ending, setEnding] = useState(false);
   const live = goal.live && goal.status !== 'ended';
   const agents = goal.agents;
@@ -268,6 +286,8 @@ export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onG
   const allPaused = live && paused > 0 && paused >= active;
   const end = events.find(e => e.type === 'goal.ended');
   const took = live ? `open ${duration(goal.createdAt)}` : end ? `took ${duration(goal.createdAt, new Date(end.ts).getTime())}` : `started ${ago(goal.createdAt)}`;
+  const hasDesign = events.some(e => e.type === 'shared.write' && e.data.path === 'room/design.md');
+  const shared = goal.sharedDir.endsWith('/') ? goal.sharedDir : `${goal.sharedDir}/`;
   return (
     <header className="goal-header compact">
       <div className="goal-title-row">
@@ -277,11 +297,10 @@ export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onG
         <RoomSwitcher rooms={rooms} goal={goal} onGoal={onGoal} onNewRoom={onNewRoom} onAllRooms={onAllRooms} />
         <div className="goal-meta">
           <span className={`pill ${live ? 'running' : 'ended'}`}>{live ? 'open' : 'ended'}</span>
-          {live && <span title={room.open ? 'Participants talk to each other; the coordinator watches' : 'The coordinator decides who goes next'}>{room.open ? 'open discussion' : 'moderated'}</span>}
           <span>{took}</span>
-          {goal.cost != null && <span title="Cost reported by the harnesses, the coordinator's included">{money(goal.cost)}</span>}
+          {goal.cost != null && <span title="Cost reported by the harnesses: the lead and its lenses">{money(goal.cost)}</span>}
           <span>
-            {room.cast.length} seat{room.cast.length === 1 ? '' : 's'}
+            {room.lenses.length} lens{room.lenses.length === 1 ? '' : 'es'}
           </span>
           {goal.roomBranch && (
             <span className="mono" title={room.ahead ? `${room.ahead} commit${room.ahead > 1 ? 's' : ''} on the room's branch that ${goal.branch ?? 'your branch'} doesn't have yet` : "The room's branch: patch jobs commit here"}>
@@ -298,6 +317,26 @@ export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onG
           )}
         </div>
         <div className="goal-actions">
+          {hasDesign && (
+            <button className="btn ghost" onClick={onDesign} title="Read the design the room wrote">
+              design.md
+            </button>
+          )}
+          {live && room.cards.length > 0 && (
+            <button
+              className="btn ghost"
+              onClick={() => void onCommand({ cmd: 'room.post', goal: goal.id, text: `Write the design for a goal to carry out, as ${shared}room/design.md: the problem, what we decided and why, the plan in steps, what to test, and the risks still open. Work from the canvas and the chat, or send a lens to write it.` })}
+              title="Ask the lead to write room/design.md from the canvas"
+            >
+              Write the design
+            </button>
+          )}
+          <button className="btn ghost" onClick={onStartGoal} title="A goal that carries out what the room settled; its lead reads the canvas and the design">
+            → Goal
+          </button>
+          <button className="btn ghost" onClick={onRoomFromThis} title="A new room that starts with this canvas (to branch off a few cards, pick them on the canvas)">
+            New room from this
+          </button>
           {live && (
             <>
               {room.ahead > 0 && (
@@ -312,11 +351,8 @@ export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onG
                   ⤵ Merge
                 </button>
               )}
-              <button className="btn" onClick={() => setMessaging(true)} title="Message one participant directly, outside the thread">
-                ✉ Message
-              </button>
               {agents.length > 0 && (
-                <button className="btn" onClick={() => void onCommand({ cmd: allPaused ? 'goal.resume' : 'goal.pause', goal: goal.id })} title={allPaused ? '' : 'Every participant stops after its current step'}>
+                <button className="btn" onClick={() => void onCommand({ cmd: allPaused ? 'goal.resume' : 'goal.pause', goal: goal.id })} title={allPaused ? '' : 'The lead and every lens stop after their current step'}>
                   {allPaused ? '▶ Resume all' : '⏸ Pause all'}
                 </button>
               )}
@@ -327,7 +363,6 @@ export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onG
           )}
         </div>
       </div>
-      {messaging && <MessageDialog goal={goal} onClose={() => setMessaging(false)} onSend={async b => !!(await onCommand(b))} />}
       {ending && <EndRoomDialog goal={goal} room={room} onClose={() => setEnding(false)} onCommand={onCommand} />}
     </header>
   );
@@ -342,7 +377,7 @@ function EndRoomDialog({ goal, room, onClose, onCommand }: { goal: Goal; room: R
   return (
     <Dialog title="End this room?" onClose={onClose}>
       <div className="dialog-body">
-        <p>Every participant stops. The thread, the board and the shared folder stay, and a new room can start from this one.</p>
+        <p>The lead and its lenses stop. The chat, the canvas and the shared folder stay, and a new room can start from this one.</p>
         {room.ahead > 0 && (
           <p>
             <b>

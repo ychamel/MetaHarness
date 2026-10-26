@@ -22,7 +22,7 @@ export interface Config {
   mcp: Map<string, McpServerDef>;
   /** From languages/: how the Design view reads each kind of file (src/languages.ts). */
   languages: Map<string, LanguagePack>;
-  /** From casts/: saved sets of participants for discussion rooms. */
+  /** From casts/: saved sets of lenses for brainstorm rooms. */
   casts: Map<string, Cast>;
   settings: Settings;
 }
@@ -106,7 +106,7 @@ export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string
   // Approvals need a judge, and the app an assistant, even when nobody wrote one.
   if (!cfg.roles.has(cfg.settings.gatekeeper)) cfg.roles.set(cfg.settings.gatekeeper, { ...BUILTIN_GATEKEEPER, name: cfg.settings.gatekeeper });
   if (!cfg.roles.has(cfg.settings.assistant)) cfg.roles.set(cfg.settings.assistant, { ...BUILTIN_ASSISTANT, name: cfg.settings.assistant });
-  if (!cfg.roles.has(cfg.settings.coordinator)) cfg.roles.set(cfg.settings.coordinator, { ...BUILTIN_COORDINATOR, name: cfg.settings.coordinator });
+  if (!cfg.roles.has(cfg.settings.roomLead)) cfg.roles.set(cfg.settings.roomLead, { ...BUILTIN_ROOM_LEAD, name: cfg.settings.roomLead });
   return cfg;
 }
 
@@ -207,35 +207,23 @@ const BUILTIN_GATEKEEPER: Role = {
   file: '(built in)',
 };
 
-export const COORDINATOR_INSTRUCTIONS = `You coordinate a discussion room in MetaHarness: a human leads a few AI agents (different roles
-and providers, each seat with a responsibility) through a question about their code. You never
-answer the question yourself. Everyone reads the thread; you decide who speaks:
+export const ROOM_LEAD_INSTRUCTIONS = `You lead a brainstorm room in MetaHarness: you talk with the human, keep the room's canvas, and
+send lenses (other agents the human set up) to look into things for you.
 
-- When the human asks the room without picking anyone, you route it: pick the seat (or seats, or
-  a chain of them) whose responsibility fits, and say why in one short line.
-- After answers come in, you decide one next step: hand back to the human (the question is
-  answered, only they can decide, or nothing new is coming), forward an answer to someone who
-  should check or build on it (weigh a "→ name" line at its end), have seats that disagree
-  respond to each other, or just note the facts. Prefer handing back over keeping agents talking
-  when they only agree.
-- Each time, say where it's going: "converging" (questions are closing, a result is forming),
-  "developing" (new findings are coming in), or "drifting" (off the question, or in circles),
-  with one short line that names the specifics.
-- Keep the board: findings (facts established, with where in the code), open questions,
-  decisions, and files (reports and designs written). Close answered questions; fix or remove
-  what proved wrong. One line each; don't repeat what's there.
+You're a sharp, friendly colleague at a whiteboard. You think out loud briefly, ask good
+questions, offer options with their trade-offs, and say plainly what you don't know yet. You keep
+the conversation moving: short replies, one question at a time, no long lectures. You notice when
+the talk splits into separate topics, and when something is settled.`;
 
-You only read. Answer with the JSON object you're asked for, nothing else.`;
-
-/** A room's coordinator when the configuration has no role by that name: a cheap model with backups. */
-const BUILTIN_COORDINATOR: Role = {
-  name: 'coordinator',
-  harness: 'codex',
-  model: 'gpt-6-luna',
-  fallback: ['claude-code/sonnet', 'antigravity/gemini-3.8-flash-high'],
-  goodAt: "deciding who speaks in a discussion room, and keeping its board",
-  instructions: COORDINATOR_INSTRUCTIONS,
-  helper: true,
+/** A room's lead when the configuration has no role by that name: a model that talks well and fast, with backups. */
+const BUILTIN_ROOM_LEAD: Role = {
+  name: 'room-lead',
+  harness: 'antigravity',
+  model: 'gemini-3.8-flash-medium',
+  fallback: ['claude-code/sonnet', 'codex/gpt-6-luna'],
+  goodAt: 'talking a brainstorm through with the human, keeping its canvas, and sending lenses',
+  instructions: ROOM_LEAD_INSTRUCTIONS,
+  helper: false,
   allow: [],
   autoApprove: 'read-only',
   mcp: [],

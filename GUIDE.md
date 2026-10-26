@@ -441,56 +441,49 @@ The terminal can do all of this too:
 - `mh spawn <role> "<brief>"`, `mh open <agent>`
 - `mh respawn <agent> [note] [--fresh] [--on <harness/model>]`
 
-### Rooms: discussions you lead
+### Rooms: brainstorms with a lead
 
-A room is for exploring a bug, understanding part of the code, or choosing what to do, with a
-few agents you pick, before (or after) a goal. **+ New room** (Rooms, Home, or a room's header):
-what to discuss, and the seats. A seat is a role or **just a model**; its harness, model and
-effort are picked from three lists (a role uses its own unless you pick others). Each seat has a
-**responsibility**, what it's for here (start from Gather, Investigate, Big picture, Review,
-Ideas or Patch and edit it; a model-only seat must have one), and optionally a **stance** ("look
-for what breaks"). Pick a saved **cast** or save the seats as one. A seat starts the first time
-it's asked something.
+A room is for exploring a bug, understanding part of the code, or working out a design, before
+(or after) a goal. You talk with one agent, the room's **lead**, and it does two other things
+while you talk: it keeps a **canvas** of the discussion, and it sends **lenses** (other agents
+you set up) to look into things for it. **+ New room** (Rooms, Home, or a room's header): what
+to talk about, and the lenses.
 
-- **The canvas:** you in the middle, the seats around you (their responsibility, what each is
-  doing now and its last answer), the coordinator below. Lines show who is working for whom and
-  what was just said.
-  - **Click** a seat to address your next message to it; **shift-click** adds more; click
-    yourself to clear. Nobody picked: **the coordinator picks** who answers.
-  - **Drag** one seat onto another: that one responds to the first's last answer.
-  - **Double-click** a seat to open its panel.
-  - A seat's buttons (on hover): **■ Stop** while it works stops what it's doing; what it said
-    so far stays in the thread as its answer (marked *stopped*), and you can ask it again
-    straight away. **Bench** takes it out of the discussion: nobody asks it and its session
-    rests (one at work finishes first); **Bring back** returns it, and it hears what it missed.
-    **🔍 scout** lets it hand lookups to the scout role while it does the thinking (also a
-    switch in the seat editor; needs a role called `scout`).
-- **How to ask** (under the canvas): **Ask**, **Job** (go and find out, then report), **Views**
-  (each answers on their own; shown together), **Debate** (rounds), **Chain** (one after
-  another, in the order you clicked them), **Patch** (one seat changes the code on the room's
-  branch and commits). **↩ Respond** on an answer, in the thread, has someone respond to it.
-- **The coordinator** decides who goes next. It routes what you didn't address, splitting a
-  question in parts when they need different seats (e.g. the scout finds what changed while the
-  reviewer checks the tests, then the designer judges it with both answers): parts that don't
-  need each other run at the same time, the rest wait for what they need. After the
-  answers come in it hands back to you (◆ back to you, with a summary), passes an answer to a
-  seat to check or build on, has two who disagree respond to each other, or just notes the facts.
-  Agents can end an answer with `→ name: why` to suggest who goes next. It says how the
-  discussion is going (converging, developing, drifting), keeps the **Board**, and ↻ makes it
-  look again. Its role is in Settings → Room coordinator (Codex luna by default).
-- **Thread** (beside the canvas): your messages, the coordinator's ◆ lines, and each answer
-  nested under what it answers. What you send a participant from its panel shows here too.
-  Agents keep answers short and put the details in a report in the shared folder: a file named
-  in the thread is a link (and a 📄 chip under the message) that opens it beside the room, in
-  place of the thread; **←** or **Esc** goes back. A seat's scout lookups show under what it was
-  answering ("what it found" opens the answer).
-- **Open discussion** (off by default): participants message each other directly, and the
-  coordinator only watches. Off, what they'd send each other goes to the coordinator.
-- **Where it goes** (on the Board tab): **Write the design** has the big-picture seat write
-  `room/design.md`; **Start a goal from this** points the goal's lead at the board, the design
-  and the thread; **New room from this** starts a fresh room with this board. **⤵ Merge**
-  brings the room's patches into your branch (the cartographer then maps them); **End room**
-  keeps or discards patches you didn't merge.
+- **Lenses** are a role or **just a model**; the harness, model and effort are picked from three
+  lists (a role uses its own unless you pick others). Each has a **responsibility**, what it's
+  for here (start from Gather, Investigate, Big picture, Review, Ideas or Patch and edit it; a
+  model-only lens must have one), and optionally a **stance** ("look for what breaks"). Pick a
+  saved **cast** or save the lenses as one. The lead picks which lens to send; a lens starts the
+  first time it's sent and keeps what it learnt for the next ask.
+- **The chat** (left): you and the lead. Its replies are short; when something needs looking
+  into, it sends a lens, says so in a line (**→ scout** …), and keeps talking with you. A
+  lens's answer shows as a line (**↩ scout** …; click to read all of it) and wakes the lead,
+  which tells you what changed. **■ Stop** (beside the lead's name) cuts its turn short. A
+  shared file named in the chat (a report, the design) is a link and a 📄 chip that opens it in
+  the chat's place; **←** or **Esc** goes back. The lead runs on Antigravity's Gemini 3.8 Flash
+  by default (Claude Sonnet as its backup): Settings → Room lead.
+- **The lenses** (over the canvas): what each is for and doing. **■** stops one at work (what
+  it found so far goes to the lead), **⏻** puts one away so the lead can't send it (**↺**
+  brings it back), **+ Lens** adds one.
+- **The canvas:** cards in columns by kind (**questions**, **ideas**, **findings**, **risks**,
+  **decided**), with arrows for how they relate (an idea answers a question, a finding rules an
+  idea out). The lead and the lenses add and update them as you talk; new cards glow for a few
+  seconds. **Click** a card to read it (its detail, files, notes and links; its neighbours
+  light up); **shift-click** picks more. With cards picked: **Ask about it** (your next message
+  is about that card), **⑂ Branch** (a room of its own for that topic, starting with those cards
+  and the ones linked to them; the card shows where it branched), **✓ Settle**, **✗ Drop**,
+  **⟶ Link** (two cards). **+ Card** adds one yourself; ✎ edits one. Only you decide: the lead
+  puts a card under *Decided* when you agreed to it.
+- **Fixing on the go:** ask for a small fix and the lead sends a lens with a patch job; it
+  changes the code on the room's own branch and commits. **⤵ Merge** (header) brings the
+  room's patches into your branch, and the cartographer maps them.
+- **Where it goes** (header): **Write the design** has the lead write `room/design.md` from the
+  canvas; **→ Goal** points a goal's lead at the canvas, the design and the chat; **New room
+  from this** starts a fresh room with this canvas; **End room** keeps or discards patches you
+  didn't merge.
+- Rooms open with the team and agent columns put away (the lens bar and the chat show the
+  same); click a name to slide its panel in, or bring the columns back with the toggles at the
+  top right. Rooms remember this apart from goals.
 - A room lasts one sitting: after a daemon restart, start a new room from it.
 
 ## 7. What agents can and can't do

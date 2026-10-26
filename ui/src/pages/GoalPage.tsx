@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { ago, BUSY, duration, money } from '../format.ts';
-import type { ConfigView, Goal, GoalSummary, MhEvent, Participant, Snapshot } from '../types.ts';
+import type { ConfigView, Goal, GoalSummary, MhEvent, Snapshot } from '../types.ts';
 import { TeamTree } from '../components/TeamTree.tsx';
 import { ACTIONABLE, NeedsYou, Updates } from '../components/Inbox.tsx';
 import { AgentDetail } from '../components/AgentDetail.tsx';
@@ -13,7 +13,7 @@ import { Files } from '../views/Files.tsx';
 import { Activity } from '../views/Activity.tsx';
 import type { GitSel } from '../views/Git.tsx';
 import type { DesignNav } from '../views/Design.tsx';
-import { RoomHeader } from '../components/Room.tsx';
+import { RoomHeader, type RoomFrom } from '../components/Room.tsx';
 import { roomOf } from '../roomData.ts';
 
 // The flow views pull in React Flow; load them when first opened.
@@ -23,7 +23,7 @@ const Timeline = lazy(() => import('../views/Timeline.tsx'));
 const Costs = lazy(() => import('../views/Costs.tsx'));
 const Design = lazy(() => import('../views/Design.tsx'));
 const Git = lazy(() => import('../views/Git.tsx'));
-const Thread = lazy(() => import('../views/Thread.tsx'));
+const RoomView = lazy(() => import('../views/RoomView.tsx'));
 
 export type GoalTab = 'thread' | 'story' | 'design' | 'git' | 'files' | 'graph' | 'sequence' | 'timeline' | 'costs' | 'log';
 const TABS: [GoalTab, string, string][] = [
@@ -37,43 +37,42 @@ const TABS: [GoalTab, string, string][] = [
   ['costs', 'Costs', 'Where the money went, by agent, role, model and kind of token'],
   ['log', 'Log', 'Every event, as it happened'],
 ];
-/** A room's tabs: its thread first, where a goal has its story; the rest as for a goal. */
-const ROOM_TABS: [GoalTab, string, string][] = [['thread', 'Room', 'The room: who is in it and what they are doing, the thread, the board, and asking'], ...TABS.filter(([t]) => t !== 'story')];
+/** A room's tabs: the room first, where a goal has its story; the rest as for a goal. */
+const ROOM_TABS: [GoalTab, string, string][] = [['thread', 'Room', 'The room: the chat with its lead, the canvas, and the lenses'], ...TABS.filter(([t]) => t !== 'story')];
 
-/** Where a new room starts from, and what it's seeded with. */
-export interface RoomFrom {
-  id: string;
-  label: string;
-  kind: 'room' | 'goal';
-  topic?: string;
-  cast?: Participant[];
-}
+export type { RoomFrom };
 
 /**
  * Parts of the goal page put away to give the tabs more room: the same on every tab, so switching
  * tabs never moves the page. Kept in the browser. With the agent's column put away, an agent
- * picked slides in over the page.
+ * picked slides in over the page. Rooms keep their own: they start with the team and the agent
+ * put away, since the lens bar and the chat with the lead show them already.
  */
 type Room = { team?: boolean; header?: boolean; agent?: boolean };
-const ROOM_KEY = 'mh.goal.panes';
+type PageKind = 'goal' | 'room';
+const ROOM_KEYS: Record<PageKind, string> = { goal: 'mh.goal.panes', room: 'mh.room.panes' };
+const ROOM_DEFAULTS: Record<PageKind, Room> = { goal: {}, room: { team: true, agent: true } };
 
-function useRoom(): [Room, (r: Room) => void] {
-  const [room, setRoom] = useState<Room>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(ROOM_KEY) ?? '{}');
-    } catch {
-      return {};
-    }
-  });
+function readRoom(kind: PageKind): Room {
+  try {
+    const saved = localStorage.getItem(ROOM_KEYS[kind]);
+    return saved ? JSON.parse(saved) : ROOM_DEFAULTS[kind];
+  } catch {
+    return ROOM_DEFAULTS[kind];
+  }
+}
+
+function useRoom(kind: PageKind): [Room, (r: Room) => void] {
+  const [rooms, setRooms] = useState<Record<PageKind, Room>>(() => ({ goal: readRoom('goal'), room: readRoom('room') }));
   const set = (r: Room) => {
-    setRoom(r);
+    setRooms(all => ({ ...all, [kind]: r }));
     try {
-      localStorage.setItem(ROOM_KEY, JSON.stringify(r));
+      localStorage.setItem(ROOM_KEYS[kind], JSON.stringify(r));
     } catch {
       // Kept for this visit only.
     }
   };
-  return [room, set];
+  return [rooms[kind], set];
 }
 
 interface Props {
@@ -110,7 +109,7 @@ export function GoalPage(p: Props) {
   const { goal, snapshot, events } = p;
   const isRoom = goal?.kind === 'room';
   const roomView = useMemo(() => (isRoom ? roomOf(events, goal?.roomBranch ?? null) : undefined), [isRoom, events, goal?.roomBranch]);
-  // A room has a thread where a goal has a story.
+  // A room has its room tab (kept as "thread" in links) where a goal has a story.
   const tab: GoalTab = isRoom && p.tab === 'story' ? 'thread' : !isRoom && p.tab === 'thread' ? 'story' : p.tab;
   const inbox = useMemo(() => (snapshot?.inbox ?? []).filter(i => i.goal === goal?.id), [snapshot, goal?.id]);
   const needs = inbox.filter(i => ACTIONABLE.includes(i.kind));
@@ -124,14 +123,14 @@ export function GoalPage(p: Props) {
   };
   // Where the Design view is (its scope, area and focus) outlasts switching tabs, not goals.
   const [designNav, setDesignNav] = useState<DesignNav>({});
-  const [room, setRoom] = useRoom();
+  const [room, setRoom] = useRoom(isRoom ? 'room' : 'goal');
   // With its column put away, an agent picked slides in over the tab; the graph shows it in its own side panel instead.
   const [drawer, setDrawer] = useState(false);
   const onAgent = (name?: string) => {
     if (room.agent && name && tab !== 'graph') setDrawer(true);
     p.onAgent(name);
   };
-  // The graph and a room's thread read a shared file in their side panel; elsewhere it opens in the Files tab.
+  // The graph and a room read a shared file in their side panel; elsewhere it opens in the Files tab.
   const openFile = (path: string) => {
     p.onFile(path);
     if (tab !== 'graph' && tab !== 'thread') p.onTab('files');
@@ -194,7 +193,21 @@ export function GoalPage(p: Props) {
     <div className={`goal-page${room.header ? ' no-header' : ''}`}>
       {!room.header &&
         (isRoom && roomView ? (
-          <RoomHeader rooms={p.rooms} goal={goal} room={roomView} events={events} snapshot={snapshot} connected={p.connected} onGoal={p.onGoal} onNewRoom={() => p.onNewRoom()} onAllRooms={p.onAllRooms} onCommand={p.onCommand} />
+          <RoomHeader
+            rooms={p.rooms}
+            goal={goal}
+            room={roomView}
+            events={events}
+            snapshot={snapshot}
+            connected={p.connected}
+            onGoal={p.onGoal}
+            onNewRoom={() => p.onNewRoom()}
+            onRoomFromThis={() => p.onNewRoom({ id: goal.id, label: goal.request.split('\n')[0], kind: 'room', topic: goal.request, lenses: roomView.lenses })}
+            onStartGoal={() => p.onGoalFromRoom(goal.id, goal.request)}
+            onDesign={() => openFile('room/design.md')}
+            onAllRooms={p.onAllRooms}
+            onCommand={p.onCommand}
+          />
         ) : (
           <GoalHeader {...p} goal={goal} events={events} />
         ))}
@@ -245,7 +258,7 @@ export function GoalPage(p: Props) {
           <ErrorBoundary resetKey={`${goal.id}/${tab}`}>
           <Suspense fallback={<div className="empty">Loading…</div>}>
             {tab === 'thread' && roomView && (
-              <Thread
+              <RoomView
                 goal={goal}
                 events={events}
                 room={roomView}
@@ -256,8 +269,8 @@ export function GoalPage(p: Props) {
                 file={p.file}
                 onFile={p.onFile}
                 onFilesTab={() => p.onTab('files')}
-                onStartGoal={() => p.onGoalFromRoom(goal.id, goal.request)}
-                onNewRoom={() => p.onNewRoom({ id: goal.id, label: goal.request.split('\n')[0], kind: 'room', topic: goal.request, cast: roomView.cast })}
+                onBranch={cards => p.onNewRoom({ id: goal.id, label: goal.request.split('\n')[0], kind: 'room', topic: goal.request, lenses: roomView.lenses, cards: cards.map(c => ({ id: c.id, title: c.title })) })}
+                onRoom={p.onGoal}
               />
             )}
             {tab === 'story' && (
@@ -405,7 +418,7 @@ function GoalHeader({ goals, goal, events, snapshot, connected, onGoal, onComman
             </>
           )}
           {goal.status !== 'running' && (
-            <button className="btn ghost" onClick={() => onNewRoom({ id: goal.id, label: goal.request.split('\n')[0], kind: 'goal', topic: `How did "${goal.request.split('\n')[0].slice(0, 80)}" turn out, and what's next?` })} title="Talk over how it turned out with a few agents: a room that starts with this goal's outcome on its board">
+            <button className="btn ghost" onClick={() => onNewRoom({ id: goal.id, label: goal.request.split('\n')[0], kind: 'goal', topic: `How did "${goal.request.split('\n')[0].slice(0, 80)}" turn out, and what's next?` })} title="Talk over how it turned out: a room that starts with this goal's outcome on its canvas">
               Discuss in a room
             </button>
           )}

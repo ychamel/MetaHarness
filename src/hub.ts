@@ -1,8 +1,10 @@
 import { resolveName } from './fuzzy.ts';
 import { skillList, skillPart, skillSummary } from './skills.ts';
+import { parseCanvasOps } from './rooms.ts';
 import type { AgentRec, Daemon, InboxEntry } from './daemon.ts';
 
-export const TOOL_NAMES = ['team', 'spawn', 'respawn', 'send', 'wait', 'status', 'done', 'workflow', 'skill'] as const;
+/** `canvas` is published only to agents in a brainstorm room. */
+export const TOOL_NAMES = ['team', 'spawn', 'respawn', 'send', 'wait', 'status', 'done', 'workflow', 'skill', 'canvas'] as const;
 
 /** Descriptions the MCP layer will publish. Written for the agents that read them. */
 export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: string; params: Record<string, string> }> = {
@@ -16,6 +18,7 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
       name: 'Optional name',
       worktree: "true to give them their own git worktree and branch, for code written in parallel with others. Default: they work in the shared folder, like everyone else",
       from: "Optional: a teammate (or branch) whose latest commit their own worktree starts from, e.g. the implementer whose code a reviewer checks. Implies worktree",
+      patch: "In a brainstorm room: true to let the lens change files for this ask (a small fix the human wants), committed on the room's branch",
     },
   },
   respawn: {
@@ -49,6 +52,12 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
   skill: {
     description: 'Read a skill: a guide for a kind of work, with files. With a name, a summary: what it is for, its sections and its files. With part, one section (by heading) or file (by path). Without a name, lists the skills for your role.',
     params: { name: 'Skill name (optional)', part: 'A section heading or a file path from the summary (optional)' },
+  },
+  canvas: {
+    description: "Change the brainstorm room's canvas: cards (question, idea, finding, risk, decision) and the links between them. Without ops, shows the whole canvas.",
+    params: {
+      ops: 'A list of changes: {"op": "add", "kind": "finding", "title": "a few words", "text": "detail", "refs": ["src/x.ts:40"], "links": [{"to": "c2", "label": "answers"}], "ref": "a"}, {"op": "edit", "id": "c3", "title": "…"}, {"op": "settle" | "drop" | "reopen" | "remove", "id": "c3"}, {"op": "note", "id": "c3", "text": "…"}, {"op": "link", "from": "c4", "to": "c2", "label": "rules out"}, {"op": "unlink", "from": "c4", "to": "c2"}',
+    },
   },
 };
 
@@ -140,9 +149,9 @@ export class Hub {
           ?? '(No brief was given. Ask whoever spawned you what they need.)';
         const name = str(pick(a, 'name', 'id'));
         if (truthy(pick(a, 'quick', 'helper', 'blocking'))) return (await d.quickSpawn(rec, role, brief, name)).text;
-        // In a room, a new participant is the human's to bring in (or, in an open discussion, takes a seat).
-        const seat = d.roomSpawn(rec, role, brief);
-        if (seat !== undefined) return seat;
+        // In a room, the lead sends lenses; nobody else starts anyone.
+        const lens = d.roomSpawn(rec, role, brief, truthy(pick(a, 'patch', 'write', 'fix')));
+        if (lens !== undefined) return lens;
         const from = str(pick(a, 'from', 'base', 'branch', 'start_from', 'starting_from'));
         const wt = pick(a, 'worktree', 'own_worktree', 'isolated', 'isolation');
         const worktree = wt === undefined ? undefined : truthy(wt) || /^worktree$/i.test(String(wt));
@@ -216,8 +225,14 @@ export class Hub {
         return `${r.guessed ? `(Took "${want}" to mean ${sk.name}.)\n` : ''}${text}`;
       }
 
+      case 'canvas':
+        return d.canvasTool(rec, parseCanvasOps(a));
+
       case 'done': {
         const note = str(pick(a, 'note', 'summary', 'text', 'result', 'message', 'answer')) ?? (rec.lastText || '(no note)');
+        // A room's lead never finishes: its done is a reply to the human.
+        const reply = d.roomLeadDone(rec, note);
+        if (reply !== undefined) return reply;
         const again = rec.doneNote !== undefined;
         // Its result isn't whole while teammates it spawned still work: it decides what to do about them.
         const working = d.workingChildren(rec);

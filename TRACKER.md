@@ -507,6 +507,15 @@ Findings from the run:
   in the thread are links and chips that open in the room's side panel, as in the Graph tab
   (full shared-folder paths link too, there and in the Graph). Checked with tests (3 new, 150
   in all) and in headless Chrome against a scripted daemon. Not yet in a real run.
+- [x] **Rooms, round 4: a lead, lenses and a canvas** (DESIGN.md §21, brainstorm → answers on
+  2026-10-26). The human talks with one lead (built in: Antigravity Gemini 3.8 Flash, Sonnet as
+  backup), which sends lenses (the room's set-up roles or models) in the background and keeps a
+  canvas of cards (question, idea, finding, risk, decision) and links, through a `canvas` tool
+  the lenses use too. Replaces the coordinator, seats, ask modes, bench, scout and open mode.
+  Cards branch into rooms of their own; patches go through a lens with `patch: true`. UI: chat
+  beside the canvas, lens bar, endings in the header. The fake harness now starts a turn with
+  injected messages a script didn't read (as real harnesses do). Checked with tests (6 room
+  tests, 143 in all) and in headless Chrome against a scripted daemon. Not yet in a real run.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search

@@ -113,7 +113,7 @@ export function Goals({ goals, kind, loaded, config, onKind, onNew, onOpen, onCo
           <h1>{kind === 'room' ? 'Rooms' : 'Goals'}</h1>
           <div className="muted intro">
             {kind === 'room'
-              ? 'Every discussion room, from any folder. Open one to read its thread and board again, or start a new room from it; delete the ones you’re done with.'
+              ? 'Every brainstorm room, from any folder. Open one to read its chat and canvas again, or start a new room from it; delete the ones you’re done with.'
               : 'Every goal MetaHarness has, from any folder. Open one to read its story, files and costs again; delete the ones you’re done with.'}
             {total > 0 && <> Goals and rooms keep {bytes(total)} on disk.</>}
           </div>

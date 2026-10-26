@@ -62,7 +62,7 @@ export function Home({ goals, rooms, loaded, config, onOpen, onOpenRoom, onNewRo
         <div className="section-h-row">
           <h2>Start a goal</h2>
           <span className="spacer" />
-          <button className="btn small" onClick={onNewRoom} title="A discussion you lead: ask a few agents, compare their views, settle what to do">
+          <button className="btn small" onClick={onNewRoom} title="A brainstorm: talk it through with a lead agent, which keeps a canvas and sends other agents to look into things">
             Or open a room to talk it over first
           </button>
         </div>

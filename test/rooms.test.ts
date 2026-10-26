@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeAdapter, type FakeCtx } from '../src/adapters/fake.ts';
-import { applyBoard, castText, parseCast, parseCoordinator, responsibilityOf, seatName, type RoomState } from '../src/rooms.ts';
+import { applyCanvas, branchCards, canvasMarkdown, castText, lensName, parseCanvasOps, parseCast, responsibilityOf, type Canvas } from '../src/rooms.ts';
 import { git } from '../src/git.ts';
 import type { MhEvent } from '../src/types.ts';
 import type { Daemon } from '../src/daemon.ts';
@@ -31,217 +31,183 @@ function next(d: Daemon, goal: string, match: (e: MhEvent) => boolean, what: str
 }
 const said = (d: Daemon, goal: string, f: (data: Record<string, unknown>) => boolean) => d.store.since(goal).filter(e => e.type === 'room.message' && f(e.data));
 const until = async (cond: () => boolean, what: string) => withTimeout((async () => { while (!cond()) await new Promise(r => setTimeout(r, 10)); })(), 3000, what);
+const reply = (d: Daemon, goal: string, after = 0) => next(d, goal, e => e.seq > after && e.type === 'room.message' && e.data.kind === 'reply', 'a reply from the lead');
+/** The lead between turns, with nothing waiting: a scripted lead only reads what starts a turn. */
+const atRest = (d: Daemon, goal: string) =>
+  until(() => {
+    const lead = d.agent(goal, 'lead')!;
+    return !lead.session?.busy() && !lead.inbox.length && [...d.goals.get(goal)!.agents.values()].every(a => a === lead || !a.session?.busy());
+  }, 'the room at rest');
 
-/** The coordinator answers routes and decisions with what the test says; participants answer with their name and what they were asked. */
-function roomTeam(o: { route?: (prompt: string) => object; decide?: (prompt: string) => object; scripts?: Record<string, (ctx: FakeCtx, text: string) => Promise<void>> } = {}) {
-  const prompts: string[] = [];
+/**
+ * The lead does what the test says with each message (by default: greets, and sends the lens a
+ * message names with "→ name"); lenses answer with their name and what they were asked.
+ */
+function roomTeam(o: { lead?: (ctx: FakeCtx, text: string) => Promise<void>; scripts?: Record<string, (ctx: FakeCtx, text: string) => Promise<void>> } = {}) {
+  const leadTexts: string[] = [];
   const answer = async (ctx: FakeCtx, text: string) => {
     const first = text.replace(/^\[MetaHarness\] Message from [^:]+:\s*/, '').split('\n')[0];
     await ctx.tool('done', { note: `${ctx.spec.agent} on: ${first}` });
   };
-  const coordinate = async (ctx: FakeCtx, text: string) => {
-    prompts.push(text);
-    const r = /without picking anyone/.test(text) ? (o.route?.(text) ?? { route: { to: ['scout'], mode: 'ask', line: 'scout knows' } }) : (o.decide?.(text) ?? { next: { action: 'back', text: 'All answered.', line: 'answered' }, status: 'converging', line: 'done' });
-    ctx.say(JSON.stringify(r));
+  const lead = async (ctx: FakeCtx, text: string) => {
+    leadTexts.push(text);
+    if (o.lead) return o.lead(ctx, text);
+    const to = /Message from human: .*→ ([\w.-]+)/.exec(text)?.[1];
+    if (to) {
+      ctx.say(await ctx.tool('spawn', { role: to, brief: text.split('\n').at(-1)!.replace(/^\[MetaHarness\] Message from human: /, '') }));
+      return;
+    }
+    const lens = /\[MetaHarness\] ([\w.-]+) finished: (.*)/.exec(text);
+    ctx.say(lens ? `${lens[1]} says: ${lens[2]}` : 'Hello.');
   };
-  const turns: Record<string, (ctx: FakeCtx, text: string) => Promise<void>> = { scout: answer, designer: answer, reviewer: answer, model: answer, coordinator: coordinate, cartographer: answer, ...o.scripts };
+  const turns: Record<string, (ctx: FakeCtx, text: string) => Promise<void>> = { scout: answer, designer: answer, reviewer: answer, model: answer, cartographer: answer, 'room-lead': lead, ...o.scripts };
   const scripts = Object.fromEntries(Object.entries(turns).map(([k, f]) => [k, (ctx: FakeCtx) => f(ctx, ctx.spec.brief)]));
   const fake = new FakeAdapter(scripts, {}, turns);
   const d = makeTeam({
-    roles: { scout: role(), designer: role(), reviewer: role(), coordinator: role('helper: true\n'), cartographer: role('wake: landed\n') },
+    roles: { scout: role(), designer: role(), reviewer: role(), 'room-lead': role(), cartographer: role('wake: landed\n') },
     adapters: { fake },
-    roomQuietMs: 20,
   });
-  return { d, fake, prompts };
+  return { d, fake, leadTexts };
 }
 
-test('seats, casts, responsibilities and the board read and write plainly', () => {
+test('lenses, casts and the canvas read and write plainly', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mh-cast-'));
-  const seats = [
+  const lenses = [
     { role: 'reviewer', name: 'skeptic', on: 'codex/gpt-6.1-sol@high', stance: 'look for what breaks' },
-    { on: 'claude-code/opus', responsibility: 'Think about the player: what feels good.', scout: true },
+    { on: 'claude-code/opus', responsibility: 'Think about the player: what feels good.' },
   ];
-  writeFileSync(join(dir, 'hunt.md'), castText({ goodAt: 'bug hunts', participants: seats }));
+  writeFileSync(join(dir, 'hunt.md'), castText({ goodAt: 'bug hunts', participants: lenses }));
   const cast = parseCast(join(dir, 'hunt.md'));
   assert.equal(cast.goodAt, 'bug hunts');
-  assert.deepEqual(cast.participants, seats, 'a cast keeps role seats and model-only seats as they were');
+  assert.deepEqual(cast.participants, lenses, 'a cast keeps role lenses and model-only lenses as they were');
 
-  assert.equal(seatName({ on: 'codex/gpt-6.1-sol' }, []), 'sol', 'a model-only seat is named after its model');
-  assert.equal(seatName({ on: 'claude-code/claude-opus-5-5' }, []), 'opus');
-  assert.equal(seatName({ role: 'designer', on: 'codex/gpt-6.1-sol' }, ['designer']), 'designer-sol', 'a role sitting twice is told apart by its model');
-  assert.equal(seatName({ role: 'room' }, []), 'room-2', "room is the room's branch");
+  assert.equal(lensName({ on: 'codex/gpt-6.1-sol' }, []), 'sol', 'a model-only lens is named after its model');
+  assert.equal(lensName({ on: 'antigravity/gemini-3.8-flash-high' }, []), 'flash', 'effort and family words are left out');
+  assert.equal(lensName({ role: 'designer', on: 'codex/gpt-6.1-sol' }, ['designer']), 'designer-sol', 'a role twice is told apart by its model');
+  assert.equal(lensName({ role: 'lead' }, []), 'lead-2', 'lead is the room\'s lead');
   assert.match(responsibilityOf({ role: 'scout' }), /^Gather information/, "a role's usual responsibility");
-  assert.match(responsibilityOf({ role: 'Creative-gemini' }), /^Come up with ideas/);
   assert.equal(responsibilityOf({ role: 'scout', responsibility: 'Only read the logs.' }), 'Only read the logs.');
 
-  const st = { board: [], boardSeq: 0 } as unknown as RoomState;
-  assert.ok(applyBoard(st, [{ op: 'add', kind: 'question', text: 'Wrap or wall?' }, { op: 'add', kind: 'finding', text: 'Clamp in Move.gd' }], 'human'));
-  assert.equal(applyBoard(st, [{ op: 'add', kind: 'finding', text: 'clamp in move.gd' }], 'human'), false, 'the same item twice is skipped');
-  assert.ok(applyBoard(st, [{ op: 'close', id: 'q1' }, { op: 'edit', id: 'f2', text: 'Clamp in Move.gd:40' }], 'x'));
-  assert.deepEqual(st.board.map(i => [i.id, i.text, !!i.closed]), [['q1', 'Wrap or wall?', true], ['f2', 'Clamp in Move.gd:40', false]]);
+  const c: Canvas = { cards: [], links: [], seq: 0 };
+  let r = applyCanvas(c, parseCanvasOps({ ops: [{ op: 'add', kind: 'question', title: 'Wrap or wall?', ref: 'q' }, { op: 'add', kind: 'option', title: 'Walls', links: [{ to: 'q', label: 'answers' }] }, { title: 'Clamp in Move.gd', kind: 'fact', refs: 'src/Move.gd:40' }] }), 'lead');
+  assert.deepEqual(r.done, ['added c1 (question): Wrap or wall?', 'added c2 (idea): Walls, linked to c1', 'added c3 (finding): Clamp in Move.gd']);
+  assert.deepEqual(c.links, [{ from: 'c2', to: 'c1', label: 'answers' }], 'a card added with a ref can be linked to in the same call');
+  assert.deepEqual(c.cards[2].refs, ['src/Move.gd:40']);
+  r = applyCanvas(c, [{ op: 'add', kind: 'question', title: 'wrap or wall?' }, { op: 'settle', id: 'c9' }], 'scout');
+  assert.equal(r.changed, false);
+  assert.deepEqual(r.skipped, ['"wrap or wall?" is already on the canvas as c1', "there's no card c9"]);
+  r = applyCanvas(c, parseCanvasOps({ op: 'link', from: 'c3', to: 'c2', label: 'rules out' }), 'scout');
+  applyCanvas(c, [{ op: 'note', id: 'c2', text: 'Saved games keep positions outside' }, { op: 'drop', id: 'c2' }, { op: 'settle', id: 'C1' }], 'reviewer');
+  assert.deepEqual(c.cards.map(x => [x.id, x.status ?? 'open']), [['c1', 'settled'], ['c2', 'dropped'], ['c3', 'open']]);
+  assert.deepEqual(c.cards[1].notes, [{ by: 'reviewer', text: 'Saved games keep positions outside' }]);
+  const md = canvasMarkdown('Edges', c);
+  assert.match(md, /## Ideas\n\n- \[c2\] \(dropped\) Walls  → c1 \(answers\)  — lead\n  · reviewer: Saved games/);
+  assert.match(md, /- \[c3\] Clamp in Move.gd  → c2 \(rules out\)  — lead\n  files: src\/Move.gd:40/);
 
-  const r = parseCoordinator('Here:\n{"next": {"action": "forward", "to": ["@reviewer"], "text": "check it", "line": "reviewer checks"}, "status": "drifting", "line": "saves", "board": [{"op": "add", "kind": "decision", "text": "walls"}, {"op": "bogus"}], "ending": "design"}');
-  assert.deepEqual(r?.status, { state: 'drifting', line: 'saves', ending: 'design' });
-  assert.deepEqual(r?.board, [{ op: 'add', kind: 'decision', text: 'walls' }]);
-  assert.deepEqual(r?.next, { action: 'forward', to: ['reviewer'], text: 'check it', line: 'reviewer checks' });
-  assert.deepEqual(parseCoordinator('{"route": {"to": "scout", "mode": "chain", "line": "x"}}')?.route, { to: ['scout'], mode: 'chain', line: 'x' });
-  assert.deepEqual(parseCoordinator('{"route": {"parts": [{"to": "scout", "ask": "find it"}, {"to": "designer", "ask": "judge it", "after": "scout"}], "line": "x"}}')?.route, {
-    to: ['scout', 'designer'], mode: 'ask', line: 'x', parts: [{ to: 'scout', ask: 'find it', after: [] }, { to: 'designer', ask: 'judge it', after: ['scout'] }],
-  });
-  assert.equal(parseCoordinator('no json here'), undefined);
+  applyCanvas(c, [{ op: 'add', kind: 'risk', title: 'Unrelated' }], 'lead');
+  assert.deepEqual(branchCards(c, ['c3']).cards.map(x => x.id), ['c2', 'c3'], 'a branch takes the cards linked to the ones picked');
+  applyCanvas(c, [{ op: 'remove', id: 'c2' }], 'human');
+  assert.deepEqual(c.links, [], "a removed card's links go with it");
+  assert.deepEqual(parseCanvasOps({ ops: '[{"op":"close","id":"c1"},{"op":"delete","id":"c3"}]' }), [{ op: 'settle', id: 'c1' }, { op: 'remove', id: 'c3' }], 'ops may come as JSON text, under other names');
 });
 
-test('a message for nobody in particular is routed by the coordinator, who then hands the answer back', async () => {
-  const { d, prompts } = roomTeam({
-    route: () => ({ route: { to: ['scout'], mode: 'job', line: 'scout gathers the history first' }, status: 'developing', line: 'started', board: [{ op: 'add', kind: 'question', text: 'What changed after the demo?' }] }),
-  });
-  const room = d.startRoom({ topic: 'What changed after the demo?', cast: [{ role: 'scout' }, { role: 'designer', stance: 'keep it simple' }] });
+test('the human talks with the lead; it sends lenses, whose answers wake it, and keeps the canvas', async () => {
+  const { d, leadTexts } = roomTeam();
+  const room = d.startRoom({ topic: 'Creatures die at the map edge', lenses: [{ role: 'scout' }, { role: 'designer', stance: 'simplest fix' }] });
   const g = d.goals.get(room)!;
-  assert.equal(g.agents.size, 0, 'nobody starts before being asked');
+  assert.equal(g.lead, 'lead');
+  let r = await reply(d, room);
+  assert.equal(r.data.text, 'Hello.', "the lead's opening turn is its first reply");
+  const lead = d.agent(room, 'lead')!;
+  assert.match(lead.systemPrompt, /## A brainstorm room/);
+  assert.match(lead.systemPrompt, /- scout \(scout\): Gather information fast/);
+  assert.match(lead.systemPrompt, /- designer \(designer\): Explain the bigger picture.* Stance: simplest fix/);
+  assert.match(leadTexts[0], /Creatures die at the map edge\n\n\[Room\] The canvas is empty/);
 
-  assert.match(d.roomPost(room, { text: 'What was applied after the demo?' }), /coordinator picks/);
-  const routed = await next(d, room, e => e.type === 'room.message' && e.data.kind === 'route', 'the route');
-  assert.deepEqual(routed.data.to, ['scout']);
-  assert.equal(routed.data.text, 'scout gathers the history first');
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'scout', 'scout answers');
-  assert.equal(d.agent(room, 'designer'), undefined, 'only the routed seat was asked');
-  const scout = d.agent(room, 'scout')!;
-  assert.equal(scout.cwd, g.room!.worktree!.path, "participants read on the room's branch");
-  assert.match(scout.systemPrompt, /Who is in the room:\n- scout \(scout: Gather\)  ← you\n- designer \(designer: Big picture\), not started yet/, 'it knows who else is in the room');
-  assert.match(scout.systemPrompt, /## Your responsibility in this room\n\nGather information/);
+  d.roomPost(room, { text: 'Where is the clamp? → scout' });
+  const dispatch = await next(d, room, e => e.type === 'room.message' && e.data.kind === 'dispatch', 'the lead sends the scout');
+  assert.deepEqual([dispatch.data.from, dispatch.data.to], ['lead', ['scout']]);
+  const lens = await next(d, room, e => e.type === 'room.message' && e.data.kind === 'lens', "the scout's answer shows in the chat");
+  assert.equal(lens.data.text, 'scout on: Where is the clamp? → scout');
+  r = await next(d, room, e => e.type === 'room.message' && e.data.kind === 'reply' && /scout says/.test(String(e.data.text)), 'the lead passes it on');
+  assert.equal(d.agent(room, 'scout')!.parent, 'lead');
+  assert.match(d.agent(room, 'scout')!.systemPrompt, /## A lens in a brainstorm room/);
+  assert.match(d.agent(room, 'scout')!.systemPrompt, /Questions go to lead/);
 
-  const back = await next(d, room, e => e.type === 'room.message' && e.data.kind === 'back', 'handed back');
-  assert.equal(back.data.text, 'All answered.');
-  assert.match(prompts[0], /designer \(designer · its role’s model, not started\): Explain the bigger picture/, 'the coordinator routes by responsibility');
-  assert.match(prompts[1], /New, to decide on:\n\[scout → coordinator, answer\] \(answering coordinator/);
-  assert.deepEqual(g.room!.board.map(i => i.text), ['What changed after the demo?']);
-  assert.equal(d.humanInbox.length, 0, "answers go to the thread, not the Inbox");
+  // Sent again, the same lens takes a new turn: it keeps its session.
+  await atRest(d, room);
+  d.roomPost(room, { text: 'And the wall? → scout' });
+  await next(d, room, e => e.seq > r.seq && e.type === 'room.message' && e.data.kind === 'lens', 'the second answer');
+  assert.equal(d.store.since(room).filter(e => e.type === 'agent.spawned' && e.agent === 'scout').length, 1);
+  await next(d, room, e => e.seq > r.seq && e.type === 'room.message' && e.data.kind === 'reply' && /scout says/.test(String(e.data.text)), 'the lead passes it on');
+  await atRest(d, room);
+
+  // The human's message about a card says which.
+  d.roomCanvas(room, [{ op: 'add', kind: 'idea', title: 'Walls' }], 'human');
+  const before = d.store.since(room).at(-1)!.seq;
+  d.roomPost(room, { text: 'Why not?', card: 'c1' });
+  await reply(d, room, before);
+  assert.match(leadTexts.at(-1)!, /\[About c1, idea: Walls\]\nWhy not\?/);
+  assert.match(leadTexts.at(-1)!, /\[Room\] The human changed the canvas: added c1 \(idea\): Walls/, 'the lead hears what the human changed');
+  assert.equal(d.listGoals().find(x => x.id === room)?.status, 'running', 'a room is open until the human ends it');
+  assert.match(readFileSync(join(g.sharedDir, 'room', 'chat.md'), 'utf8'), /### You → lead\n\nWhere is the clamp\?/);
   await d.close();
 });
 
-test('the coordinator can split a question: parts that need nothing run in parallel, a part that needs them waits and gets their answers', async () => {
-  const { d, prompts } = roomTeam({
-    route: () => ({
-      route: {
-        mode: 'ask', line: 'scout finds the changes while reviewer checks the tests; then designer judges',
-        parts: [
-          { to: 'scout', ask: 'What changed around the Colossus spawn?' },
-          { to: 'reviewer', ask: 'Do the tests cover the spawn?' },
-          { to: 'designer', ask: 'Design problem or wiring bug?', after: ['scout', 'reviewer'] },
-        ],
-      },
-    }),
-  });
-  const room = d.startRoom({ topic: 't', cast: [{ role: 'scout' }, { role: 'reviewer' }, { role: 'designer' }] });
-  d.roomPost(room, { text: 'Why no Colossus, and is it design or wiring?' });
-  await next(d, room, e => e.type === 'room.message' && e.data.kind === 'back', 'handed back', 4000);
-  const parts = said(d, room, x => x.kind === 'part');
-  assert.deepEqual(parts.map(e => [e.data.to, e.data.part]), [[['scout'], 1], [['reviewer'], 2], [['designer'], 3]]);
-  const spawned = (n: string) => d.store.since(room).findIndex(e => e.type === 'agent.spawned' && e.agent === n);
-  const answered = (n: string) => d.store.since(room).findIndex(e => e.type === 'room.message' && e.data.from === n);
-  assert.ok(spawned('reviewer') < answered('scout') || spawned('reviewer') < answered('reviewer'), 'scout and reviewer were asked together');
-  assert.ok(spawned('designer') > answered('scout') && spawned('designer') > answered('reviewer'), 'designer waited for both');
-  const brief = d.agent(room, 'designer')!.brief;
-  assert.match(brief, /^Design problem or wiring bug\?/);
-  assert.match(brief, /The whole question, for context:\n"Why no Colossus, and is it design or wiring\?"/);
-  assert.match(brief, /--- scout:\nscout on: What changed around the Colossus spawn\?[\s\S]*--- reviewer:\nreviewer on: Do the tests cover the spawn\?/);
-  assert.match(d.agent(room, 'scout')!.brief, /^What changed around the Colossus spawn\?/, 'the scout got only its part');
-  const decide = prompts.filter(p => /New, to decide on/.test(p));
-  assert.equal(decide.length, 1, 'one decision once every part is in');
-  assert.equal((decide[0].match(/, answer\]/g) ?? []).length, 3);
-  await d.close();
-});
-
-test("a participant's message for another goes to the coordinator, who forwards it once and then hands back", async () => {
-  let decisions = 0;
-  const { d, prompts } = roomTeam({
-    scripts: {
-      scout: async (ctx, text) => {
-        if (/Look into it/.test(text)) await ctx.tool('send', { to: 'designer', text: 'The clamp is off by one: is that a design choice?' });
-        await ctx.tool('done', { note: `scout on: ${text.split('\n')[0]}\n→ designer: is the clamp a design choice?` });
-      },
-    },
-    decide: () => (++decisions === 1 ? { next: { action: 'forward', to: ['designer'], text: 'scout says the clamp is off by one. A design choice?', line: 'designer checks the clamp' } } : { next: { action: 'back', text: 'Clamp is a bug; designer agrees.', line: 'answered' } }),
-  });
-  const room = d.startRoom({ topic: 't', cast: [{ role: 'scout' }, { role: 'designer' }] });
-  d.roomPost(room, { text: 'Look into it', to: ['scout'] });
-  await next(d, room, e => e.type === 'room.message' && e.data.kind === 'back', 'handed back', 4000);
-  const aside = said(d, room, x => x.kind === 'aside')[0];
-  assert.equal(aside.data.from, 'scout');
-  const forward = said(d, room, x => x.kind === 'forward')[0];
-  assert.deepEqual(forward.data.to, ['designer']);
-  const designer = said(d, room, x => x.from === 'designer');
-  assert.equal(designer.length, 1, 'the designer answered once, nothing ping-pongs');
-  assert.equal(designer[0].data.re, forward.data.flow, 'its answer sits under the forward');
-  assert.match(prompts.join('\n'), /→ designer: is the clamp a design choice\?/, 'the coordinator sees the hint');
-  await d.close();
-});
-
-test('seats can be just a model; what you say to one from its panel shows in the thread; a digest tells it what it missed', async () => {
-  const { d } = roomTeam();
-  const room = d.startRoom({ topic: 't', cast: [{ role: 'scout' }] });
-  assert.throws(() => d.roomAdd(room, { on: 'fake/m2' }), /needs a responsibility/);
-  assert.match(d.roomAdd(room, { on: 'fake/m2@high', responsibility: 'Think about the player.' }), /m2 has a seat/);
-  d.roomPost(room, { text: 'First question', to: ['scout'] });
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'scout', 'scout answers');
-
-  await d.command({ cmd: 'agent.message', goal: room, to: 'm2', text: 'What would a player notice?' });
-  const asked = said(d, room, x => x.from === 'human' && x.text === 'What would a player notice?')[0];
-  assert.deepEqual(asked.data.to, ['m2']);
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'm2', 'm2 answers');
-  const m2 = d.agent(room, 'm2')!;
-  assert.equal(m2.role.name, 'model');
-  assert.equal(m2.effort, 'high');
-  assert.doesNotMatch(m2.systemPrompt, /## Your role/);
-  assert.match(m2.systemPrompt, /## Your responsibility in this room\n\nThink about the player\./);
-  assert.match(m2.brief, /\[Room\] New in the room since you last spoke:\n- the human → scout: First question\n- scout → the human: scout on: First question/);
-  await d.close();
-});
-
-test('views stay hidden until everyone has answered; a debate runs its rounds; a chain hands each answer on', async () => {
-  const { d } = roomTeam({ decide: () => ({ next: { action: 'note' } }) });
-  const room = d.startRoom({ topic: 'Wrap or wall?', cast: [{ role: 'designer' }, { role: 'reviewer' }, { role: 'scout' }] });
-
-  d.roomPost(room, { text: 'Wrap or wall?', to: ['designer', 'reviewer'], mode: 'views' });
-  const reveal = await next(d, room, e => e.type === 'room.reveal', 'views revealed');
-  const views = said(d, room, x => x.kind === 'answer' && x.flow === reveal.data.flow);
-  assert.equal(views.length, 2);
-  assert.equal(views.filter(e => e.data.held).length, 1, 'the first view is held until the second is in');
-
-  d.roomPost(room, { text: 'Argue it out', to: ['designer', 'reviewer'], mode: 'debate', rounds: 2 });
-  await next(d, room, e => e.type === 'room.round' && e.data.round === 2, 'second round');
-  await until(() => said(d, room, x => x.mode === 'debate' && x.kind === 'answer').length >= 4, 'four debate answers');
-
-  d.roomPost(room, { text: 'Find it, then judge it', to: ['scout', 'designer'], mode: 'chain' });
-  const chained = await next(d, room, e => e.type === 'room.message' && e.data.mode === 'chain' && e.data.from === 'designer', 'chain reaches the designer');
-  assert.match(String(chained.data.text), /designer on: Find it, then judge it/);
-  await d.close();
-});
-
-test('opened, a participant messaging another goes straight there and the answer comes back', async () => {
-  const replies: string[] = [];
+test("the lead's done is a reply, never an ending; it can't wait on a lens; lenses talk only with it", async () => {
   const { d } = roomTeam({
-    decide: () => ({ next: { action: 'note' } }),
+    lead: async (ctx, text) => {
+      if (/Open the room/.test(text)) return ctx.say('Hi.');
+      if (/try quick/.test(text)) return ctx.say(await ctx.tool('spawn', { role: 'designer', brief: 'look', quick: true }));
+      if (/try away/.test(text)) return ctx.say(await ctx.tool('spawn', { role: 'reviewer', brief: 'look' }));
+      if (/try unknown/.test(text)) return ctx.say(await ctx.tool('spawn', { role: 'poet', brief: 'look' }));
+      ctx.say('thinking out loud');
+      await ctx.tool('done', { note: 'My answer.' });
+    },
     scripts: {
-      designer: async (ctx, text) => {
-        if (/Ask the scout/.test(text)) replies.push(await ctx.tool('send', { to: 'scout', text: 'Where is the clamp?' }));
-        await ctx.tool('done', { note: `designer on: ${text.split('\n')[0]}` });
+      designer: async ctx => {
+        ctx.say(await ctx.tool('spawn', { role: 'scout', brief: 'help' }));
+        await ctx.tool('send', { to: 'human', text: 'Which map size?' });
+        await ctx.tool('canvas', { ops: [{ op: 'add', kind: 'risk', title: 'Saved games' }] });
+        await ctx.tool('done', { note: 'designed' });
       },
     },
   });
-  const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }, { role: 'scout' }], open: true });
-  d.roomPost(room, { text: 'Ask the scout', to: ['designer'] });
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'scout', 'scout answers the designer');
-  assert.match(replies[0], /scout joined the room/);
-  assert.deepEqual(said(d, room, x => x.kind === 'aside')[0].data.to, ['scout']);
-  await next(d, room, e => e.type === 'message.delivered' && e.agent === 'designer' && e.data.from === 'scout', "the scout's answer reaches the designer");
-  assert.equal(said(d, room, x => x.kind === 'forward').length, 0, 'in an open discussion the coordinator only watches');
+  const room = d.startRoom({ topic: 't', lenses: [{ role: 'designer' }, { role: 'reviewer' }] });
+  const hi = await reply(d, room);
+  d.roomPost(room, { text: 'Hello' });
+  const r = await reply(d, room, hi.seq);
+  assert.equal(r.data.text, 'My answer.');
+  await until(() => d.agent(room, 'lead')!.state === 'idle', 'the lead rests');
+  assert.equal(said(d, room, x => x.kind === 'reply' && x.text === 'thinking out loud').length, 0, 'what it said before done is not posted twice');
+
+  d.roomPost(room, { text: 'try quick' });
+  await next(d, room, e => e.type === 'room.message' && e.data.kind === 'lens' && e.data.from === 'designer', 'a quick spawn is sent as a lens');
+  const designer = d.agent(room, 'designer')!;
+  assert.equal(designer.quick, false);
+  assert.match(d.store.since(room).filter(e => e.type === 'agent.tool_result' && e.agent === 'designer')[0].data.summary as string, /Only lead sends lenses/);
+  await until(() => d.agent(room, 'lead')!.inbox.length === 0 && d.store.since(room).some(e => e.type === 'message.delivered' && e.agent === 'lead' && e.data.from === 'designer'), "the designer's question reaches the lead");
+  assert.equal(d.store.since(room).filter(e => e.type === 'inbox.item').length, 0, 'a lens never asks the human directly');
+  assert.equal(d.goals.get(room)!.room!.canvas.cards[0].by, 'designer', 'lenses put cards on the canvas themselves');
+  await atRest(d, room);
+
+  assert.match(d.roomLensOff(room, 'reviewer', true), /Put reviewer away/);
+  let last = d.store.since(room).at(-1)!.seq;
+  d.roomPost(room, { text: 'try away' });
+  assert.match(String((await reply(d, room, last)).data.text), /reviewer is put away by the human/);
+  last = d.store.since(room).at(-1)!.seq;
+  d.roomPost(room, { text: 'try unknown' });
+  assert.match(String((await reply(d, room, last)).data.text), /There's no lens called "poet". Lenses you can send: designer\./);
   await d.close();
 });
 
-test('only a participant on a patch job may change files; the room branch merges once and the cartographer maps it', async () => {
+test('a lens on a patch job may change files; the room branch merges once and the cartographer maps it', async () => {
   const { d } = roomTeam({
-    decide: () => ({ next: { action: 'note' } }),
+    lead: async (ctx, text) => {
+      if (/from human: fix it/.test(text)) return ctx.say(await ctx.tool('spawn', { role: 'designer', brief: 'Fix the clamp', patch: true }));
+      if (/from human: look/.test(text)) return ctx.say(await ctx.tool('spawn', { role: 'scout', brief: 'Look' }));
+      ctx.say('ok');
+    },
     scripts: {
       designer: async (ctx, text) => {
         if (/patch job/.test(text)) {
@@ -253,62 +219,75 @@ test('only a participant on a patch job may change files; the room branch merges
       },
     },
   });
-  const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }, { role: 'scout' }] });
+  const room = d.startRoom({ topic: 't', lenses: [{ role: 'designer' }, { role: 'scout' }] });
   const g = d.goals.get(room)!;
-  d.roomPost(room, { text: 'Look', to: ['scout'] });
+  await atRest(d, room);
+  d.roomPost(room, { text: 'look' });
   await next(d, room, e => e.type === 'room.message' && e.data.from === 'scout', 'scout');
   const scout = d.agent(room, 'scout')!;
   const inRepo = join(scout.cwd, 'x.txt');
   assert.equal((d.toolPolicy(scout, { kind: 'edit', tool: 'Write', detail: inRepo, path: inRepo }) as { allow: boolean }).allow, false);
+  assert.equal((d.toolPolicy(d.agent(room, 'lead')!, { kind: 'edit', tool: 'Write', detail: inRepo, path: inRepo }) as { allow: boolean }).allow, false, 'the lead never changes project files');
   const report = join(g.sharedDir, 'reports', 'scout-1.md');
   assert.deepEqual(d.toolPolicy(scout, { kind: 'edit', tool: 'Write', detail: report, path: report }), { allow: true }, 'reports in the shared folder are fine');
 
-  assert.throws(() => d.roomPost(room, { text: 'Fix it', to: ['designer', 'scout'], mode: 'patch' }), /one participant/);
-  d.roomPost(room, { text: 'Fix it', to: ['designer'], mode: 'patch' });
+  await atRest(d, room);
+  d.roomPost(room, { text: 'fix it' });
+  await next(d, room, e => e.type === 'room.writer' && e.data.on === true, 'write access for the patch job');
   await next(d, room, e => e.type === 'room.writer' && e.data.on === false, 'write access ends with the answer');
-  assert.equal(g.room!.writers.size, 0);
+  assert.equal(said(d, room, x => x.kind === 'dispatch' && x.patch === true).length, 1);
 
   const before = git(d.repo, 'rev-parse', 'HEAD');
   assert.match(d.roomMerge(room), /Merged 1 commit.*cartographer maps the result/);
   assert.notEqual(git(d.repo, 'rev-parse', 'HEAD'), before);
   assert.ok(existsSync(join(d.repo, 'fix.txt')));
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'cartographer', 'the cartographer maps the merge');
+  await next(d, room, e => e.type === 'room.message' && e.data.kind === 'note' && /^cartographer: /.test(String(e.data.text)), 'the cartographer maps the merge');
   assert.equal(d.agent(room, 'cartographer')!.cwd, d.repo, "it works in the human's checkout");
   assert.match(d.roomMerge(room), /Nothing to merge/);
   await d.close();
 });
 
-test('after four forwards without the human, the coordinator is told to hand back', async () => {
-  let n = 0;
-  const { d, prompts } = roomTeam({ decide: () => (++n <= 5 ? { next: { action: 'forward', to: [n % 2 ? 'designer' : 'reviewer'], text: `round ${n}`, line: 'again' } } : { next: { action: 'back', text: 'ok' } }) });
-  const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }, { role: 'reviewer' }] });
-  d.roomPost(room, { text: 'Start', to: ['designer'] });
-  await next(d, room, e => e.type === 'room.message' && e.data.kind === 'back', 'handed back', 5000);
-  const decide = prompts.filter(p => /New, to decide on/.test(p));
-  assert.doesNotMatch(decide[3], /hand back now/);
-  assert.match(decide[4], /passed things on 4 times since the human last spoke: hand back now/);
-  await d.close();
-});
+test('cards branch into a room of their own; a new room carries a past canvas over; a goal from a room reads it', async () => {
+  const { d, leadTexts } = roomTeam();
+  const first = d.startRoom({ topic: 'First', lenses: [{ role: 'designer' }] });
+  d.roomCanvas(first, parseCanvasOps({ ops: [
+    { op: 'add', kind: 'question', title: 'Wrap or wall?', ref: 'q' },
+    { op: 'add', kind: 'idea', title: 'Walls', links: ['q'] },
+    { op: 'add', kind: 'idea', title: 'Wrap' },
+    { op: 'add', kind: 'risk', title: 'Saves', links: ['c2'] },
+  ] }), 'human');
+  d.roomCanvas(first, [{ op: 'drop', id: 'c3' }], 'human');
 
-test("a new room carries a past room's board over, and a goal started from a room points its lead at it", async () => {
-  const { d } = roomTeam();
-  const first = d.startRoom({ topic: 'First', cast: [{ role: 'designer' }] });
-  d.roomBoard(first, [{ op: 'add', kind: 'decision', text: 'walls, not wrap' }, { op: 'add', kind: 'question', text: 'how thick?' }, { op: 'close', id: 'q2' }], 'human');
+  const branch = d.startRoom({ topic: 'Walls', from: first, cards: ['c2'] });
+  const b = d.goals.get(branch)!.room!.canvas;
+  assert.deepEqual(b.cards.map(c => [c.id, c.title, c.by]), [['c1', 'Wrap or wall?', 'human'], ['c2', 'Walls', 'human'], ['c3', 'Saves', 'human']], 'the card and those linked to it, renumbered');
+  assert.deepEqual(b.links, [{ from: 'c2', to: 'c1' }, { from: 'c3', to: 'c2' }]);
+  assert.deepEqual(d.goals.get(first)!.room!.canvas.cards[1].branches, [branch], 'the card shows where it branched');
+  await until(() => leadTexts.some(t => /The canvas starts with 3 cards carried over/.test(t)), "the branch's lead reads the carried cards");
+
   d.endGoal(first);
-  const second = d.startRoom({ topic: 'Second', from: first });
-  assert.deepEqual(d.goals.get(second)!.room!.board.map(i => i.text), ['walls, not wrap'], 'answered questions stay behind');
+  const again = d.startRoom({ topic: 'Second', from: first });
+  assert.deepEqual(d.goals.get(again)!.room!.canvas.cards.map(c => c.title), ['Wrap or wall?', 'Walls', 'Saves'], 'dropped cards stay behind');
 
   const goal = d.startGoal({ request: 'Build the walls', lead: 'designer', fromRoom: first });
-  assert.match(d.agent(goal, 'designer')!.brief, /comes out of a discussion room/);
+  assert.match(d.agent(goal, 'designer')!.brief, /comes out of a brainstorm room[\s\S]*canvas\.md/);
   assert.equal(d.listGoals().find(x => x.id === first)?.kind, 'room');
+  assert.match(d.canvasTool(d.agent(goal, 'designer')!, []), /only|for brainstorm rooms/);
   await d.close();
 });
 
-test('a seat stopped mid-answer keeps what it said as its answer, the coordinator sees it, and it can be asked again', async () => {
+test('the human can stop the lead or a lens mid-turn: what it said so far is its reply or answer', async () => {
   for (const interrupt of [true, false]) {
-    const prompts: string[] = [];
     const { d, fake } = roomTeam({
-      decide: p => (prompts.push(p), { next: { action: 'note' } }),
+      lead: async (ctx, text) => {
+        if (/ramble/.test(text)) {
+          ctx.say('Let me think about edges…');
+          await ctx.run('sleep 30', 5000);
+          return;
+        }
+        if (/send/.test(text)) return ctx.say(await ctx.tool('spawn', { role: 'designer', brief: 'Think it through' }));
+        ctx.say(/finished/.test(text) ? `heard: ${text.split('finished: ')[1]}` : 'Hi.');
+      },
       scripts: {
         designer: async (ctx, text) => {
           if (/Think it through/.test(text)) {
@@ -321,98 +300,23 @@ test('a seat stopped mid-answer keeps what it said as its answer, the coordinato
       },
     });
     (fake.manifest as { interrupt: boolean }).interrupt = interrupt;
-    const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }, { role: 'reviewer' }] });
-    d.roomPost(room, { text: 'Think it through', to: ['designer', 'reviewer'] });
-    await until(() => d.store.since(room).some(e => e.type === 'agent.text' && e.agent === 'designer'), 'the designer starts');
-    await next(d, room, e => e.type === 'room.message' && e.data.from === 'reviewer', 'the reviewer answers');
-    assert.match(d.roomStop(room, 'designer'), /Stopped designer/);
-    const stopped = await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer', 'the stopped answer');
-    assert.equal(stopped.data.stopped, true);
-    assert.equal(stopped.data.text, 'First thoughts: wrap around.', 'what it said so far is its answer');
-    await until(() => d.agent(room, 'designer')!.state === 'idle', 'its turn is over');
-    assert.equal(d.roomStop(room, 'designer'), "designer isn't working on anything.");
+    const room = d.startRoom({ topic: 't', lenses: [{ role: 'designer' }] });
+    const hi = await reply(d, room);
+    d.roomPost(room, { text: 'ramble' });
+    await until(() => d.store.since(room).some(e => e.type === 'agent.text' && e.data.text === 'Let me think about edges…'), 'the lead starts');
+    assert.match(d.roomStop(room, 'lead'), /Stopped lead/);
+    const stopped = await reply(d, room, hi.seq);
+    assert.deepEqual([stopped.data.text, stopped.data.stopped], ['Let me think about edges…', true]);
+    await until(() => !d.agent(room, 'lead')!.session?.busy(), 'the lead rests');
 
-    d.roomPost(room, { text: 'Now just answer', to: ['designer'] });
-    await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer' && !e.data.stopped, 'it answers the next question');
-    assert.equal(said(d, room, x => x.from === 'designer').length, 2, "the stopped turn's end isn't another answer");
-    if (!interrupt) assert.ok(fake.started.some(s => s.spec.agent === 'designer' && s.resume), 'without an interrupt, its session resumed');
-    await until(() => prompts.length > 0, 'the coordinator decides');
-    assert.equal(prompts.length, 1, 'the stop itself asks the coordinator nothing');
-    assert.match(prompts[0], /\[designer → human, stopped by the human mid-answer\] First thoughts/, 'the coordinator sees it was stopped');
+    d.roomPost(room, { text: 'send' });
+    await until(() => d.store.since(room).some(e => e.type === 'agent.text' && e.agent === 'designer'), 'the designer starts');
+    await until(() => d.agent(room, 'lead')!.state === 'idle', 'the lead ends its turn');
+    assert.match(d.roomStop(room, 'designer'), /Stopped designer/);
+    const answer = await next(d, room, e => e.type === 'room.message' && e.data.kind === 'lens', 'the stopped answer');
+    assert.deepEqual([answer.data.text, answer.data.stopped], ['First thoughts: wrap around.', true]);
+    await next(d, room, e => e.type === 'room.message' && e.data.kind === 'reply' && /heard: \(the human stopped it here\) First thoughts/.test(String(e.data.text)), 'the lead hears it');
+    assert.equal(said(d, room, x => x.kind === 'lens').length, 1, "the stopped turn's end isn't another answer");
     await d.close();
   }
-});
-
-test('a benched seat is skipped and rests (one at work finishes first); brought back, it resumes and hears what it missed', async () => {
-  const prompts: string[] = [];
-  const { d, fake } = roomTeam({
-    route: p => (prompts.push(p), { route: { to: ['designer'], mode: 'ask', line: 'designer' } }),
-    decide: () => ({ next: { action: 'note' } }),
-    scripts: {
-      designer: async (ctx, text) => {
-        if (/Slowly/.test(text)) await ctx.run('sleep 1', 150);
-        await ctx.tool('done', { note: `designer on: ${text.split('\n')[0]}` });
-      },
-    },
-  });
-  const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }, { role: 'scout' }] });
-  d.roomPost(room, { text: 'Slowly, what do you think?', to: ['designer'] });
-  await until(() => d.agent(room, 'designer')?.state === 'working', 'the designer works');
-  assert.match(d.roomBench(room, 'designer', true), /finishes what it's doing/);
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer', 'it still answers');
-  await until(() => !d.agent(room, 'designer')!.session, 'then it rests');
-  assert.ok(d.agent(room, 'designer')!.resumeId, 'its session is kept to resume');
-  assert.equal(d.goals.get(room)!.room!.cast.find(c => c.name === 'designer')!.benched, true);
-
-  assert.throws(() => d.roomPost(room, { text: 'You there?', to: ['designer'] }), /designer is benched/);
-  d.roomPost(room, { text: 'Anyone?' });
-  await next(d, room, e => e.type === 'room.message' && e.data.kind === 'note' && /couldn't pick/.test(String(e.data.text)), 'the coordinator can’t route to it');
-  assert.match(prompts[0], /- designer \(designer · fake\/m, benched: never route to it\)/);
-  d.roomPost(room, { text: 'Scout, what changed?', to: ['scout'] });
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'scout', 'the scout answers');
-
-  assert.match(d.roomBench(room, 'designer', false), /designer is back/);
-  d.roomPost(room, { text: 'Welcome back', to: ['designer'] });
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer' && /Welcome back/.test(String(e.data.text)), 'it answers again');
-  const resumed = fake.started.filter(s => s.spec.agent === 'designer');
-  assert.equal(resumed.length, 2);
-  assert.ok(resumed[1].resume, 'it resumed its session');
-  assert.match(resumed[1].spec.brief, /New in the room since you last spoke:[^]*- scout → the human: scout on: Scout, what changed\?/, 'it hears what it missed');
-  await d.close();
-});
-
-test("a seat's scout is the scout role, as a quick helper, only while the human has it on", async () => {
-  const { d } = roomTeam({
-    decide: () => ({ next: { action: 'note' } }),
-    scripts: {
-      designer: async (ctx, text) => {
-        const role = /reviewer/.test(text) ? 'reviewer' : 'scout';
-        await ctx.tool('done', { note: await ctx.tool('spawn', { role, quick: true, brief: 'Where is the clamp?' }) });
-      },
-    },
-  });
-  const room = d.startRoom({ topic: 't', cast: [{ role: 'designer' }] });
-  d.roomPost(room, { text: 'Look it up', to: ['designer'] });
-  let a = await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer', 'answer without a scout');
-  assert.match(String(a.data.text), /Your scout is off/);
-  assert.doesNotMatch(d.agent(room, 'designer')!.systemPrompt, /You have a scout/);
-
-  assert.match(d.roomScout(room, 'designer', true), /scout is on/);
-  d.roomPost(room, { text: 'Look it up again', to: ['designer'] });
-  a = await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer' && e.seq > a.seq, 'answer with a scout');
-  assert.match(String(a.data.text), /scout-1 answered:\nscout-1 on: Where is the clamp\?/);
-  const spawned = d.store.since(room).find(e => e.type === 'agent.spawned' && e.data.quick);
-  assert.equal(spawned?.parent, 'designer');
-  assert.equal(d.store.since(room).filter(e => e.type === 'room.message' && e.data.from === spawned?.agent).length, 0, "the scout's answer is the seat's, not the room's");
-
-  d.roomPost(room, { text: 'Ask the reviewer', to: ['designer'] });
-  a = await next(d, room, e => e.type === 'room.message' && e.data.from === 'designer' && e.seq > a.seq, 'answer asking for another helper');
-  assert.match(String(a.data.text), /your helper is the scout/);
-
-  assert.match(d.roomAdd(room, { role: 'reviewer', scout: true }), /reviewer has a seat/);
-  d.roomPost(room, { text: 'Hello', to: ['reviewer'] });
-  await next(d, room, e => e.type === 'room.message' && e.data.from === 'reviewer', 'the reviewer answers');
-  assert.match(d.agent(room, 'reviewer')!.systemPrompt, /You have a scout for lookups: call `spawn` with role "scout", quick: true/);
-  assert.match(d.agent(room, 'reviewer')!.systemPrompt, /Keep your answer simple and conversational/);
-  await d.close();
 });

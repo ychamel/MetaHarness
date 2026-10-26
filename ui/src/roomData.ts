@@ -1,13 +1,12 @@
-import type { BoardItem, MhEvent, Participant } from './types.ts';
+import type { CanvasCard, CanvasLink, Lens, MhEvent } from './types.ts';
 
 /** A room, folded from its events (src/daemon.ts, design §21): everything the room view shows. */
 
 /**
- * ask: from you; answer: a participant's; question: a participant asks you; aside: a participant's
- * message for another (moderated: the coordinator has it); route (whole, or split into parts),
- * part, forward, compare, back: the coordinator's decisions; note: from MetaHarness.
+ * ask: from you; reply: the lead's; dispatch: the lead sends a lens; lens: a lens's answer to
+ * the lead; note: from MetaHarness.
  */
-export type MsgKind = 'ask' | 'answer' | 'question' | 'aside' | 'route' | 'part' | 'forward' | 'compare' | 'back' | 'note';
+export type MsgKind = 'ask' | 'reply' | 'dispatch' | 'lens' | 'note';
 
 export interface RoomMsg {
   seq: number;
@@ -17,63 +16,24 @@ export interface RoomMsg {
   to: string[];
   text: string;
   kind: MsgKind;
-  /** The coordinator's one-line reason, shown before its message. */
-  line?: string;
-  mode?: string;
-  flow?: string;
-  /** What it answers or follows: a message id, or a flow's. */
-  re?: string;
-  round?: number;
-  rounds?: number;
-  /** A view kept back until everyone asked has answered. */
-  held?: boolean;
-  replyTo?: string;
-  /** A split route's parts; a part's number, of how many, and whose parts it waited for. */
-  parts?: { to: string; ask: string; after: string[] }[];
-  part?: number;
-  of?: number;
-  after?: string[];
-  /** An answer the human stopped mid-way: what it had said by then. */
+  /** The card a message of yours was about. */
+  card?: string;
+  /** A patch job: the lens may change files. */
+  patch?: boolean;
+  /** Stopped by you mid-way: what it had said by then. */
   stopped?: boolean;
 }
 
-export type ThreadItem =
-  | { kind: 'msg'; m: RoomMsg; children: ThreadItem[] }
-  | { kind: 'commit'; e: MhEvent }
-  | { kind: 'merged'; e: MhEvent }
-  | { kind: 'round'; e: MhEvent }
-  | ScoutRun;
-
-/** A lookup a seat handed its scout: the question, and the answer once it's in. */
-export interface ScoutRun {
-  kind: 'scout';
-  name: string;
-  seat: string;
-  brief: string;
-  ts: string;
-  answer?: string;
-}
-
-export interface CoordinatorStatus {
-  state: 'converging' | 'developing' | 'drifting';
-  line: string;
-  ending?: 'design' | 'patch' | 'goal';
-  ts: string;
-}
+export type ChatItem = { kind: 'msg'; m: RoomMsg } | { kind: 'commit'; e: MhEvent } | { kind: 'merged'; e: MhEvent };
 
 export interface RoomView {
-  open: boolean;
-  cast: Participant[];
-  board: BoardItem[];
-  status?: CoordinatorStatus;
-  /** What the coordinator is doing right now. */
-  coordinating?: 'route' | 'decide';
+  lenses: Lens[];
+  cards: CanvasCard[];
+  links: CanvasLink[];
+  /** When each card first showed, and when it last changed: new and changed cards stand out for a while. */
+  seen: Map<string, { added: number; changed: number }>;
   messages: RoomMsg[];
-  byId: Map<string, RoomMsg>;
-  /** The thread, answers nested under what they answer. */
-  thread: ThreadItem[];
-  /** Views flows whose answers are all in. */
-  revealed: Set<string>;
+  chat: ChatItem[];
   writers: Set<string>;
   /** Commits on the room's branch since it was last merged. */
   ahead: number;
@@ -81,101 +41,61 @@ export interface RoomView {
   from?: string;
 }
 
-export const COORDINATOR = '(coordinator)';
-export const isCoordinator = (n?: string) => n === COORDINATOR || n === 'coordinator';
-
 export function roomOf(events: MhEvent[], roomBranch: string | null): RoomView {
-  const v: RoomView = { open: false, cast: [], board: [], messages: [], byId: new Map(), thread: [], revealed: new Set(), writers: new Set(), ahead: 0 };
-  const items: ThreadItem[] = [];
-  const nodes = new Map<string, Extract<ThreadItem, { kind: 'msg' }>>();
-  // What each seat was last asked: its scout's lookups go under it.
-  const asking = new Map<string, Extract<ThreadItem, { kind: 'msg' }>>();
-  const scouts = new Map<string, ScoutRun>();
+  const v: RoomView = { lenses: [], cards: [], links: [], seen: new Map(), messages: [], chat: [], writers: new Set(), ahead: 0 };
   for (const e of events) {
     const d = e.data as Record<string, unknown>;
     switch (e.type) {
       case 'goal.started':
-        v.open = d.open === true;
         v.from = typeof d.from === 'string' ? d.from : undefined;
         break;
-      case 'room.cast':
-        v.cast = (d.cast as Participant[]) ?? [];
+      case 'room.lenses':
+        v.lenses = (d.lenses as Lens[]) ?? [];
         break;
-      case 'room.board':
-        v.board = (d.items as BoardItem[]) ?? [];
+      case 'room.canvas': {
+        const cards = (d.cards as CanvasCard[]) ?? [];
+        const t = Date.parse(e.ts);
+        const before = new Map(v.cards.map(c => [c.id, JSON.stringify(c)]));
+        for (const c of cards) {
+          const was = v.seen.get(c.id);
+          if (!was) v.seen.set(c.id, { added: t, changed: t });
+          else if (before.get(c.id) !== JSON.stringify(c)) was.changed = t;
+        }
+        v.cards = cards;
+        v.links = (d.links as CanvasLink[]) ?? [];
         break;
-      case 'room.open':
-        v.open = d.open === true;
-        break;
-      case 'room.status':
-        v.status = { state: d.state as CoordinatorStatus['state'], line: String(d.line ?? ''), ...(d.ending ? { ending: d.ending as CoordinatorStatus['ending'] } : {}), ts: e.ts };
-        break;
-      case 'room.coordinating':
-        v.coordinating = d.on === true ? ((d.kind as 'route' | 'decide') ?? 'decide') : undefined;
-        break;
+      }
       case 'room.writer':
         if (d.on) v.writers.add(e.agent!);
         else v.writers.delete(e.agent!);
         break;
-      case 'room.reveal':
-        v.revealed.add(String(d.flow));
-        break;
-      case 'room.round':
-        items.push({ kind: 'round', e });
-        break;
       case 'room.message': {
         const m: RoomMsg = {
-          seq: e.seq, ts: e.ts, id: String(d.id), from: String(d.from), to: (d.to as string[]) ?? [], text: String(d.text ?? ''), kind: (d.kind as MsgKind) ?? 'answer',
-          ...(d.line ? { line: String(d.line) } : {}), ...(d.mode ? { mode: String(d.mode) } : {}), ...(d.flow ? { flow: String(d.flow) } : {}), ...(d.re ? { re: String(d.re) } : {}),
-          ...(typeof d.round === 'number' ? { round: d.round } : {}), ...(typeof d.rounds === 'number' ? { rounds: d.rounds } : {}), ...(d.held ? { held: true } : {}),
-          ...(d.replyTo ? { replyTo: String(d.replyTo) } : {}), ...(Array.isArray(d.parts) ? { parts: d.parts as RoomMsg['parts'] } : {}),
-          ...(typeof d.part === 'number' ? { part: d.part, of: Number(d.of) } : {}), ...(Array.isArray(d.after) ? { after: d.after as string[] } : {}),
-          ...(d.stopped ? { stopped: true } : {}),
+          seq: e.seq, ts: e.ts, id: String(d.id), from: String(d.from), to: (d.to as string[]) ?? [], text: String(d.text ?? ''), kind: (d.kind as MsgKind) ?? 'reply',
+          ...(d.card ? { card: String(d.card) } : {}), ...(d.patch ? { patch: true } : {}), ...(d.stopped ? { stopped: true } : {}),
         };
         v.messages.push(m);
-        v.byId.set(m.id, m);
-        const node = { kind: 'msg' as const, m, children: [] as ThreadItem[] };
-        // Under what it answers: the message with that id, or the one that started that flow.
-        const parent = m.re ? (nodes.get(m.re) ?? [...nodes.values()].find(n => n.m.flow === m.re)) : undefined;
-        (parent ? parent.children : items).push(node);
-        nodes.set(m.id, node);
-        for (const t of m.to) if (t !== m.from) asking.set(t, node);
+        v.chat.push({ kind: 'msg', m });
         break;
       }
-      case 'agent.spawned':
-        if (d.quick && e.parent && v.cast.some(c => c.name === e.parent)) {
-          const run: ScoutRun = { kind: 'scout', name: e.agent!, seat: e.parent, brief: String(d.brief ?? ''), ts: e.ts };
-          (asking.get(e.parent)?.children ?? items).push(run);
-          scouts.set(run.name, run);
-        }
-        break;
-      case 'agent.done':
-      case 'agent.idle':
-        if (scouts.has(e.agent!)) scouts.get(e.agent!)!.answer = String(d.note ?? '');
-        break;
-      case 'agent.ended':
-      case 'agent.crashed':
-        if (scouts.has(e.agent!)) scouts.get(e.agent!)!.answer ??= `(it ${e.type === 'agent.ended' ? 'was stopped' : 'crashed'})`;
-        break;
       case 'git.commit':
         if (roomBranch && d.branch === roomBranch) {
           v.ahead++;
-          items.push({ kind: 'commit', e });
+          v.chat.push({ kind: 'commit', e });
         }
         break;
       case 'room.merged':
         v.ahead = 0;
         v.merged = e;
-        items.push({ kind: 'merged', e });
+        v.chat.push({ kind: 'merged', e });
         break;
     }
   }
-  v.thread = items;
   return v;
 }
 
-/** Who a seat is: its role, or its model when it has none. */
-export const seatWhat = (p: Participant) => p.role ?? p.on?.split('@')[0].split('/').pop() ?? 'model';
+/** Who a lens is: its role, or its model when it has none. */
+export const lensWhat = (p: Lens) => p.role ?? p.on?.split('@')[0].split('/').pop() ?? 'model';
 
 /** A responsibility's short label: the preset's name, else its first words. */
 export function responsibilityLabel(text: string | undefined, presets: { name: string; text: string }[] = []): string {
@@ -186,20 +106,12 @@ export function responsibilityLabel(text: string | undefined, presets: { name: s
   return first.length > 32 ? `${first.slice(0, 31)}…` : first;
 }
 
-export const MODES: { mode: 'ask' | 'job' | 'views' | 'debate' | 'chain' | 'patch'; label: string; hint: string }[] = [
-  { mode: 'ask', label: 'Ask', hint: 'A short answer. With nobody picked, the coordinator picks who' },
-  { mode: 'job', label: 'Job', hint: 'Go and find out with their tools, then report back' },
-  { mode: 'views', label: 'Views', hint: 'Each answers on their own; the answers show together once all are in' },
-  { mode: 'debate', label: 'Debate', hint: 'Rounds where each sees the others’ last answers and responds' },
-  { mode: 'chain', label: 'Chain', hint: 'One after another, in the order picked, each building on the last answer' },
-  { mode: 'patch', label: 'Patch', hint: 'One participant changes the code on the room’s branch, tests and commits' },
-];
-
-export const BOARD_SECTIONS: { kind: BoardItem['kind']; label: string }[] = [
-  { kind: 'question', label: 'Open questions' },
-  { kind: 'finding', label: 'Findings' },
-  { kind: 'decision', label: 'Decided' },
-  { kind: 'file', label: 'Files' },
+export const CARD_KINDS: { kind: CanvasCard['kind']; label: string; hint: string }[] = [
+  { kind: 'question', label: 'Questions', hint: 'Still open to the room' },
+  { kind: 'idea', label: 'Ideas', hint: 'Options and approaches' },
+  { kind: 'finding', label: 'Findings', hint: 'Facts from the code, with where' },
+  { kind: 'risk', label: 'Risks', hint: 'What could go wrong' },
+  { kind: 'decision', label: 'Decided', hint: 'What you settled' },
 ];
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];

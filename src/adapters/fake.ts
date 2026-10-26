@@ -213,7 +213,11 @@ class FakeSession implements Session {
       this.ev.text(`(script error: ${(e as Error).message})`);
     }
     this.running = false;
-    if (!this.stopped) this.ev.turnEnded();
+    if (this.stopped) return;
+    this.ev.turnEnded();
+    // Messages that came in during the turn and the script never read are the next turn, as
+    // with a real harness (a line written mid-turn that the model didn't take up).
+    if (this.queue.length && this.turnScript && !this.running) void this.send(this.queue.splice(0).join('\n'), 'new_turn');
   }
 
   async send(text: string, how: 'inject' | 'new_turn'): Promise<void> {
@@ -290,25 +294,33 @@ export const demoScripts: Record<string, FakeScript> = {
   },
 };
 
-/** A room's coordinator, scripted: routes to the first seat, then hands the answers back with a note on the board. */
-const demoCoordinator: FakeTurnScript = async (ctx, text) => {
-  const seat = /\nSeats:\n- ([\w.-]+)/.exec(text)?.[1];
-  const seats = [...(text.split('\nSeats:\n')[1]?.split('\n\n')[0] ?? '').matchAll(/^- ([\w.-]+)/gm)].map(m => m[1]);
-  // A question in two halves ("…, and …") is split: the first seat finds, the second builds on it.
-  const asked = /without picking anyone[^\n]*:\n([\s\S]*?)\n\n/.exec(text)?.[1] ?? '';
-  const halves = asked.split(/,? and (?=\w+ )/);
-  if (/without picking anyone/.test(text) && seats.length > 1 && halves.length > 1) {
-    ctx.say(JSON.stringify({ route: { mode: 'ask', line: `${seats[0]} looks into it, then ${seats[1]} builds on that`, parts: [{ to: seats[0], ask: halves[0].trim() }, { to: seats[1], ask: halves.slice(1).join(' and ').trim(), after: [seats[0]] }] }, status: 'developing', line: 'split in two' }));
+/**
+ * A room's lead, scripted: it opens with the question on the canvas, sends the first lens with
+ * whatever the human asks, and puts each lens's answer on the canvas as a finding.
+ */
+const demoRoomLead: FakeTurnScript = async (ctx, text) => {
+  const lenses = [...(ctx.spec.systemPrompt.split('The human set these up for you to send:\n')[1] ?? '').matchAll(/^- ([\w.-]+) \(/gm)].map(m => m[1]);
+  const finished = [...text.matchAll(/\[MetaHarness\] ([\w.-]+) finished: ([^\n]+)/g)];
+  if (finished.length) {
+    for (const [, who, note] of finished) await ctx.tool('canvas', { ops: [{ op: 'add', kind: 'finding', title: note.slice(0, 80), text: note, links: [{ to: 'c1', label: 'answers' }] }] });
+    ctx.say(`${finished.map(([, who]) => who).join(' and ')} came back: ${finished.map(([, , note]) => note.slice(0, 120)).join(' ')} It's on the canvas. Want to dig further, or settle it?`);
     return;
   }
-  if (/without picking anyone/.test(text) && seat) {
-    ctx.say(JSON.stringify({ route: { to: [seat], mode: 'ask', line: `${seat} takes it first` }, status: 'developing', line: 'a first question is out' }));
+  const asked = /\[MetaHarness\] Message from human: ([\s\S]+)/.exec(text)?.[1]?.trim();
+  if (!asked) {
+    const topic = text.split('\n[Room]')[0].trim();
+    await ctx.tool('canvas', { ops: [{ op: 'add', kind: 'question', title: topic.split('\n')[0].slice(0, 100) }] });
+    ctx.say(`I read it as: ${topic.split('\n')[0].slice(0, 120)}. It's on the canvas. What matters most to you here?`);
     return;
   }
-  const said = /New, to decide on:\n\[[^\]]*\][^\n]*\n([^\n]+)/.exec(text)?.[1] ?? '';
-  ctx.say(JSON.stringify({ next: { action: 'back', text: `That answers it: ${said.slice(0, 160)}`, line: 'answered' }, status: 'converging', line: 'the question has an answer', board: said ? [{ op: 'add', kind: 'finding', text: said.slice(0, 160) }] : [] }));
+  if (!lenses.length) {
+    ctx.say('Noted. There are no lenses to send yet: add one and I can have it look.');
+    return;
+  }
+  await ctx.tool('spawn', { role: lenses[0], brief: asked });
+  ctx.say(`Sending ${lenses[0]} to look into that; I'll be back when it answers.`);
 };
 
-/** Later turns of the demo roles (a room's coordinator is asked again and again). */
-export const demoTurns: Record<string, FakeTurnScript> = { coordinator: demoCoordinator };
-demoScripts.coordinator = ctx => demoCoordinator(ctx, ctx.spec.brief);
+/** Later turns of the demo roles (a room's lead hears from the human and its lenses again and again). */
+export const demoTurns: Record<string, FakeTurnScript> = { 'room-lead': demoRoomLead };
+demoScripts['room-lead'] = ctx => demoRoomLead(ctx, ctx.spec.brief);

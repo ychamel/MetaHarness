@@ -626,7 +626,7 @@ VS Code panel works the same way.
 | **Replay** | Time scrubber over a finished goal; every view replays | Improving roles and workflows |
 | **Search** | Across streams, messages and shared files | Finding anything |
 | **Goals** | Current and past goals, with retrospectives | History |
-| **Rooms** | Discussions the human leads (§21): a thread with ask modes, seats, the coordinator's read and the board; the goal tabs besides | Exploring and deciding before or after a goal |
+| **Rooms** | Brainstorms (§21): the chat with the room's lead, the lenses it sends, and the canvas it keeps; the goal tabs besides | Exploring and deciding before or after a goal |
 
 ### When the team gets big
 
@@ -1310,102 +1310,78 @@ Claude Code, and the team. Compare result quality, cost, time, and how often you
 
 ---
 
-## 21. Discussion rooms
+## 21. Brainstorm rooms
 
-A goal hands the work to a lead. A **room** is for before or after that: the human leads a few
-agents through a question about the code (exploring a bug, understanding a part, choosing where
-to go), and either settles it there, fixes small things, or writes a design for a goal to carry
-out. Brainstormed and built on 2026-10-25, reworked on 2026-10-26 after a real room (every seat
-answered everything; side questions ran unseen and ping-ponged; the coordinator stopped looking).
+A goal hands the work to a lead. A **room** is for before or after that: the human brainstorms a
+question about the code (exploring a bug, understanding a part, working out a design) and either
+settles it there, fixes small things on the go, or writes a design for a goal to carry out.
 
-**Underneath, a room is a goal** (`kind: room` on `goal.started`) with no lead agent: the same
-agents, sessions, events, costs and views (Graph, Sequence, Timeline, Costs, Files, Git, Design,
-Log). Its request is the topic. It's one sitting: rooms aren't recovered after a daemon restart
-("New room from…" carries the board on).
+First built on 2026-10-25 as a discussion the human led among seats, with a coordinator routing
+who spoke. The first real rooms showed it was too slow (every hop was a full agent turn, and the
+coordinator's decisions were turns too) and tiring to follow (the thread was the record). Reworked
+on 2026-10-26 (brainstorm → "go"): **one lead the human talks with**, which sends **lenses**
+behind the scenes and keeps a **canvas** that is the record. A summary from the lead is enough;
+the canvas keeps every lens's findings visible anyway.
 
-- **Seats** (`room.cast`): a **role**, or **just a model** (`on: harness/model@effort`, then a
-  responsibility is required, as it's all the seat is told), plus a **responsibility** (what it's
-  for in this room; the coordinator routes by it) and an optional **stance** (how to look at
-  things). A role's seat may run on another model. Responsibilities are inline text for now,
-  started from six presets (`RESPONSIBILITIES` in `src/rooms.ts`: Gather, Investigate, Big
-  picture, Review, Ideas, Patch), each role getting its usual one when none is given. "Ideas"
-  says not to read the code; nothing enforces it. A seat's session starts the first time it's
-  addressed; `@role` in a message (or `room.add`) seats a role on the fly. **Casts**:
-  `casts/<name>.md`, a `## <role or "model"> [as <name>]` heading per seat with `on:`,
-  `responsibility:`, `stance:` and `scout: on` lines.
-- **Bench, stop, scout** (added 2026-10-26, round 3). **Bench** (`room.bench`) takes a seat out
-  of the discussion: nobody routes to it (the human's picks and `@name` are refused, `all` skips
-  it, the coordinator sees "benched: never route to it", the roster says so), and between turns
-  its process stops with its session kept to resume (on a harness that can). One at work
-  finishes its answer first. Brought back, it resumes and its digest says what it missed. There
-  is no removing a seat. **Stop** (`room.stop`) cuts what a seat is doing and keeps the seat: the
-  turn is interrupted (natively, else the process is stopped and resumed on the next message,
-  so the session keeps what it was thinking), what it said in that turn is posted as its answer
-  marked *stopped*, and the coordinator sees it in the thread without being asked to decide on
-  it, since the human usually asks again. What it was asked ends there (a chain or debate goes
-  no further), except a part of a split question, whose later parts go on with what it said.
-  **Scout** (per seat, `scout: true`, `room.scout`): the seat may hand lookups to the
-  configured `scout` role as a quick helper (`spawn` with `quick: true`), told so in its prompt;
-  off, a room seat's quick spawns are refused (harnesses' own subagents are off anyway). This is
-  the seat's own helper; a scout *seat* (the Gather responsibility) still looks things up for
-  the whole room. Its lookups show in the thread under what the seat was answering.
-- **What participants are told:** the room's own methodology in place of the team's, with the
-  **roster** (each seat's name, role or model, responsibility, started or not; new seats ride
-  along as a note), their responsibility and stance, the board and thread files, and how to
-  talk: answer to the room, end with `→ name: why` to suggest who goes next. Each message they
-  get ends with a **digest**: a line for each of the last eight things said since they last
-  spoke. The `team` tool answers with the room. What the human says from an agent's panel goes
-  through the thread too. Answers are kept simple and conversational (the answer first, then what
-  it rests on); details go in a report, `shared/reports/<name>-<n>.md`, named in the answer.
-- **Asking** (`room.post`): with seats picked (clicked, or `@name`), straight to them, as *ask*,
-  *job*, *views* (held until all are in), *respond* (to a quoted message), *debate ×N*, *chain*
-  or *patch*. With **nobody picked**, the coordinator routes it. Everyone owes an answer before
-  anyone is asked, since an answer can come back at once.
-- **Answers:** `done` (or the end of the turn without one) is posted to the thread, under what
-  it answers (`re`); never the Inbox. A question for a participant still ending the turn it
-  answered in waits for that turn to end.
-- **The coordinator** (built-in role on Codex luna, Sonnet the first backup; Settings → Room
-  coordinator) is a side session that answers in JSON, one job at a time:
-  - **route** a message nobody was picked for: who (by responsibility), and as ask, job, views
-    or a chain, with a line the human sees. It starts at once, without waiting for approval. A
-    question whose parts need different responsibilities it **splits**: each part goes to one
-    seat with its own ask (plus the whole question, for context only), and the coordinator
-    decides the order: parts that wait for nothing run in parallel, a part with `after` waits
-    for those parts and gets their answers. A part waits only for parts before it, so a plan
-    can't wait on itself. Once every part is answered it decides once, on all of them.
-  - **decide** after answers (a flow's answers once all are in, or a message said unasked):
-    *back* to the human with a summary (answered, only they can decide, or nothing new),
-    *forward* to a seat with what matters quoted (weighing any `→ name` hint), *compare* seats
-    that disagree, or *note*. While a step it started still owes answers, it waits and then
-    decides on everything at once. After four forwards without the human it's told to hand back
-    (a check-in, never a block).
-  - Every answer also carries a status (*converging*, *developing*, *drifting*, with why), board
-    changes and an ending when it sees one (*design*, *patch*, *goal*).
-- **Moderated or open:** moderated (the default), a participant never messages another: what it
-  `send`s (or a `spawn`) is posted as an aside and the coordinator decides. **Open**, they message
-  each other directly and whoever asked hears the answer; the coordinator only watches, keeps the
-  board, and steers a seat when the talk drifts.
-- **The board** (`room.board`, the whole list each time): findings, open questions, decisions,
-  files. The coordinator and the human edit it.
-- **Patches** go on the room's own branch, `mh/<room>/room`, in one worktree every participant
-  reads in. Only a participant on a patch job (anyone the human picks) may edit outside the
-  shared folder; its access ends with its answer. The human merges the branch once
-  (`room.merge`); then a cartographer (if the map rules are on) maps the result in the checkout.
-- **Endings:** *Write the design* (`shared/room/design.md`), *Start a goal from this*
-  (`fromRoom`: the lead's brief points at the board, the design and the thread), *New room from
-  this* (or *Discuss in a room* on a finished goal: the board carries over), *End room* (keep the
-  branch, or discard unmerged patches).
+**Underneath, a room is a goal** (`kind: room` on `goal.started`) whose lead is the room's lead:
+the same agents, sessions, events, costs and views (Graph, Sequence, Timeline, Costs, Files, Git,
+Design, Log). Its request is the topic. It's one sitting: rooms aren't recovered after a daemon
+restart ("New room from…" carries the canvas on).
 
-The UI's **Rooms** tab opens on the open room. Its **Room** tab is a canvas (you in the middle,
-seats around with their responsibility, what they're doing and their last answer, the
-coordinator below; lines show who works for whom and what was just said; click to address,
-shift-click to add, drag one seat onto another to have it respond, double-click to open), the
-composer under it ("◆ the coordinator picks" when nobody is), and beside it the **Thread**
-(answers nested under what they answer, the coordinator's ◆ lines) and the **Board**. A seat's
-card has Stop (while it works), Bench / Bring back and its scout switch. Shared files named in
-the thread (by path in the shared folder or the full path agents are given) are links, with a
-chip for each under the message; they open in the side panel in place of the thread, as in the
-Graph tab (← back or Esc; "Open in Files").
+- **The lead** is a role (Settings → Room lead, `roomLead`; built in: `room-lead` on Antigravity
+  `gemini-3.8-flash-medium`, Claude Sonnet then Codex luna as backups: a model that talks well
+  and answers fast). It's told the room's methodology in place of the team's: reply short; never
+  make the human wait on lenses (send one, say so in a line, end the turn: its answer wakes it);
+  keep the canvas; only the human decides; suggest branching when the talk splits. Its **reply**
+  is its turn's last message, or its `done` note (a room's lead never finishes: `done` just
+  posts), or what it `send`s to the human. It never changes project files. Its opening turn puts
+  the question on the canvas and greets the human.
+- **Lenses** (`room.lenses`): a **role**, or **just a model** (`on: harness/model@effort`, then a
+  responsibility is required), plus a **responsibility** (what it's for; the lead picks by it;
+  six presets in `RESPONSIBILITIES`, each role getting its usual one) and an optional **stance**.
+  The human sets them up (new room, `room.lens`) and can put one away (`room.lensOff`). The lead
+  sends one with `spawn` (role: the lens's name); the first ask starts its session, later ones
+  are new turns of it, so it keeps what it learnt. A `spawn` with `quick: true` from the lead is
+  sent the same way (the lead never blocks on a helper). A lens's answer (`done`, or its turn's
+  last message) goes to the lead as any teammate's result and shows in the chat. Lenses talk only
+  with the lead: what they `send` the human or another lens goes to the lead; they can't start
+  anyone (quick helpers aside). **Casts**: `casts/<name>.md`, a `## <role or "model"> [as
+  <name>]` heading per lens with `on:`, `responsibility:` and `stance:` lines.
+- **The canvas** (`room.canvas`, the whole of it each time; `shared/room/canvas.md` for the
+  agents): **cards** (`question`, `idea`, `finding`, `risk`, `decision`; a short title, optional
+  detail, file refs, notes from others, a status: open, *settled* or *dropped*) and **links**
+  between them with an optional label. Everyone changes it through ops by id (add, edit, settle,
+  drop, reopen, note, link, unlink, remove): the lead and the lenses with the `canvas` tool
+  (published only in rooms), the human from the UI. A card added with a `ref` can be linked to in
+  the same call; the same title twice in a kind is refused with the existing id. The lead hears
+  what others changed (a note riding along with its next message).
+- **Asking** (`room.post`): what the human says goes to the lead, optionally about a card (the
+  lead gets `[About c3, idea: …]`). Said mid-turn, it joins the lead's running turn where the
+  harness allows.
+- **Stop** (`room.stop`): cuts the lead's or a lens's turn and keeps its session (natively, else
+  the process is stopped and resumed on the next message). What it said in that turn is posted,
+  marked *stopped*: the lead's as its reply, a lens's as its answer, which the lead hears.
+- **Branching:** `room.start` with `from` (a room) and `cards` starts a room with those cards,
+  the ones linked to them and the links between them (renumbered); the parent's cards show the
+  branch while the parent is open, and its lead is told. `from` alone carries every card not
+  dropped (a room), or a goal's outcome and reports as a finding.
+- **Patches**: the lead sends a lens with `patch: true`; it may then change files on the room's
+  own branch, `mh/<room>/room`, in the one worktree everyone reads in, until it answers. The
+  human merges the branch (`room.merge`); then a cartographer (if the map rules are on) maps the
+  result in the checkout.
+- **Endings** (when the human chooses): *Write the design* (a message asking the lead for
+  `shared/room/design.md`), *→ Goal* (`fromRoom`: the goal's lead is pointed at the canvas, the
+  design and the chat), *New room from this*, *End room* (keep the branch, or discard unmerged
+  patches).
+
+The UI's **Rooms** tab opens on the open room. Its **Room** tab has the **chat** (you and the
+lead; a line for each lens sent and each answer, the whole text a click away; the lead's and
+lenses' progress while they work; shared files named there open in the chat's place) beside the
+**canvas** (the lenses over it with what each is doing, ■ stop and ⏻ put away; a column per
+kind of card there is, arrows for links drawn after layout; new cards glow; a card opens on a
+click and lights its neighbours; picked cards can be asked about, branched, settled, dropped or
+linked). The header holds the endings, Merge and End. Rooms keep their own make-room setting,
+apart from goals', and start with the team and agent columns put away.
 
 ---
 

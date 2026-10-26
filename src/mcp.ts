@@ -16,7 +16,7 @@ export const APPROVAL_TOOL = 'approval';
 const flexible = z.union([z.string(), z.number(), z.boolean()]);
 const SCHEMAS: Record<(typeof TOOL_NAMES)[number], z.ZodType> = {
   team: z.looseObject({}),
-  spawn: z.looseObject({ role: z.string().optional(), brief: z.string().optional(), quick: flexible.optional(), name: z.string().optional(), worktree: flexible.optional(), from: z.string().optional() }),
+  spawn: z.looseObject({ role: z.string().optional(), brief: z.string().optional(), quick: flexible.optional(), name: z.string().optional(), worktree: flexible.optional(), from: z.string().optional(), patch: flexible.optional() }),
   respawn: z.looseObject({ name: z.string().optional(), fresh: flexible.optional(), on: z.string().optional(), note: z.string().optional() }),
   send: z.looseObject({ to: z.string().optional(), text: z.string().optional(), urgent: flexible.optional(), decision: flexible.optional() }),
   wait: z.looseObject({ timeout: flexible.optional() }),
@@ -24,6 +24,7 @@ const SCHEMAS: Record<(typeof TOOL_NAMES)[number], z.ZodType> = {
   done: z.looseObject({ note: z.string().optional() }),
   workflow: z.looseObject({ name: z.string().optional() }),
   skill: z.looseObject({ name: z.string().optional(), part: z.string().optional() }),
+  canvas: z.looseObject({ ops: z.union([z.array(z.looseObject({})), z.string()]).optional() }),
 };
 
 function describe(name: (typeof TOOL_NAMES)[number]): string {
@@ -39,7 +40,9 @@ type Register = (name: string, config: { description: string; inputSchema: z.Zod
 function buildServer(d: Daemon, goal: string, agent: string): McpServer {
   const server = new McpServer({ name: MCP_SERVER_NAME, version: '0.0.1' });
   const register = server.registerTool.bind(server) as unknown as Register;
+  const room = !!d.goals.get(goal)?.room;
   for (const name of TOOL_NAMES) {
+    if (name === 'canvas' && !room) continue;
     register(name, { description: describe(name), inputSchema: SCHEMAS[name] }, async args => ({
       content: [{ type: 'text', text: await d.hub.call(goal, agent, name, args) }],
     }));

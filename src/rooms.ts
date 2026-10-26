@@ -1,57 +1,53 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parseFrontMatter } from './config.ts';
-import type { Session, SessionEvents, Usage } from './adapters/types.ts';
 import type { Worktree } from './git.ts';
 import type { Role } from './types.ts';
 
 /**
- * Discussion rooms (design §21): the human leads a few agents through a question about the code.
- * A room is a goal underneath (the same agents, events, costs and views) with no lead agent. Each
- * seat has a responsibility; everything said goes to the room's thread; the coordinator routes
- * what nobody was picked for and, after each answer, decides who goes next; fixes go on the
- * room's own branch, merged once at the end. This file holds the plain parts: seats and casts,
- * responsibilities, the board, what participants are told, and the coordinator session.
+ * Brainstorm rooms (design §21): the human talks with one lead agent, which keeps a canvas of
+ * cards and links up to date and sends lenses (agents the human set up as available) to look
+ * into things behind the scenes. A room is a goal underneath (the same agents, events, costs and
+ * views). This file holds the plain parts: lenses and casts, the canvas, and what the lead and
+ * the lenses are told.
  */
 
-/** One seat: a role (or just a model), what it's responsible for here, and how it should look at things. */
-export interface Participant {
-  /** A role from the configuration; none: the seat is just a model (`on` is then required). */
+/** A lens the lead may send: a role (or just a model), what it's for in this room, and how it should look at things. */
+export interface Lens {
+  /** A role from the configuration; none: the lens is just a model (`on` is then required). */
   role?: string;
   /** Its name in the room; default the role's, or the model's. */
   name?: string;
   /** "harness/model" or "harness/model@effort", instead of the role's own. */
   on?: string;
-  /** What it's for in this room: the coordinator routes by it. Default: the role's usual one. */
+  /** What it's for here: the lead picks lenses by it. Default: the role's usual one. */
   responsibility?: string;
   /** How it should look at the question, e.g. "argue for the simplest fix". */
   stance?: string;
-  /** It may hand lookups to MetaHarness's scout (a quick helper), keeping its own turn for the thinking. */
-  scout?: boolean;
-  /** Out of the discussion for now: nobody routes to it, and its session rests until it's brought back. */
-  benched?: boolean;
+  /** Put away by the human: the lead can't send it until it's back. */
+  off?: boolean;
 }
 
-/** A saved set of seats: casts/<name>.md. */
+/** A saved set of lenses: casts/<name>.md. */
 export interface Cast {
   name: string;
   goodAt: string;
-  participants: Participant[];
+  participants: Lens[];
   file: string;
 }
 
-/** Responsibilities to start from; a seat keeps its own text, edited or not. */
+/** Responsibilities to start from; a lens keeps its own text, edited or not. */
 export const RESPONSIBILITIES: { name: string; text: string; roles: string[] }[] = [
   { name: 'Gather', roles: ['scout'], text: 'Gather information fast: where things are in the code, what changed and when, with file:line. Report what you found, not what to do about it.' },
   { name: 'Investigate', roles: ['explorer'], text: 'Investigate hard questions: reproduce a bug, trace a flow end to end, run the code or its tests to check. Report the cause, with the evidence.' },
   { name: 'Big picture', roles: ['designer', 'architect'], text: 'Explain the bigger picture: how the parts fit, what a change means for the design, the trade-offs, and where things should live.' },
   { name: 'Review', roles: ['reviewer'], text: 'Review a proposed direction or change: the risks, gaps and edge cases, and what would break. Say what you would change and why.' },
-  { name: 'Ideas', roles: ['creative'], text: "Come up with ideas and options from what the room has found. Don't read the code yourself: work from the thread, the board and the reports." },
-  { name: 'Patch', roles: ['implementer'], text: 'Make the agreed change when given a patch job: small, tested, and committed on the room\'s branch.' },
+  { name: 'Ideas', roles: ['creative'], text: "Come up with ideas and options from what the canvas holds. Don't read the code yourself: work from the canvas and the reports." },
+  { name: 'Patch', roles: ['implementer'], text: "Make a small agreed change when the lead gives you a patch job: tested, and committed on the room's branch." },
 ];
 
-/** A seat's responsibility: its own, else its role's usual one, else none. */
-export function responsibilityOf(p: Participant): string {
+/** A lens's responsibility: its own, else its role's usual one, else none. */
+export function responsibilityOf(p: Lens): string {
   if (p.responsibility?.trim()) return p.responsibility.trim();
   const role = p.role?.toLowerCase() ?? '';
   return RESPONSIBILITIES.find(r => r.roles.some(x => role === x || role.includes(x)))?.text ?? '';
@@ -65,154 +61,303 @@ export function responsibilityLabel(text: string): string {
   return first.length > 40 ? `${first.slice(0, 39)}…` : first;
 }
 
-/** A seat that's just a model: a role made from it, its instructions being the responsibility. */
-export function modelRole(p: Participant): Role {
+/** A lens that's just a model: a role made from it, its instructions being the responsibility. */
+export function modelRole(p: Lens): Role {
   const on = p.on ?? '';
   const at = on.lastIndexOf('@');
   const route = at > 0 ? on.slice(0, at) : on;
   const slash = route.indexOf('/');
   return {
     name: 'model', harness: slash > 0 ? route.slice(0, slash) : route, model: slash > 0 ? route.slice(slash + 1) : '', ...(at > 0 ? { effort: on.slice(at + 1).toLowerCase() } : {}),
-    fallback: [], goodAt: responsibilityOf(p), instructions: '', helper: false, allow: [], autoApprove: 'read-only', mcp: [], worktree: false, file: '(room seat)',
+    fallback: [], goodAt: responsibilityOf(p), instructions: '', helper: false, allow: [], autoApprove: 'read-only', mcp: [], worktree: false, file: '(room lens)',
   };
 }
 
-export type BoardKind = 'finding' | 'question' | 'decision' | 'file';
-export const BOARD_KINDS: BoardKind[] = ['finding', 'question', 'decision', 'file'];
+/* ---------------- the canvas ---------------- */
 
-export interface BoardItem {
+/** question: still open to the room; idea: an option or approach; finding: a fact from the code; risk: what could go wrong; decision: what the human settled. */
+export type CardKind = 'question' | 'idea' | 'finding' | 'risk' | 'decision';
+export const CARD_KINDS: CardKind[] = ['question', 'idea', 'finding', 'risk', 'decision'];
+const KIND_WORDS: Record<string, CardKind> = { option: 'idea', approach: 'idea', proposal: 'idea', fact: 'finding', evidence: 'finding', concern: 'risk', issue: 'risk', problem: 'risk', decided: 'decision' };
+
+export interface Card {
   id: string;
-  kind: BoardKind;
-  text: string;
-  /** human, (coordinator), or where it was carried over from. */
+  kind: CardKind;
+  /** A few words: what the card says at a glance. */
+  title: string;
+  /** More, when the title isn't enough (markdown). */
+  text?: string;
+  /** Files (path or path:line) it rests on. */
+  refs?: string[];
+  /** open (default); settled: answered or done; dropped: an idea turned down, a finding that proved wrong. */
+  status?: 'settled' | 'dropped';
+  /** The human, the lead, a lens, or where it was carried over from. */
   by: string;
-  /** An open question that was answered. */
-  closed?: boolean;
+  /** What lenses (or the human) added to someone else's card. */
+  notes?: { by: string; text: string }[];
+  /** Rooms branched off from it. */
+  branches?: string[];
 }
 
-export type BoardOp =
-  | { op: 'add'; kind: BoardKind; text: string }
-  | { op: 'edit'; id: string; text: string }
-  | { op: 'close'; id: string; closed?: boolean }
+export interface CardLink {
+  from: string;
+  to: string;
+  /** e.g. "answers", "rules out", "depends on". */
+  label?: string;
+}
+
+export interface Canvas {
+  cards: Card[];
+  links: CardLink[];
+  seq: number;
+}
+
+export type CanvasOp =
+  | { op: 'add'; kind: CardKind; title: string; text?: string; refs?: string[]; links?: { to: string; label?: string }[]; ref?: string }
+  | { op: 'edit'; id: string; title?: string; text?: string; kind?: CardKind; refs?: string[] }
+  | { op: 'settle' | 'drop' | 'reopen'; id: string }
+  | { op: 'note'; id: string; text: string }
+  | { op: 'link'; from: string; to: string; label?: string }
+  | { op: 'unlink'; from: string; to: string }
   | { op: 'remove'; id: string };
 
+export interface CanvasResult {
+  changed: boolean;
+  /** One line per change, for whoever made it and for the lead. */
+  done: string[];
+  /** Ops that were skipped, and why. */
+  skipped: string[];
+}
+
+const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** A card kind from what a model may write ("option", "Finding"). */
+export function cardKind(v: unknown): CardKind | undefined {
+  const k = String(v ?? '').toLowerCase().trim().replace(/s$/, '');
+  return CARD_KINDS.includes(k as CardKind) ? (k as CardKind) : KIND_WORDS[k];
+}
+
 /**
- * How a message is asked. ask: a short answer; job: go and find out, then report; views: everyone
- * answers on their own, shown together; respond: answer one message of the thread; debate: rounds
- * where each sees the others' last answers; chain: one after another, each with the last answer;
- * patch: one participant changes the code on the room's branch.
+ * Applies changes to the canvas. A card added with `ref` can be linked to by that ref later in
+ * the same call. Unknown ids, empty titles and repeats are skipped and said so.
  */
-export type AskMode = 'ask' | 'job' | 'views' | 'respond' | 'debate' | 'chain' | 'patch';
-export const ASK_MODES: AskMode[] = ['ask', 'job', 'views', 'respond', 'debate', 'chain', 'patch'];
-
-/** A question in progress: who still owes an answer, and what follows. */
-export interface Flow {
-  id: string;
-  mode: AskMode;
-  text: string;
-  /** Who asked: the human or the coordinator. */
-  from: string;
-  /** Everyone it's for, in order (a chain's order). */
-  to: string[];
-  round: number;
-  rounds: number;
-  waiting: Set<string>;
-  /** This round's answers, by participant. */
-  answers: Map<string, string>;
-  /** Earlier rounds' answers, for a debate's next round. */
-  earlier: Map<string, string>;
-  /** Every answer's message id, for the coordinator's decision once the flow is through. */
-  answerIds: string[];
-  /** The message a respond answers, quoted to each. */
-  quote?: { from: string; text: string };
-  /** One part of a split question: its plan, which hears when it's through. */
-  plan?: string;
+export function applyCanvas(c: Canvas, ops: CanvasOp[], by: string): CanvasResult {
+  const out: CanvasResult = { changed: false, done: [], skipped: [] };
+  const refs = new Map<string, string>();
+  const idOf = (x: string) => {
+    const k = String(x ?? '').trim().replace(/^#/, '');
+    return refs.get(k) ?? c.cards.find(card => card.id.toLowerCase() === k.toLowerCase())?.id;
+  };
+  const link = (from: string, to: string, label?: string) => {
+    if (from === to || c.links.some(l => l.from === from && l.to === to)) return false;
+    c.links.push({ from, to, ...(label?.trim() ? { label: cut(label.trim(), 40) } : {}) });
+    return true;
+  };
+  for (const op of ops) {
+    if (op.op === 'add') {
+      const title = op.title?.trim();
+      if (!title || !CARD_KINDS.includes(op.kind)) {
+        out.skipped.push(`a card needs a kind (${CARD_KINDS.join(', ')}) and a title`);
+        continue;
+      }
+      const same = c.cards.find(x => x.kind === op.kind && x.title.toLowerCase() === title.toLowerCase());
+      if (same) {
+        if (op.ref) refs.set(op.ref, same.id);
+        out.skipped.push(`"${cut(title, 60)}" is already on the canvas as ${same.id}`);
+        continue;
+      }
+      const card: Card = {
+        id: `c${++c.seq}`, kind: op.kind, title: cut(title, 160), by,
+        ...(op.text?.trim() ? { text: cut(op.text.trim(), 1500) } : {}), ...(op.refs?.length ? { refs: op.refs.map(r => r.trim()).filter(Boolean).slice(0, 8) } : {}),
+      };
+      c.cards.push(card);
+      if (op.ref) refs.set(op.ref, card.id);
+      const linked = (op.links ?? []).map(l => ({ to: idOf(l.to), label: l.label })).filter(l => !!l.to && link(card.id, l.to, l.label));
+      out.done.push(`added ${card.id} (${card.kind}): ${cut(card.title, 80)}${linked.length ? `, linked to ${linked.map(l => l.to).join(', ')}` : ''}`);
+      out.changed = true;
+      continue;
+    }
+    if (op.op === 'link' || op.op === 'unlink') {
+      const from = idOf(op.from);
+      const to = idOf(op.to);
+      if (!from || !to) {
+        out.skipped.push(`there's no card ${!from ? op.from : op.to}`);
+        continue;
+      }
+      if (op.op === 'link') {
+        if (!link(from, to, op.label)) continue;
+        out.done.push(`linked ${from} → ${to}${op.label ? ` (${op.label})` : ''}`);
+      } else {
+        const before = c.links.length;
+        c.links = c.links.filter(l => !((l.from === from && l.to === to) || (l.from === to && l.to === from)));
+        if (c.links.length === before) continue;
+        out.done.push(`unlinked ${from} and ${to}`);
+      }
+      out.changed = true;
+      continue;
+    }
+    const id = idOf(op.id);
+    const card = id ? c.cards.find(x => x.id === id) : undefined;
+    if (!card) {
+      out.skipped.push(`there's no card ${op.id}`);
+      continue;
+    }
+    if (op.op === 'edit') {
+      if (op.title?.trim()) card.title = cut(op.title.trim(), 160);
+      if (op.text !== undefined) {
+        if (op.text.trim()) card.text = cut(op.text.trim(), 1500);
+        else delete card.text;
+      }
+      if (op.kind && CARD_KINDS.includes(op.kind)) card.kind = op.kind;
+      if (op.refs) card.refs = op.refs.map(r => r.trim()).filter(Boolean).slice(0, 8);
+      out.done.push(`edited ${card.id}`);
+    } else if (op.op === 'settle' || op.op === 'drop') {
+      card.status = op.op === 'settle' ? 'settled' : 'dropped';
+      out.done.push(`${op.op === 'settle' ? 'settled' : 'dropped'} ${card.id}`);
+    } else if (op.op === 'reopen') {
+      if (!card.status) continue;
+      delete card.status;
+      out.done.push(`reopened ${card.id}`);
+    } else if (op.op === 'note') {
+      if (!op.text?.trim()) continue;
+      (card.notes ??= []).push({ by, text: cut(op.text.trim(), 600) });
+      out.done.push(`noted on ${card.id}`);
+    } else if (op.op === 'remove') {
+      c.cards.splice(c.cards.indexOf(card), 1);
+      c.links = c.links.filter(l => l.from !== card.id && l.to !== card.id);
+      out.done.push(`removed ${card.id}`);
+    } else continue;
+    out.changed = true;
+  }
+  return out;
 }
 
-/** A question the coordinator split into parts, one per seat; a part may wait for others' answers. */
-export interface Plan {
-  id: string;
-  /** The human's message it splits. */
-  msg: string;
-  /** The whole question, which every part sees for context. */
-  text: string;
-  parts: { seat: string; ask: string; after: number[]; flow?: string; answers?: { from: string; text: string }[]; ids?: string[] }[];
+/** Canvas ops from whatever shape a model sends: `ops` (or `changes`) as a list or JSON, or one op at the top level. */
+export function parseCanvasOps(raw: Record<string, unknown>): CanvasOp[] {
+  let list: unknown = raw.ops ?? raw.changes ?? raw.operations ?? raw.cards;
+  if (typeof list === 'string') {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      list = undefined;
+    }
+  }
+  const items = Array.isArray(list) ? list : list && typeof list === 'object' ? [list] : raw.op || raw.title ? [raw] : [];
+  const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? undefined : String(v));
+  const strs = (v: unknown) => (Array.isArray(v) ? v.map(String) : typeof v === 'string' ? v.split(/,\s*/) : undefined);
+  const out: CanvasOp[] = [];
+  for (const x of items) {
+    if (!x || typeof x !== 'object') continue;
+    const o = x as Record<string, unknown>;
+    const op = String(o.op ?? o.action ?? (o.title ? 'add' : '')).toLowerCase();
+    const id = str(o.id ?? o.card) ?? '';
+    if (op === 'add' || op === 'create') {
+      const links = (Array.isArray(o.links) ? o.links : strs(o.links ?? o.link ?? o.to) ?? [])
+        .map(l => (l && typeof l === 'object' ? { to: String((l as Record<string, unknown>).to ?? ''), label: str((l as Record<string, unknown>).label) } : { to: String(l) }))
+        .filter(l => l.to);
+      out.push({ op: 'add', kind: cardKind(o.kind ?? o.type) as CardKind, title: str(o.title ?? o.text) ?? '', ...(o.title && o.text ? { text: str(o.text) } : o.detail ? { text: str(o.detail) } : {}), ...(strs(o.refs ?? o.files) ? { refs: strs(o.refs ?? o.files) } : {}), ...(links.length ? { links } : {}), ...(o.ref ? { ref: str(o.ref) } : {}) });
+    } else if (op === 'edit' || op === 'update') out.push({ op: 'edit', id, title: str(o.title), text: str(o.text ?? o.detail), kind: cardKind(o.kind ?? o.type), refs: strs(o.refs ?? o.files) });
+    else if (['settle', 'drop', 'reopen', 'remove'].includes(op)) out.push({ op: op as 'settle' | 'drop' | 'reopen' | 'remove', id });
+    else if (op === 'close' || op === 'resolve' || op === 'answer') out.push({ op: 'settle', id });
+    else if (op === 'delete') out.push({ op: 'remove', id });
+    else if (op === 'note' || op === 'comment') out.push({ op: 'note', id, text: str(o.text ?? o.note) ?? '' });
+    else if (op === 'link' || op === 'unlink') out.push({ op, from: str(o.from) ?? id, to: str(o.to) ?? '', ...(op === 'link' && o.label ? { label: str(o.label) } : {}) } as CanvasOp);
+  }
+  return out;
 }
 
-export interface CoordinatorStatus {
-  state: 'converging' | 'developing' | 'drifting';
-  line: string;
-  ending?: 'design' | 'patch' | 'goal';
+const HEADINGS: Record<CardKind, string> = { question: 'Questions', idea: 'Ideas', finding: 'Findings', risk: 'Risks', decision: 'Decided' };
+
+/** The canvas as the agents read it: cards by kind, with their ids, links and notes. */
+export function canvasMarkdown(topic: string, c: Canvas): string {
+  const parts = [`# Canvas: ${topic.split('\n')[0]}`];
+  for (const k of CARD_KINDS) {
+    const cards = c.cards.filter(x => x.kind === k);
+    if (!cards.length) continue;
+    const lines = cards.map(x => {
+      const out = c.links.filter(l => l.from === x.id).map(l => `→ ${l.to}${l.label ? ` (${l.label})` : ''}`);
+      return [
+        `- [${x.id}] ${x.status ? `(${x.status}) ` : ''}${x.title}${out.length ? `  ${out.join(', ')}` : ''}  — ${x.by}`,
+        ...(x.text ? [`  ${x.text.replace(/\n/g, '\n  ')}`] : []),
+        ...(x.refs?.length ? [`  files: ${x.refs.join(', ')}`] : []),
+        ...(x.notes ?? []).map(n => `  · ${n.by}: ${n.text}`),
+      ].join('\n');
+    });
+    parts.push(`## ${HEADINGS[k]}\n\n${lines.join('\n')}`);
+  }
+  if (parts.length === 1) parts.push('(empty so far)');
+  return parts.join('\n\n') + '\n';
 }
 
-/** What the coordinator is asked to do next: route a message nobody was picked for, or decide after answers. */
-export type CoordinatorJob = { kind: 'route'; msg: string; text: string; mode: AskMode } | { kind: 'decide'; msgs: string[] };
+/** The cards a branch takes along: the ones picked, the ones linked to them, and the links between them all. */
+export function branchCards(c: Canvas, ids: string[]): { cards: Card[]; links: CardLink[] } {
+  const picked = new Set(ids.filter(id => c.cards.some(x => x.id === id)));
+  const keep = new Set(picked);
+  for (const l of c.links) {
+    if (picked.has(l.from)) keep.add(l.to);
+    if (picked.has(l.to)) keep.add(l.from);
+  }
+  return { cards: c.cards.filter(x => keep.has(x.id)), links: c.links.filter(l => keep.has(l.from) && keep.has(l.to)) };
+}
+
+/** Cards carried into a new canvas under new ids, with the links between them. */
+export function seedCanvas(c: Canvas, from: { cards: Card[]; links: CardLink[] }, by: string): void {
+  const ids = new Map<string, string>();
+  for (const x of from.cards) {
+    const id = `c${++c.seq}`;
+    ids.set(x.id, id);
+    const { branches: _branches, ...rest } = x;
+    c.cards.push({ ...rest, id, by: x.by === 'human' || x.by.startsWith('room ') || x.by.startsWith('goal ') ? x.by : by });
+  }
+  for (const l of from.links) if (ids.has(l.from) && ids.has(l.to)) c.links.push({ ...l, from: ids.get(l.from)!, to: ids.get(l.to)! });
+}
+
+/* ---------------- the room ---------------- */
 
 export interface RoomState {
   topic: string;
-  /** Open: participants message each other directly and the coordinator only watches. Moderated (default): the coordinator decides who goes next. */
-  open: boolean;
-  /** Everyone declared, started or not: a seat's session starts the first time it's addressed. */
-  cast: Participant[];
-  board: BoardItem[];
-  boardSeq: number;
-  flows: Map<string, Flow>;
-  /** The room's branch mh/<room>/room, shared by every participant. Unset without git. */
+  /** The lenses the human set up; the lead sends them. A lens's agent starts the first time it's sent. */
+  lenses: Lens[];
+  canvas: Canvas;
+  /** The room's branch mh/<room>/room, shared by everyone in it. Unset without git. */
   worktree?: Worktree;
-  /** Participants with a patch job right now: they may change files. */
+  /** Lenses on a patch job right now: they may change files. */
   writers: Set<string>;
-  coordinator?: Coordinator;
-  /** What the coordinator still has to do, in order; one at a time. */
-  jobs: CoordinatorJob[];
-  coordinating?: boolean;
-  status?: CoordinatorStatus;
-  /** Times the coordinator forwarded since the human last spoke: from 4 it hands back. */
-  forwards: number;
-  /** The log position each participant last spoke (or was asked) at: its digest starts after it. */
-  lastSeen: Map<string, number>;
-  /** Who asked each participant something directly (open discussion): they hear its answer. */
-  askedBy?: Map<string, Set<string>>;
-  /** Messages for participants still ending the turn they answered in: they go when it ends. */
-  deferred?: { name: string; from: string; text: string }[];
-  /** Split questions still being answered. */
-  plans: Map<string, Plan>;
 }
 
-/* ---------------- seats and casts ---------------- */
+/* ---------------- casts ---------------- */
 
 /**
- * casts/<name>.md: one `## <role, or "model"> [as <name>]` heading per seat, then `on:`,
- * `responsibility:`, `stance:` and `scout: on` lines as needed.
+ * casts/<name>.md: one `## <role, or "model"> [as <name>]` heading per lens, then `on:`,
+ * `responsibility:` and `stance:` lines as needed.
  */
 export function parseCast(file: string): Cast {
   const { meta, body } = parseFrontMatter(readFileSync(file, 'utf8'));
-  const participants: Participant[] = [];
-  let seat: Participant | undefined;
+  const participants: Lens[] = [];
+  let lens: Lens | undefined;
   for (const line of body.split('\n')) {
     const h = /^##\s+([\w.-]+)(?:\s+as\s+([\w.-]+))?\s*$/.exec(line);
     if (h) {
-      seat = { ...(h[1] === 'model' ? {} : { role: h[1] }), ...(h[2] ? { name: h[2] } : {}) };
-      participants.push(seat);
+      lens = { ...(h[1] === 'model' ? {} : { role: h[1] }), ...(h[2] ? { name: h[2] } : {}) };
+      participants.push(lens);
       continue;
     }
-    const kv = /^(on|responsibility|stance|scout):\s*(.*\S)\s*$/.exec(line);
-    if (seat && kv?.[1] === 'scout') seat.scout = /^(on|yes|true)$/i.test(kv[2]);
-    else if (seat && kv) seat[kv[1] as 'on' | 'responsibility' | 'stance'] = kv[2];
+    const kv = /^(on|responsibility|stance):\s*(.*\S)\s*$/.exec(line);
+    if (lens && kv) lens[kv[1] as 'on' | 'responsibility' | 'stance'] = kv[2];
   }
   return { name: basename(file, '.md'), goodAt: meta.good_at ?? '', participants: participants.filter(p => p.role || p.on), file };
 }
 
-export function castText(c: { goodAt?: string; participants: Participant[] }): string {
-  const seats = c.participants.map(p =>
+export function castText(c: { goodAt?: string; participants: Lens[] }): string {
+  const lenses = c.participants.map(p =>
     [
       `## ${p.role || 'model'}${p.name ? ` as ${p.name}` : ''}`,
       ...(p.on ? [`on: ${p.on}`] : []),
       ...(p.responsibility ? [`responsibility: ${p.responsibility.replace(/\s+/g, ' ')}`] : []),
       ...(p.stance ? [`stance: ${p.stance.replace(/\s+/g, ' ')}`] : []),
-      ...(p.scout ? ['scout: on'] : []),
     ].join('\n'),
   );
-  return `---\ngood_at: ${(c.goodAt ?? '').replace(/\n/g, ' ')}\n---\n${seats.join('\n\n')}\n`;
+  return `---\ngood_at: ${(c.goodAt ?? '').replace(/\n/g, ' ')}\n---\n${lenses.join('\n\n')}\n`;
 }
 
 /** casts/*.md from each folder; later folders win. */
@@ -227,348 +372,101 @@ export function loadCasts(dirs: string[]): Map<string, Cast> {
 }
 
 /** The model's short name: gpt-6.1-sol → sol, claude-opus-5-5 → opus. */
-function modelWord(on?: string): string | undefined {
+export function modelWord(on?: string): string | undefined {
   const model = on?.split('@')[0].split('/').pop();
   if (!model) return undefined;
   const words = model.split(/[-._]/).filter(w => w && !/^\d+$/.test(w) && !/^(gpt|claude|gemini|high|low|medium)$/i.test(w));
   return words.at(-1) ?? model;
 }
 
-/** Names safe for branches and @mentions. */
-export function seatName(p: Participant, taken: Iterable<string>): string {
+/** Names safe for branches and messages. */
+export function lensName(p: Lens, taken: Iterable<string>): string {
   const used = new Set([...taken].map(n => n.toLowerCase()));
   const clean = (s: string) => s.trim().replace(/[^\w.-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const model = modelWord(p.on);
   const role = p.role ? clean(p.role) : '';
   let name = clean(p.name ?? '') || (!role ? clean(model ?? 'model') : used.has(role.toLowerCase()) && model ? `${role}-${clean(model)}` : role);
   const base = name;
-  for (let n = 2; used.has(name.toLowerCase()) || name === 'main' || name === 'room' || name === 'coordinator'; n++) name = `${base}-${n}`;
+  for (let n = 2; used.has(name.toLowerCase()) || ['main', 'room', 'lead', 'human', 'all'].includes(name.toLowerCase()); n++) name = `${base}-${n}`;
   return name;
 }
 
-/* ---------------- the board ---------------- */
-
-const PREFIX: Record<BoardKind, string> = { finding: 'f', question: 'q', decision: 'd', file: 'p' };
-
-/** Applies changes to the board. Unknown ids and empty text are skipped. */
-export function applyBoard(st: Pick<RoomState, 'board' | 'boardSeq'>, ops: BoardOp[], by: string): boolean {
-  let changed = false;
-  for (const op of ops) {
-    if (op.op === 'add') {
-      const text = op.text?.trim();
-      if (!text || !BOARD_KINDS.includes(op.kind)) continue;
-      if (st.board.some(i => i.kind === op.kind && i.text.toLowerCase() === text.toLowerCase())) continue;
-      st.board.push({ id: `${PREFIX[op.kind]}${++st.boardSeq}`, kind: op.kind, text: text.slice(0, 600), by });
-      changed = true;
-      continue;
-    }
-    const item = st.board.find(i => i.id === op.id);
-    if (!item) continue;
-    if (op.op === 'edit' && op.text?.trim()) item.text = op.text.trim().slice(0, 600);
-    else if (op.op === 'close') item.closed = op.closed ?? true;
-    else if (op.op === 'remove') st.board.splice(st.board.indexOf(item), 1);
-    else continue;
-    changed = true;
-  }
-  return changed;
-}
-
-const HEADINGS: Record<BoardKind, string> = { finding: 'Findings', question: 'Open questions', decision: 'Decided', file: 'Files' };
-
-export function boardMarkdown(topic: string, board: BoardItem[]): string {
-  const parts = [`# Board: ${topic.split('\n')[0]}`];
-  for (const k of BOARD_KINDS) {
-    const items = board.filter(i => i.kind === k);
-    if (!items.length) continue;
-    parts.push(`## ${HEADINGS[k]}\n\n${items.map(i => `- ${i.closed ? '~~' : ''}${i.text}${i.closed ? '~~ (answered)' : ''} [${i.id}]`).join('\n')}`);
-  }
-  if (parts.length === 1) parts.push('(empty so far)');
-  return parts.join('\n\n') + '\n';
-}
-
-/* ---------------- what participants are told ---------------- */
+/* ---------------- what the lead and the lenses are told ---------------- */
 
 export interface RoomPaths {
-  board: string;
-  transcript: string;
+  canvas: string;
+  chat: string;
   reports: string;
 }
 
-/** One line per seat: its name, what it is, what it's responsible for, and whether it has started. */
-export function rosterLines(cast: Participant[], started: (name: string) => boolean, you?: string): string[] {
-  return cast.map(p => {
+/** One line per lens: its name, what it is, what it's for, and whether it's started or put away. */
+export function lensLines(lenses: Lens[], started: (name: string) => boolean): string[] {
+  return lenses.map(p => {
     const what = p.role ?? modelWord(p.on) ?? 'model';
     const r = responsibilityOf(p);
-    return `- ${p.name} (${what}${r ? `: ${responsibilityLabel(r)}` : ''})${p.benched ? ', benched: out of the discussion for now' : started(p.name!) ? '' : ', not started yet'}${p.name === you ? '  ← you' : ''}`;
+    return `- ${p.name} (${what}${p.on ? ` on ${p.on}` : ''}): ${r || 'no responsibility given'}${p.stance ? ` Stance: ${p.stance}` : ''}${p.off ? ' [put away by the human: not available]' : started(p.name!) ? ' [started: it remembers what it did here]' : ''}`;
   });
 }
 
-/** The part of a participant's system prompt that replaces the team methodology. */
-export function roomMethodology(o: { topic: string; open: boolean; paths: RoomPaths; roster: string[]; scout?: string }): string {
-  const talk = o.open
-    ? [
-        '- Open discussion: you may `send` another participant a question or a point directly (by name); their answer comes back to you. Keep it to the point.',
-        '- A coordinator watches, keeps the board and may steer the room back to the question.',
-      ]
-    : [
-        '- You answer to the room, not to one person: everyone reads the thread. A coordinator reads every answer and decides who goes next: it may pass your answer to someone to check or build on, or hand it back to the human.',
-        '- To suggest who should check or continue your work, end your answer with a line like `→ reviewer: does this hold for saved games?`. The coordinator weighs it.',
-        "- Don't message other participants yourself: what you `send` them goes to the coordinator, which decides.",
-      ];
+export const CANVAS_HOW = [
+  'The canvas is a board of cards with links, which the human watches instead of reading the chat back. Change it with the `canvas` tool: `ops` is a list of',
+  '  {"op": "add", "kind": "question" | "idea" | "finding" | "risk" | "decision", "title": "a few words", "text": "optional detail", "refs": ["src/x.ts:40"], "links": [{"to": "c2", "label": "answers"}], "ref": "a"}',
+  '  {"op": "edit", "id": "c3", "title": "…"}, {"op": "settle" | "drop" | "reopen" | "remove", "id": "c3"}, {"op": "note", "id": "c3", "text": "…"}, {"op": "link", "from": "c4", "to": "c2", "label": "rules out"}',
+  '  (a card added with "ref" can be linked to by that ref later in the same call). `canvas` without ops shows the whole canvas.',
+].join('\n');
+
+/** What the lead does in a room: talk with the human, keep the canvas, send lenses. */
+export function leadMethodology(o: { topic: string; paths: RoomPaths; lenses: string[]; branch?: string }): string {
   return [
-    '## A discussion room',
+    '## A brainstorm room',
     '',
-    `The human leads a discussion with a few AI agents from different providers about: ${o.topic}`,
+    `You are the human's one point of contact in a brainstorm about: ${o.topic}`,
+    'The aim is to explore: reach a design, understand a part of the code, or find small issues and fix them on the go. Bigger work becomes a goal later, when the human says so.',
     '',
-    'Who is in the room:',
-    ...o.roster,
+    '### Talking',
+    '- Reply fast and short, like a sharp colleague at a whiteboard: the answer first, then what it rests on, in a few sentences. Ask one question at a time when you need the human.',
+    '- Your reply is your final message of the turn: end your turn to send it. Calling `done` with your reply as the note does the same.',
+    '- Never make the human wait on lenses. When something needs looking into, send a lens, tell the human in one line who is looking at what, and end your turn. Its answer wakes you as a message.',
+    "- When a lens's answer wakes you, put what matters on the canvas, then tell the human in a line or two what changed and what you suggest next.",
+    '- You may read a file or two yourself for a quick check; anything bigger goes to a lens.',
     '',
-    '- Each message you get is a turn: answer it, then call `done` with your answer as the note. That is what the room sees. Without `done`, your last message is taken as your answer.',
+    '### The canvas',
+    CANVAS_HOW,
+    '- Keeping it current is your main job besides talking. After each exchange, add what came up: questions, ideas, findings (with file:line refs), risks. Link cards that relate (an idea answers a question, a finding rules out an idea).',
+    '- Only the human decides: a decision card is what the human agreed to. Settle questions once answered, drop ideas turned down, merge duplicates, and keep titles to a few words (detail goes in text).',
+    `- Lenses add cards and notes of their own. The human edits it too; you hear what they changed. The canvas is also ${o.paths.canvas}.`,
+    '',
+    '### Lenses',
+    'The human set these up for you to send:',
+    ...(o.lenses.length ? o.lenses : ['(none yet: say so if a question needs one, and which kind)']),
+    '- Send one with `spawn` (role: the lens\'s name, brief: a precise ask: what to find or judge, where to look, what you want back). Send several at once when their asks don\'t depend on each other. Sending one again gives it a new ask; it keeps what it learnt here.',
+    `- For a small fix the human asked for, send a lens with \`patch: true\`: it may change files ${o.branch ? `on the room's branch ${o.branch}, ` : ''}and commits; the human merges at the end. You never change project files yourself.`,
+    '- Don\'t `wait` for lenses: end your turn instead.',
+    '',
+    '### Branching',
+    '- When the talk splits into a separate topic, suggest branching it: the human can branch any card into a room of its own.',
+    `- Reports and longer write-ups go in ${o.paths.reports}/. The whole chat is ${o.paths.chat}.`,
+  ].join('\n');
+}
+
+/** What a lens does: answer the lead's ask, put results on the canvas. */
+export function lensMethodology(o: { topic: string; lead: string; paths: RoomPaths }): string {
+  return [
+    '## A lens in a brainstorm room',
+    '',
+    `The human is brainstorming with ${o.lead}, the room's lead, about: ${o.topic}`,
+    `${o.lead} sends you asks. Each is a turn: do it, then answer.`,
+    '',
     '- Stick to your responsibility. Be focused and concrete: name files, functions and lines.',
-    `- Keep your answer simple and conversational: a few plain sentences, the answer first, then what it rests on. Details (analysis, lists of findings, code, logs) go in a report in the shared folder, ${o.paths.reports}/<your name>-<n>.md: name its path in your answer, and the human can open it from the thread.`,
-    ...(o.scout ? [scoutLine(o.scout)] : []),
-    "- You read the code; you don't change it, unless you're given a patch job (it says so). Running the code or its tests to check something is fine.",
-    `- Each message ends with what's new in the room since you last spoke. The board (findings, open questions, decisions) is ${o.paths.board}, and the whole thread ${o.paths.transcript}: read them when you need more.`,
-    ...talk,
-    '- A question only the human can answer: `send` it to human; it goes to the thread.',
+    `- Put what you establish on the canvas yourself with the \`canvas\` tool (findings, risks, ideas, with refs), linked to the cards it concerns; add a note to a card you have something to say about. Read the canvas first (\`canvas\` without ops, or ${o.paths.canvas}) so you don't repeat it.`,
+    CANVAS_HOW,
+    `- Then call \`done\` with a short answer for ${o.lead}: the answer first, what it rests on, and the cards you added. Details (analysis, logs, long lists) go in a report, ${o.paths.reports}/<your name>-<n>.md, named in your answer.`,
+    `- You read the code; you don't change it, unless the ask is a patch job (it says so). Running the code or its tests to check something is fine.`,
+    `- Questions go to ${o.lead} (\`send\`), never to the human or other lenses: ${o.lead} talks with the human.`,
   ].join('\n');
 }
 
-/** What a seat with its scout on is told. */
-export function scoutLine(role: string): string {
-  return `- You have a scout for lookups: call \`spawn\` with role "${role}", quick: true, and a precise question (where something is, what calls what, what changed). It reads the code fast and answers inline; you do the thinking. Don't use it for what one file read answers.`;
-}
-
-/** How a message reaches a participant, by mode. */
-export function frame(mode: AskMode, text: string, o: { round?: number; rounds?: number; quote?: { from: string; text: string }; earlier?: { from: string; text: string }[]; worktree?: string; branch?: string } = {}): string {
-  const said = (xs: { from: string; text: string }[]) => xs.map(x => `--- ${x.from}:\n${x.text}`).join('\n\n');
-  switch (mode) {
-    case 'job':
-      return `${text}\n\n[Room] This is a job: look into it with your tools, then answer simply, with the details in a report in the shared folder.`;
-    case 'views':
-      return `${text}\n\n[Room] Others are answering this too, each on their own: give your own view, without reading the thread first. You'll see theirs afterwards.`;
-    case 'respond':
-      return `${o.quote ? `${o.quote.from} said:\n${o.quote.text}\n\n` : ''}${text}\n\n[Room] Respond to that.`;
-    case 'debate':
-      if (!o.earlier?.length) return `${text}\n\n[Room] A debate of ${o.rounds} rounds: give your position. After each round you see the others' answers and respond.`;
-      return `[Room] Round ${o.round} of ${o.rounds} on: ${text}\n\nWhat the others said last round:\n\n${said(o.earlier)}\n\nRespond: where you agree, where not and why, and what changed your view.${o.round === o.rounds ? ' This is the last round: end with your position.' : ''}`;
-    case 'chain':
-      if (!o.earlier?.length) return text;
-      return `${text}\n\n[Room] This comes to you after others in a chain. What they answered:\n\n${said(o.earlier)}\n\nBuild on it.`;
-    case 'patch':
-      return [
-        text,
-        '',
-        `[Room] This is a patch job: you may change files for it. ${o.worktree ? `Work in ${o.worktree}, the room's branch ${o.branch}: run the relevant tests, commit with a clear message (\`git add <your files>\`), and answer with what you changed and how you checked it.` : 'Run the relevant tests, and answer with what you changed and how you checked it.'} Leave ARCHITECTURE.md and the doc comments alone: the cartographer maps the result once the human merges the room's branch. Your write access ends with your answer.`,
-      ].join('\n');
-    default:
-      return text;
-  }
-}
-
-/** One part of a split question: its own ask, the whole question for context, and what the parts it waited for found. */
-export function framePart(ask: string, whole: string, earlier: { from: string; text: string }[]): string {
-  return [
-    ask,
-    '',
-    `[Room] This is your part of a question the human asked the room; others answer the other parts, so answer only yours. The whole question, for context:\n"${whole.replace(/\s+/g, ' ').slice(0, 1500)}"`,
-    ...(earlier.length ? ['', 'What the others found first:', '', earlier.map(x => `--- ${x.from}:\n${x.text}`).join('\n\n'), '', 'Build on it.'] : []),
-  ].join('\n');
-}
-
-/* ---------------- the coordinator ---------------- */
-
-export type NextAction = 'back' | 'forward' | 'compare' | 'note';
-
-export interface CoordinatorReply {
-  status?: CoordinatorStatus;
-  board: BoardOp[];
-  /** route: who handles the human's message, and how; or the parts it's split into. */
-  route?: { to: string[]; mode: AskMode; line: string; parts?: { to: string; ask: string; after: string[] }[] };
-  /** decide: what happens after the answers. */
-  next?: { action: NextAction; to: string[]; text: string; line: string };
-}
-
-/** The first JSON object in the answer, read leniently. */
-export function parseCoordinator(text: string): CoordinatorReply | undefined {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return undefined;
-  let raw: Record<string, unknown>;
-  try {
-    raw = JSON.parse(text.slice(start, end + 1));
-  } catch {
-    return undefined;
-  }
-  const states = ['converging', 'developing', 'drifting'];
-  const endings = ['design', 'patch', 'goal'];
-  const state = String(raw.status ?? '').toLowerCase();
-  const ending = String(raw.ending ?? '').toLowerCase();
-  const arr = (v: unknown) => (Array.isArray(v) ? (v.filter(x => x && typeof x === 'object') as Record<string, unknown>[]) : []);
-  const names = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' ? [v] : []).map(x => String(x).replace(/^@/, '').trim()).filter(Boolean);
-  const board: BoardOp[] = [];
-  for (const o of arr(raw.board)) {
-    const op = String(o.op ?? 'add');
-    const id = String(o.id ?? '');
-    const text = typeof o.text === 'string' ? o.text : '';
-    if (op === 'add' && BOARD_KINDS.includes(o.kind as BoardKind) && text) board.push({ op, kind: o.kind as BoardKind, text });
-    else if (op === 'edit' && id && text) board.push({ op, id, text });
-    else if (op === 'close' && id) board.push({ op, id });
-    else if (op === 'remove' && id) board.push({ op, id });
-  }
-  const out: CoordinatorReply = { board };
-  if (states.includes(state)) out.status = { state: state as CoordinatorStatus['state'], line: String(raw.line ?? '').slice(0, 300), ...(endings.includes(ending) ? { ending: ending as CoordinatorStatus['ending'] } : {}) };
-  const r = raw.route && typeof raw.route === 'object' ? (raw.route as Record<string, unknown>) : undefined;
-  const parts = arr(r?.parts)
-    .map(p => ({ to: names(p.to)[0] ?? '', ask: String(p.ask ?? p.text ?? '').trim(), after: names(p.after) }))
-    .filter(p => p.to && p.ask)
-    .slice(0, 6);
-  if (r && (names(r.to).length || parts.length)) {
-    const mode = ['ask', 'job', 'views', 'chain'].includes(String(r.mode)) ? (String(r.mode) as AskMode) : 'ask';
-    out.route = { to: parts.length ? [...new Set(parts.map(p => p.to))] : names(r.to).slice(0, 6), mode, line: String(r.line ?? '').slice(0, 300), ...(parts.length ? { parts } : {}) };
-  }
-  const n = raw.next && typeof raw.next === 'object' ? (raw.next as Record<string, unknown>) : undefined;
-  const action = String(n?.action ?? '').toLowerCase();
-  if (n && ['back', 'forward', 'compare', 'note'].includes(action)) {
-    out.next = { action: action as NextAction, to: names(n.to).slice(0, 6), text: String(n.text ?? '').trim(), line: String(n.line ?? '').slice(0, 300) };
-  }
-  return out;
-}
-
-const BOARD_SCHEMA = `"board": [{"op": "add", "kind": "finding" | "question" | "decision" | "file", "text": "…"}, {"op": "close", "id": "q2"}, {"op": "edit", "id": "f1", "text": "…"}, {"op": "remove", "id": "f3"}]`;
-const STATUS_SCHEMA = `"status": "converging" | "developing" | "drifting", "line": "one short line on why", "ending": null | "design" | "patch" | "goal"`;
-
-export const ROUTE_ANSWER = `Pick who handles it, by their responsibilities.
-- One question for one responsibility: send it whole, to one seat (or several when each brings something different).
-- A question with parts that need different responsibilities (e.g. find the facts, then judge the design): split it. Give each part to the seat whose responsibility fits, with its own ask, written for that seat. Decide the order: parts that don't need each other run in parallel (no "after"); a part that needs others' results first names them in "after" and gets their answers. Don't split what one seat can answer well.
-Answer with one JSON object and nothing else, either
-{"route": {"to": ["<seat>", …], "mode": "ask" | "job" | "views" | "chain", "line": "one short line the human sees"}, …}
-or, split,
-{"route": {"parts": [{"to": "<seat>", "ask": "its part"}, {"to": "<seat>", "ask": "its part", "after": ["<seat whose part it needs>"]}], "mode": "ask" | "job", "line": "one short line the human sees, e.g. scout finds what changed while reviewer checks the tests; then designer judges it"}, …}
-with, in both,
- ${STATUS_SCHEMA},
- ${BOARD_SCHEMA}`;
-
-export const DECIDE_ANSWER = (open: boolean, handBack: boolean) =>
-  open
-    ? `This is an open discussion: you only watch. Answer with one JSON object and nothing else:
-{${STATUS_SCHEMA},
- ${BOARD_SCHEMA},
- "next": {"action": "note"} or, only when it drifts, {"action": "forward", "to": ["<seat>"], "text": "what to bring them back to", "line": "…"}}`
-    : `Decide what happens next${handBack ? ' (you have passed things on 4 times since the human last spoke: hand back now, with a summary)' : ''}. One of:
-- "back": the question is answered, only the human can decide, or nothing new is coming: hand back with a short summary for the human.
-- "forward": an answer should be checked or built on by someone else (weigh any "→ name" line at its end): say what to ask them, quoting what matters.
-- "compare": answers disagree in a way worth settling: ask the seats involved to respond to each other's point.
-- "note": the facts go to the board; nobody else needs to act, and the human hasn't asked anything new.
-Answer with one JSON object and nothing else:
-{"next": {"action": "back" | "forward" | "compare" | "note", "to": ["<seat>", …], "text": "the message for them (forward, compare) or the summary for the human (back)", "line": "one short line the human sees"},
- ${STATUS_SCHEMA},
- ${BOARD_SCHEMA}}`;
-
-export interface CoordinatorHost {
-  start(brief: string, events: SessionEvents): Promise<Session>;
-  usage(u: Usage, session: number): void;
-  log(type: string, data: Record<string, unknown>): void;
-}
-
-/**
- * The room's coordinator: a side session of the coordinator role, like the gatekeeper, reused
- * from decision to decision. One question at a time; an answer that doesn't come in time is
- * dropped, and the next question starts a fresh session.
- */
-export class Coordinator {
-  private session?: Session;
-  private gen = 0;
-  private lastText = '';
-  private contextPct = 0;
-  private pending?: { resolve: (t: string | undefined) => void; timer: NodeJS.Timeout };
-  private stopped = false;
-  private host: CoordinatorHost;
-  private timeoutMs: number;
-
-  constructor(host: CoordinatorHost, timeoutMs = 180_000) {
-    this.host = host;
-    this.timeoutMs = timeoutMs;
-  }
-
-  /** The text of its answer, or undefined if none came. */
-  async ask(prompt: string): Promise<string | undefined> {
-    if (this.stopped || this.pending) return undefined;
-    if (this.session && this.contextPct >= 60) this.retire();
-    const answer = new Promise<string | undefined>(resolve => {
-      this.pending = { resolve, timer: setTimeout(() => this.finish(undefined, true), this.timeoutMs) };
-    });
-    this.lastText = '';
-    if (this.session) void this.session.send(prompt, 'new_turn');
-    else {
-      const gen = ++this.gen;
-      this.contextPct = 0;
-      try {
-        const s = await this.host.start(prompt, this.events(gen));
-        if (gen !== this.gen || this.stopped) void s.stop().catch(() => {});
-        else this.session = s;
-      } catch (e) {
-        this.host.log('coordinator.failed', { reason: (e as Error).message });
-        this.finish(undefined);
-      }
-    }
-    return answer;
-  }
-
-  async stop(): Promise<void> {
-    this.stopped = true;
-    this.finish(undefined);
-    const s = this.session;
-    this.session = undefined;
-    await s?.stop().catch(() => {});
-  }
-
-  private retire(): void {
-    const s = this.session;
-    this.session = undefined;
-    this.gen++;
-    void s?.stop().catch(() => {});
-  }
-
-  private finish(text: string | undefined, timedOut = false): void {
-    const p = this.pending;
-    if (!p) return;
-    clearTimeout(p.timer);
-    this.pending = undefined;
-    if (timedOut) {
-      this.host.log('coordinator.failed', { reason: `no answer within ${Math.round(this.timeoutMs / 1000)}s` });
-      this.retire();
-    }
-    p.resolve(text);
-  }
-
-  private events(gen: number): SessionEvents {
-    const live = () => gen === this.gen;
-    return {
-      turnStarted: () => {},
-      turnEnded: () => live() && this.finish(this.lastText),
-      text: t => {
-        if (live()) this.lastText = t;
-      },
-      toolCall: () => {},
-      toolResult: () => {},
-      usage: u => {
-        if (u.contextPct !== undefined && live()) this.contextPct = u.contextPct;
-        this.host.usage(u, gen);
-      },
-      exited: (_r, detail) => {
-        if (!live()) return;
-        this.session = undefined;
-        this.gen++;
-        if (this.pending) this.host.log('coordinator.failed', { reason: `its session ended${detail ? ` (${detail.slice(0, 200)})` : ''}` });
-        this.finish(undefined);
-      },
-      rateLimit: info => {
-        if (live() && info.status === 'limited') this.finish(undefined);
-      },
-      approval: async () => ({ allow: false, message: 'The coordinator only reads. Answer with the JSON object.' }),
-      decide: async t => (t.kind === 'read' ? { allow: true } : { allow: false, message: 'The coordinator only reads. Answer with the JSON object.' }),
-      pull: () => undefined,
-    };
-  }
+/** How a patch job reaches a lens. */
+export function patchNote(o: { worktree?: string; branch?: string }): string {
+  return `[Room] This is a patch job: you may change files for it. ${o.worktree ? `Work in ${o.worktree}, the room's branch ${o.branch}: run the relevant tests, commit with a clear message (\`git add <your files>\`), and answer with what you changed and how you checked it.` : 'Run the relevant tests, and answer with what you changed and how you checked it.'} Leave ARCHITECTURE.md and the doc comments alone: the cartographer maps the result once the human merges the room's branch. Your write access ends with your answer.`;
 }

@@ -79,7 +79,7 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', i
 export function StartGoalDialog({ config, initialWorkflow, initialRequest, fromRoom, onClose, onStart }: { config?: ConfigView; initialWorkflow?: string; initialRequest?: string; fromRoom?: string; onClose: () => void; onStart: (b: Record<string, unknown>) => Promise<boolean> }) {
   return (
     <Dialog title={fromRoom ? 'New goal from the room' : 'New goal'} onClose={onClose} wide>
-      {fromRoom && <div className="dialog-body muted small">The lead is pointed at the room's board, its design if one was written, and the whole thread.</div>}
+      {fromRoom && <div className="dialog-body muted small">The lead is pointed at the room's canvas, its design if one was written, and the whole chat.</div>}
       <NewGoalForm config={config} onStart={onStart} onCancel={onClose} initialWorkflow={initialWorkflow} initialRequest={initialRequest} extra={fromRoom ? { fromRoom } : undefined} autoFocus />
     </Dialog>
   );
