@@ -564,35 +564,48 @@ restarting the daemon. The pages write the same files described below.
   | Rule | What the agent gets |
   |---|---|
   | `conventions` | At the start: readable, well structured, scalable, plus your `CONVENTIONS.md` |
-  | `map` | Looking at files: the overview of `ARCHITECTURE.md` and the section for that folder |
+  | `map` | At the start: `ARCHITECTURE.md`, and how to find its way from it to the few files it needs |
+  | `docs` | At the start: the documentation layers, what goes where, their sizes, and who keeps which |
   | `no-duplicates` | Creating a file: check that nothing already does its job |
-  | `map-upkeep` | Committing new, moved or removed files without touching the map: update it |
-  | `finish-clean` | Its first `done`, if it changed files: one look over the changes, then `done` again |
+  | `map-upkeep` | Committing new, moved or removed files without touching the map: update the README, and the map or tell the cartographer |
+  | `finish-clean` | Its first `done`, if it changed files: one look over the changes and the READMEs it keeps, then `done` again |
   | `map-missing` | The lead, when there's no map: it can offer you the `map-bootstrap` workflow |
   | `cartographer` | The lead, when the goal will change code: start a cartographer |
 
-  **The map** is `ARCHITECTURE.md` at the repository root: an overview, then a short section
-  per area whose heading is its path (`## src/api/`). Agents get the section for wherever they
-  are working, so they open the right files instead of searching. To write one, start a goal
-  with the **map-bootstrap** workflow: explorers survey the code, the lead writes the map (and
-  a `CONVENTIONS.md` if the code has clear conventions), and you approve it before it's
-  committed.
+  **The docs come in layers**, so an agent reads only what its task needs:
 
-  **The cartographer** keeps the code's documentation while a team works: the map, and the doc
-  comments that say what each file, class and function is for (the Design view shows them on
-  hover). It's a built-in role (edit or replace it on the Roles page) and the only agent that
-  edits them, so they never conflict when branches merge. It documents what lands without a
-  doc and rewrites a doc only when it has become wrong, never adding history to it. Teammates
-  message it when their work changes the design, and it can ask them back. MetaHarness wakes it when work lands on the goal branch
-  (once the branch has been quiet for a minute), with the commits and files that came in; it
-  updates the map and commits it alone, with a one-line message saying what changed in the
-  design. Those lines are the design history in the Design view. It also keeps the map's
-  `## Flows` section, the main paths data takes through the areas, one per line:
+  | Layer | Where | Holds |
+  |---|---|---|
+  | The map | `ARCHITECTURE.md` | What the code is, one heading per system (its path, `## src/api/`, and a line or two: what it's for, where its behavior is defined, its README), what never to open, the commands, `## Flows` and `## Systems`. Under ~100 lines: every agent gets it at the start |
+  | Runtime | `docs/RUNTIME.md` | How it runs: startup, a request's lifecycle or the game loop, who owns shared state |
+  | System | a `README.md` in each system's folder | Purpose, Entry points, Where behavior is defined, Invariants and contracts, Constraints, Gotchas, Dependencies |
+  | Decisions, domain | `docs/decisions/`, `docs/domain/` | Why choices were made; game design, specs, API contracts |
+
+  An agent reads the map, picks the system, reads its README, checks whether the behavior
+  lives in code, data or an editor (an editor step comes back to you as a manual step in its
+  done note), names the 3 to 5 files it needs, and only then opens code. The sizes are
+  suggestions in the rules, not checks: an agent prunes a doc that grows past its size, or asks
+  you to raise the limit. To write the docs, start a goal with the **map-bootstrap** workflow:
+  explorers write each system's README, the lead writes the map and the runtime doc (and a
+  `CONVENTIONS.md` if the code has clear conventions), and you approve them before they're
+  committed. All of this is the built-in rules, roles and workflows: edit them to change it.
+
+  **Who keeps the docs.** A teammate keeps the README of each system it changes, in the same
+  commit as the code. **The cartographer** keeps the rest while a team works: the map, the
+  runtime doc, and the doc comments that say what each file, class and function is for (the
+  Design view shows them on hover). It's a built-in role (edit or replace it on the Roles page)
+  and the only agent that edits them, so they never conflict when branches merge. It documents
+  what lands without a doc and rewrites a doc only when it has become wrong, never adding
+  history to it. Teammates message it when their work changes the design, and it can ask them
+  back. MetaHarness wakes it when work lands on the goal branch (once the branch has been
+  quiet for a minute), with the commits and files that came in; it updates the map and commits
+  it alone, with a one-line message saying what changed in the design. Those lines are the
+  design history in the Design view. It also keeps the map's `## Flows` section, the main
+  paths data takes through the systems, one per line:
   `- Checkout: src/api/ → src/orders/ → src/store/ — an order is placed and saved`; the Design
-  view draws them. Turn the `cartographer` rule
-  off to work without one. A workflow with a `roles:` line has to name `cartographer` for the
-  lead to start it. To document a repository that has few doc comments, start a goal with the
-  **doc-bootstrap** workflow.
+  view draws them. Turn the `cartographer` rule off to work without one. A workflow with a
+  `roles:` line has to name `cartographer` for the lead to start it. To document a repository
+  that has few doc comments, start a goal with the **doc-bootstrap** workflow.
 
   To change a built-in rule, open it and save: the copy goes into the folder you pick and
   replaces it there. To add one, write `.metaharness/rules/<name>.md`:

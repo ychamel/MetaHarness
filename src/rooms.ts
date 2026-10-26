@@ -468,5 +468,5 @@ export function lensMethodology(o: { topic: string; lead: string; paths: RoomPat
 
 /** How a patch job reaches a lens. */
 export function patchNote(o: { worktree?: string; branch?: string }): string {
-  return `[Room] This is a patch job: you may change files for it. ${o.worktree ? `Work in ${o.worktree}, the room's branch ${o.branch}: run the relevant tests, commit with a clear message (\`git add <your files>\`), and answer with what you changed and how you checked it.` : 'Run the relevant tests, and answer with what you changed and how you checked it.'} Leave ARCHITECTURE.md and the doc comments alone: the cartographer maps the result once the human merges the room's branch. Your write access ends with your answer.`;
+  return `[Room] This is a patch job: you may change files for it. ${o.worktree ? `Work in ${o.worktree}, the room's branch ${o.branch}: run the relevant tests, commit with a clear message (\`git add <your files>\`), and answer with what you changed and how you checked it.` : 'Run the relevant tests, and answer with what you changed and how you checked it.'} Leave the docs the cartographer keeps to it: it brings them up to date once the human merges the room's branch. Your write access ends with your answer.`;
 }

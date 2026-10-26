@@ -3351,7 +3351,7 @@ export class Daemon {
       `The room's patches were just merged into ${branch} (${sha.slice(0, 7)}):`,
       ...subjects.map(s => `- ${s}`),
       '',
-      `Bring the map (${MAP_FILE}) and the doc comments up to date for what these changed, rewriting only what changed. Commit in ${g.dir}, then call done with one line on what you updated.`,
+      `Bring the docs you keep up to date for what these changed, rewriting only what changed. Commit in ${g.dir}, then call done with one line on what you updated.`,
     ].join('\n');
     const existing = [...g.agents.values()].find(a => a.role.name === role.name && !FINISHED.includes(a.state));
     if (existing) {

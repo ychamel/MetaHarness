@@ -1126,7 +1126,7 @@ user can edit, extend or turn off.
 ### A rule
 
 ```markdown
-<!-- .metaharness/rules/map.md -->
+<!-- .metaharness/rules/areas.md -->
 ---
 when: path                  # start | path | new-file | commit | done
 description: the part of ARCHITECTURE.md for where you're working
@@ -1178,41 +1178,63 @@ The assistant can propose a rule.
 
 ### The default pack: clean, mapped code
 
-Clean means readable, scalable and well structured. The map is `ARCHITECTURE.md` in the
-repository, committed with the code: an overview and where things go, then a short section per
-area under a path heading. It's a map, not documentation.
+Clean means readable, scalable and well structured. Mapped means the code's docs come in
+layers, so an agent reads only what its task needs and opens the right 3 to 5 files instead of
+searching. The layers, committed with the code:
+
+| Layer | Where | Holds | Size |
+|---|---|---|---|
+| Map | `ARCHITECTURE.md` | What the code is; stack; one path heading per system with a line or two (what it's for, where its behavior is defined: code, data, config, editor, infra; its README); the never-read list; commands; the other docs and when to read them; `## Flows`, `## Systems` | ~100 lines, 6,000 characters |
+| Runtime | `docs/RUNTIME.md` | Boundaries; how it runs (request lifecycle, or game loop and update order); startup; who owns shared state | 1–2 pages |
+| System | `README.md` in its folder | Fixed headings: Purpose, Entry points, Where behavior is defined, Invariants and contracts, Constraints, Gotchas, Dependencies | ~80 lines |
+| Decisions, domain | `docs/decisions/`, `docs/domain/` | Why a choice was made; game design, specs, API contracts | One topic per file |
+| Code | Names, types, doc comments | Doc comments are for the human following the design in the Design view | |
+
+All of this is rule text, not harness code: the limits are suggestions an agent keeps by
+pruning, or by asking the human to raise them; nothing checks them. The map is the only file
+the harness reads itself (the Design view's areas, flows and systems, §14), and it reads it in
+the same shape it always had: path headings, `## Flows`, `## Systems`.
 
 | Rule | When | Roles | Does |
 |---|---|---|---|
 | `conventions` | start | team | Readable, well structured, scalable: the principles, plus the repository's `CONVENTIONS.md` when there is one (`include:`) |
-| `map` | path | all | The overview and the section for where the agent is, from `ARCHITECTURE.md` |
-| `no-duplicates` | new-file | team | "Is there already something that does this?": check the map, or ask a scout |
-| `map-upkeep` | commit | team | Files were added, moved or removed without a change to `ARCHITECTURE.md`: update its section |
-| `finish-clean` | done | team | Look over your changes once before finishing (`edited: true`) |
+| `map` | start | all | The map, whole (`include: ARCHITECTURE.md`), with how to navigate from it: find the system, read its README, check where its behavior is defined (data and config are changed there; editor state becomes a manual step for the human), name the 3–5 files, never open the never-read list, and when code and doc disagree the code wins |
+| `docs` | start | team | The layers above: where each fact goes, the README headings, the sizes, and who keeps what |
+| `no-duplicates` | new-file | team | "Is there already something that does this?": check the map and the README, or ask a scout |
+| `map-upkeep` | commit | team | Files were added, moved or removed without a change to `ARCHITECTURE.md`: update the README's sections, and the map's line or tell the cartographer |
+| `finish-clean` | done | team | Look over your changes once before finishing (`edited: true`): the READMEs you keep are true, manual steps are in the note |
 | `map-missing` | start | lead | There's no `ARCHITECTURE.md`: offer the `map-bootstrap` workflow to the human; never run it unasked |
 | `cartographer` | start | lead | The goal will change code, even a small patch: spawn a cartographer first, and tell the team to message it about design changes |
 
-`map-upkeep` leaves out the cartographer (`roles: team, !cartographer`), and both it and `map`
-tell agents to message the cartographer, when the team has one, rather than edit the map.
+`map` and `docs` need an `ARCHITECTURE.md` (`requires:`), so a repository without docs costs
+agents nothing. A path rule with `sections:` still hands out a file's path sections as an agent
+moves (the mechanism above); the default pack sends the whole map at the start instead, since
+it's kept small.
+
+**Who keeps what.** Each teammate keeps the README of the systems it changes, in the same
+commit as the code: invariants and gotchas are learned mid-task, by whoever does the work, and
+a README rarely has two teams working in it at once. The shared docs, the map, the runtime doc
+and the doc comments, have one keeper.
 
 **The cartographer** (a built-in role, `defaults/roles/cartographer.md`; a folder's role of the
-same name replaces it) is the only one who edits `ARCHITECTURE.md` and the doc comments (what
-each file, class and function is for, shown on hover in the Design view), so they have one
-voice and never conflict in a merge. It documents what landed without a doc, and rewrites a
-doc only when it has become wrong (purpose, inputs, outputs, effects), as the code is now:
-rule text rather than a check, as an engineer would be guided. Teammates message it about design changes, which leaves room
-for questions back. It doesn't change the map on a message alone, since the work may still
-change: its role has `wake: landed`, so the daemon sends it each batch of landed work (§9),
-and it then reads the diff and updates the sections touched, committing the map alone with a
-one-line design summary. Those commits are the design history the Design view shows; its own
-commits never wake it. Between batches it ends its turn without `done`, which for a role with
-`wake:` is rest, not news for its spawner.
+same name replaces it) is the only one who edits `ARCHITECTURE.md`, `docs/RUNTIME.md` and the
+doc comments (what each file, class and function is for, shown on hover in the Design view), so
+they have one voice and never conflict in a merge. It keeps the map within its size, and tidies
+a README that landed over its size or off its headings. It documents what landed without a doc,
+and rewrites a doc only when it has become wrong (purpose, inputs, outputs, effects), as the
+code is now: rule text rather than a check, as an engineer would be guided. Teammates message
+it about design changes, which leaves room for questions back. It doesn't change the map on a
+message alone, since the work may still change: its role has `wake: landed`, so the daemon
+sends it each batch of landed work (§9), and it then reads the diff and updates what it
+touches, committing the map alone with a one-line design summary. Those commits are the design
+history the Design view shows; its own commits never wake it. Between batches it ends its turn
+without `done`, which for a role with `wake:` is rest, not news for its spawner.
 
-The **`map-bootstrap`** workflow (built in) has explorers survey the code area by area, writes
-`ARCHITECTURE.md` (and a `CONVENTIONS.md` when the code has clear conventions), asks the human
-to approve both, and commits them. The **`doc-bootstrap`** workflow (built in) splits the code
-into parts that share no files and has them documented in parallel, comments only. Linters and
-formatters are left out on purpose.
+The **`map-bootstrap`** workflow (built in) has explorers write each system's README in
+parallel, then the lead writes `docs/RUNTIME.md` and `ARCHITECTURE.md` (and a `CONVENTIONS.md`
+when the code has clear conventions), asks the human to approve them, and commits them. The
+**`doc-bootstrap`** workflow (built in) splits the code into parts that share no files and has
+them documented in parallel, comments only. Linters and formatters are left out on purpose.
 
 ### A skill
 

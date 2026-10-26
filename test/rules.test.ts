@@ -85,7 +85,7 @@ test('rules: globs, roles and layers', () => {
   const cfg = loadConfig([personal]);
   assert.equal(cfg.rules.get('conventions')!.body, 'Tabs, always.');
   assert.equal(cfg.rules.get('map')!.off, true);
-  assert.equal(cfg.rules.get('map')!.when, 'path', 'an off file keeps the rule it turns off');
+  assert.equal(cfg.rules.get('map')!.when, 'start', 'an off file keeps the rule it turns off');
   assert.equal(cfg.rules.get('finish-clean')!.off, true);
   assert.equal(cfg.rules.get('no-duplicates')!.off, false);
   assert.ok(cfg.workflows.get('map-bootstrap')?.builtIn);
@@ -140,9 +140,11 @@ test('rules: commits and done', () => {
 });
 
 /** A daemon on the shop repository with one fake role per script. */
-function shop(scripts: Record<string, FakeScript>, settings: Record<string, unknown> = {}) {
+function shop(scripts: Record<string, FakeScript>, settings: Record<string, unknown> = {}, rules: Record<string, string> = {}) {
   const cfg = mkdtempSync(join(tmpdir(), 'mh-rules-cfg-'));
   mkdirSync(join(cfg, 'roles'));
+  mkdirSync(join(cfg, 'rules'));
+  for (const [name, text] of Object.entries(rules)) writeFileSync(join(cfg, 'rules', `${name}.md`), text);
   for (const name of Object.keys(scripts)) writeFileSync(join(cfg, 'roles', `${name}.md`), `---\nharness: fake\nmodel: m\ngood_at: ${name} things\n---\nYou do ${name} things.\n`);
   writeFileSync(join(cfg, 'settings.json'), JSON.stringify(settings));
   const repo = shopRepo();
@@ -151,7 +153,10 @@ function shop(scripts: Record<string, FakeScript>, settings: Record<string, unkn
   return { d, fake, repo };
 }
 
-test('rules in a run: the prompt, the map as an agent moves, new files, commits and done', async () => {
+/** A path rule handing out the map's sections as an agent moves, as a repository could add. */
+const AREAS = '---\nwhen: path\ndescription: the part of the map for where you are\nsections: ARCHITECTURE.md\n---\nThe map, for where you are.\n';
+
+test('rules in a run: the prompt, sections as an agent moves, new files, commits and done', async () => {
   const seen: Record<string, string | null> = {};
   const { d, fake, repo } = shop({
     coder: async ctx => {
@@ -170,7 +175,7 @@ test('rules in a run: the prompt, the map as an agent moves, new files, commits 
       seen.done1 = await ctx.tool('done', { note: 'Refunds' });
       seen.done2 = await ctx.tool('done', { note: 'Refunds, tidied' });
     },
-  });
+  }, {}, { areas: AREAS });
   const goal = d.startGoal({ request: 'Add refunds', lead: 'coder' });
   // The commit the script announces, made here, then seen by the git poll.
   const committed = (async () => {
@@ -186,14 +191,16 @@ test('rules in a run: the prompt, the map as an agent moves, new files, commits 
 
   const prompt = fake.started[0].spec.systemPrompt;
   assert.match(prompt, /## Rules\n\n### cartographer\n\nWhen this goal will change code[\s\S]*spawn a `cartographer`[\s\S]*### conventions\n\nWrite code that's readable[\s\S]*CONVENTIONS.md:\n\nHandlers are named after their resource/, 'a lead with a map is told about the cartographer');
-  assert.match(prompt, /- map, when you look at files: the part of ARCHITECTURE.md/);
+  assert.match(prompt, /### docs\n\nThis repository's docs come in layers[\s\S]*## Purpose/, 'the doc layers');
+  assert.match(prompt, /### map\n\nThis repository's docs come in layers[\s\S]*Name the 3 to 5 files[\s\S]*ARCHITECTURE.md:\n\n# Shop\n\nA small shop/, 'the map, whole, at the start');
+  assert.match(prompt, /- areas, when you look at files: the part of the map/);
   assert.match(prompt, /- no-duplicates, when you create a file \(\*\*, !\*\*\/\*test\*\/\*\*/);
   assert.doesNotMatch(prompt, /map-missing/, 'the repository has a map');
 
-  assert.match(seen.first!, /^\[MetaHarness · rule map\] You're looking at src\/api\/orders.ts\.\nThis repository's map[\s\S]*A small shop[\s\S]*The HTTP handlers/);
+  assert.match(seen.first!, /^\[MetaHarness · rule areas\] You're looking at src\/api\/orders.ts\.\nThe map, for where you are[\s\S]*A small shop[\s\S]*The HTTP handlers/);
   assert.doesNotMatch(seen.first!, /Storage\. Nothing here/);
   assert.equal(seen.again, null, 'the same section only once');
-  assert.match(seen.store!, /^\[MetaHarness · rule map\] From ARCHITECTURE.md, for src\/store\/:\n\n## `src\/store\/`\n\nStorage/);
+  assert.match(seen.store!, /^\[MetaHarness · rule areas\] From ARCHITECTURE.md, for src\/store\/:\n\n## `src\/store\/`\n\nStorage/);
   assert.doesNotMatch(seen.store!, /A small shop/, 'the overview only once');
   assert.match(seen.created!, /^\[MetaHarness · rule no-duplicates\] You created src\/api\/refunds.ts\.\nBefore you build on it/);
   assert.equal(seen.created2, null, 'new-file rules once per session');
@@ -202,7 +209,7 @@ test('rules in a run: the prompt, the map as an agent moves, new files, commits 
   assert.match(seen.done2!, /^Done\. The human has your note\./);
 
   const fired = d.store.since(goal).filter(e => e.type === 'rule.fired').map(e => e.data.rule);
-  assert.deepEqual(fired, ['map', 'map', 'no-duplicates', 'map-upkeep', 'finish-clean']);
+  assert.deepEqual(fired, ['areas', 'areas', 'no-duplicates', 'map-upkeep', 'finish-clean']);
 });
 
 test('rules: a lead in a repository without a map is told it can have one; a switch turns a rule off', async () => {
@@ -216,8 +223,8 @@ test('rules: a lead in a repository without a map is told it can have one; a swi
   assert.match(prompt, /### cartographer\n\nWhen this goal will change code/, 'the cartographer keeps the doc comments, map or not');
   assert.match(prompt, /- doc-bootstrap: giving every file, class and function/, 'and the doc workflow is offered');
   assert.doesNotMatch(prompt, /### conventions/, 'turned off in the settings');
-  assert.doesNotMatch(prompt, /- map, when you look at files/, "no map, so the map rule isn't listed");
-  assert.match(prompt, /- map-bootstrap: creating ARCHITECTURE.md/, 'the built-in workflow is offered');
+  assert.doesNotMatch(prompt, /### (map|docs)\n/, "no map, so neither the map nor the doc layers");
+  assert.match(prompt, /- map-bootstrap: writing the layered docs/, 'the built-in workflow is offered');
 });
 
 test('native skills: Codex turns off user and repository skills, Antigravity shadows personal ones', async () => {

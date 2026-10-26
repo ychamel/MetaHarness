@@ -12,7 +12,7 @@ adds comments: it needs no cartographer.
    who), spawned with `worktree: true`, or by quick helpers for small parts. Brief: "In
    <part>, give each file, class and function that has no doc comment one, in the language's
    own form (`/** … */` in TypeScript and JavaScript, a docstring in Python, `##` in
-   GDScript). Read its section of ARCHITECTURE.md first, if there is one. Say what it's for
+   GDScript). Read its README first, if it has one. Say what it's for
    and what it does at a high level: its job, what it takes and gives back when that isn't
    plain, the effects that matter (state it changes, signals it sends, files it writes). Not
    how it works, step by step. The first sentence is the summary and stands on its own; more

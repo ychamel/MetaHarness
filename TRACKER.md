@@ -516,6 +516,15 @@ Findings from the run:
   beside the canvas, lens bar, endings in the header. The fake harness now starts a turn with
   injected messages a script didn't read (as real harnesses do). Checked with tests (6 room
   tests, 143 in all) and in headless Chrome against a scripted daemon. Not yet in a real run.
+- [x] **Layered docs in the default pack** (DESIGN.md §18, brainstorm → "go" on 2026-10-26).
+  The map becomes the first of several layers, read before code: `ARCHITECTURE.md` (~100
+  lines, sent whole at the start by `map`, now a start rule), `docs/RUNTIME.md`, a README per
+  system with fixed headings, decision and domain docs. A new `docs` rule says what goes where,
+  the sizes (suggestions an agent keeps by pruning, or by asking to raise them; nothing
+  checks), and who keeps what: teammates their systems' READMEs, the cartographer the map, the
+  runtime doc and the doc comments. `map-bootstrap` writes the layers. Rule text only, plus the
+  cartographer's and rooms' wording made generic. Checked with tests (143). Not yet in a real
+  run: the throwaway `docs-migrate` workflow waits in Evolution_meta's `.metaharness/workflows/`.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search
