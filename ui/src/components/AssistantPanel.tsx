@@ -68,7 +68,7 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
   useEffect(() => {
     if (!state) return;
     setEvents([]);
-    return followEvents('assistant', e => setEvents(prev => prev.concat(e)), () => {}, state.since);
+    return followEvents('assistant', e => setEvents(prev => prev.concat(e)), () => {}, state.since).stop;
   }, [state?.conv, state?.since]);
 
   const conv = useMemo(() => events.filter(e => e.data.conv === state?.conv), [events, state?.conv]);

@@ -87,17 +87,51 @@ export const api = {
   command: <T = { result?: string }>(body: Record<string, unknown>) => call<T & Record<string, unknown>>('/commands', { method: 'POST', body: JSON.stringify(body) }),
 };
 
-/** Follows a goal's events from the start; reconnects by itself (EventSource) and never repeats one. */
-export function followEvents(goal: string, onEvent: (e: MhEvent) => void, onStatus: (connected: boolean) => void, since = 0): () => void {
+/**
+ * Follows a goal's events from the start and never repeats one. The stream opens again from the
+ * last event seen when it goes quiet past the daemon's pings (a connection that died without
+ * closing), when the browser gives up on it, or when `reopen` is called (the page came back into view).
+ */
+export function followEvents(goal: string, onEvent: (e: MhEvent) => void, onStatus: (connected: boolean) => void, since = 0): { stop: () => void; reopen: () => void } {
   let last = since;
-  const es = new EventSource(`/events?goal=${encodeURIComponent(goal)}&since=${since}&token=${encodeURIComponent(current)}`);
-  es.onopen = () => onStatus(true);
-  es.onerror = () => onStatus(false);
-  es.onmessage = m => {
-    const e = JSON.parse(m.data) as MhEvent;
-    if (e.seq <= last) return;
-    last = e.seq;
-    onEvent(e);
+  let es: EventSource | undefined;
+  let heard = Date.now();
+  let retry: number | undefined;
+  const open = () => {
+    es?.close();
+    window.clearTimeout(retry);
+    heard = Date.now();
+    const s = new EventSource(`/events?goal=${encodeURIComponent(goal)}&since=${last}&token=${encodeURIComponent(current)}`);
+    es = s;
+    s.onopen = () => {
+      heard = Date.now();
+      onStatus(true);
+    };
+    s.onerror = () => {
+      onStatus(false);
+      // Closed for good (the daemon answered with an error, say): the browser won't try again, so this does.
+      if (s.readyState === EventSource.CLOSED) retry = window.setTimeout(open, 3000);
+    };
+    s.addEventListener('ping', () => void (heard = Date.now()));
+    s.onmessage = m => {
+      heard = Date.now();
+      const e = JSON.parse(m.data) as MhEvent;
+      if (e.seq <= last) return;
+      last = e.seq;
+      onEvent(e);
+    };
   };
-  return () => es.close();
+  open();
+  // The daemon pings every 15 seconds: a stream silent for much longer has died without closing.
+  const watch = window.setInterval(() => {
+    if (Date.now() - heard > 40_000) open();
+  }, 10_000);
+  return {
+    stop: () => {
+      window.clearInterval(watch);
+      window.clearTimeout(retry);
+      es?.close();
+    },
+    reopen: open,
+  };
 }

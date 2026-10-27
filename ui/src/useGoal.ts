@@ -16,13 +16,20 @@ export function useGoal(goalId: string | undefined) {
   const [error, setError] = useState<string>();
   const buffer = useRef<MhEvent[]>([]);
   const timer = useRef<number | undefined>(undefined);
+  // Refreshes overlap; one that answers after a later one is older and is dropped.
+  const asked = useRef(0);
+  const shown = useRef(0);
 
   const refresh = useCallback(async () => {
+    const n = ++asked.current;
     try {
-      setSnapshot(await api.state(goalId));
+      const s = await api.state(goalId);
+      if (n < shown.current) return;
+      shown.current = n;
+      setSnapshot(s);
       setError(undefined);
     } catch (e) {
-      setError((e as Error).message);
+      if (n >= shown.current) setError((e as Error).message);
     }
   }, [goalId]);
 
@@ -31,9 +38,11 @@ export function useGoal(goalId: string | undefined) {
     buffer.current = [];
     void refresh();
     if (!goalId) return;
-    let frame = 0;
+    // A short timer, not an animation frame: frames stop while the window is out of sight (on
+    // Wayland even while the page still counts as visible), and the events would wait with them.
+    let flushing: number | undefined;
     const flush = () => {
-      frame = 0;
+      flushing = undefined;
       const add = buffer.current;
       buffer.current = [];
       if (!add.length) return;
@@ -53,11 +62,11 @@ export function useGoal(goalId: string | undefined) {
         return all;
       });
     };
-    const stop = followEvents(
+    const stream = followEvents(
       goalId,
       e => {
         buffer.current.push(e);
-        frame ||= requestAnimationFrame(flush);
+        flushing ??= window.setTimeout(flush, 50);
         if (CHANGES.test(e.type) && timer.current === undefined) {
           timer.current = window.setTimeout(() => {
             timer.current = undefined;
@@ -69,9 +78,21 @@ export function useGoal(goalId: string | undefined) {
     );
     // A slow refresh as well, for what no event marks (rate-limit countdowns and the like).
     const slow = window.setInterval(() => void refresh(), 10_000);
+    // Back from elsewhere: catch up at once, in case the stream or the timers stalled meanwhile.
+    const back = () => {
+      if (document.visibilityState !== 'visible') return;
+      stream.reopen();
+      void refresh();
+    };
+    document.addEventListener('visibilitychange', back);
+    window.addEventListener('focus', back);
+    window.addEventListener('online', back);
     return () => {
-      stop();
-      cancelAnimationFrame(frame);
+      stream.stop();
+      window.clearTimeout(flushing);
+      document.removeEventListener('visibilitychange', back);
+      window.removeEventListener('focus', back);
+      window.removeEventListener('online', back);
       window.clearInterval(slow);
       window.clearTimeout(timer.current);
       timer.current = undefined;

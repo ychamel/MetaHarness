@@ -122,7 +122,8 @@ function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse):
   // Replay and subscribe in the same tick, so no event falls between them.
   for (const e of d.store.since(goal, since)) write(e);
   const off = d.store.subscribe(write);
-  const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
+  // A named event rather than a comment, so the app hears it and can tell a quiet stream from a dead one.
+  const ping = setInterval(() => res.write('event: ping\ndata: 1\n\n'), 15_000);
   req.on('close', () => {
     off();
     clearInterval(ping);
