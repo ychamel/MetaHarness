@@ -1348,7 +1348,7 @@ the canvas keeps every lens's findings visible anyway.
 **Underneath, a room is a goal** (`kind: room` on `goal.started`) whose lead is the room's lead:
 the same agents, sessions, events, costs and views (Graph, Sequence, Timeline, Costs, Files, Git,
 Design, Log). Its request is the topic. It's one sitting: rooms aren't recovered after a daemon
-restart ("New room from…" carries the canvas on).
+restart, but end then, cleaned as when the human ends one ("New room from…" carries the canvas on).
 
 - **The lead** is a role (Settings → Room lead, `roomLead`; built in: `room-lead` on Antigravity
   `gemini-3.8-flash-medium`, Claude Sonnet then Codex luna as backups: a model that talks well
@@ -1390,7 +1390,7 @@ restart ("New room from…" carries the canvas on).
 - **Patches**: the lead sends a lens with `patch: true`; it may then change files on the room's
   own branch, `mh/<room>/room`, in the one worktree everyone reads in, until it answers. The
   human merges the branch (`room.merge`); then a cartographer (if the map rules are on) maps the
-  result in the checkout.
+  result in the checkout, where it may change and commit files (`inCheckout`).
 - **Endings** (when the human chooses): *Write the design* (a message asking the lead for
   `shared/room/design.md`), *→ Goal* (`fromRoom`: the goal's lead is pointed at the canvas, the
   design and the chat), *New room from this*, *End room* (keep the branch, or discard unmerged

@@ -450,7 +450,7 @@ export function leadMethodology(o: { topic: string; paths: RoomPaths; lenses: st
 }
 
 /** What a lens does: answer the lead's ask, put results on the canvas. */
-export function lensMethodology(o: { topic: string; lead: string; paths: RoomPaths }): string {
+export function lensMethodology(o: { topic: string; lead: string; paths: RoomPaths; inCheckout?: boolean }): string {
   return [
     '## A lens in a brainstorm room',
     '',
@@ -461,7 +461,9 @@ export function lensMethodology(o: { topic: string; lead: string; paths: RoomPat
     `- Put what you establish on the canvas yourself with the \`canvas\` tool (findings, risks, ideas, with refs), linked to the cards it concerns; add a note to a card you have something to say about. Read the canvas first (\`canvas\` without ops, or ${o.paths.canvas}) so you don't repeat it.`,
     CANVAS_HOW,
     `- Then call \`done\` with a short answer for ${o.lead}: the answer first, what it rests on, and the cards you added. Details (analysis, logs, long lists) go in a report, ${o.paths.reports}/<your name>-<n>.md, named in your answer.`,
-    `- You read the code; you don't change it, unless the ask is a patch job (it says so). Running the code or its tests to check something is fine.`,
+    o.inCheckout
+      ? `- You work in the human's checkout, after the room's branch was merged into it: change what your role keeps there, and commit only your own files (\`git add <your files>\`).`
+      : `- You read the code; you don't change it, unless the ask is a patch job (it says so). Running the code or its tests to check something is fine.`,
     `- Questions go to ${o.lead} (\`send\`), never to the human or other lenses: ${o.lead} talks with the human.`,
   ].join('\n');
 }

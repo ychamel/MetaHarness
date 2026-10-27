@@ -242,7 +242,10 @@ test('a lens on a patch job may change files; the room branch merges once and th
   assert.notEqual(git(d.repo, 'rev-parse', 'HEAD'), before);
   assert.ok(existsSync(join(d.repo, 'fix.txt')));
   await next(d, room, e => e.type === 'room.message' && e.data.kind === 'note' && /^cartographer: /.test(String(e.data.text)), 'the cartographer maps the merge');
-  assert.equal(d.agent(room, 'cartographer')!.cwd, d.repo, "it works in the human's checkout");
+  const cartographer = d.agent(room, 'cartographer')!;
+  assert.equal(cartographer.cwd, d.repo, "it works in the human's checkout");
+  const map = join(d.repo, 'ARCHITECTURE.md');
+  assert.deepEqual(d.toolPolicy(cartographer, { kind: 'edit', tool: 'Write', detail: map, path: map }), { allow: true }, 'and may change the docs there');
   assert.match(d.roomMerge(room), /Nothing to merge/);
   await d.close();
 });

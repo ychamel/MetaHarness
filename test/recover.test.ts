@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Daemon } from '../src/daemon.ts';
@@ -109,6 +109,32 @@ test('a goal whose lead has finished is not picked up again', async () => {
   assert.deepEqual(d2.recover(), []);
   assert.equal(d2.goals.size, 0);
   await d2.close();
+});
+
+test('a room left open when the daemon stopped ends at the next start, and its worktree and branch go', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'mh-test-'));
+  const repo = makeRepo();
+  const config = mkdtempSync(join(tmpdir(), 'mh-config-'));
+  mkdirSync(join(config, 'roles'));
+  writeFileSync(join(config, 'roles', 'room-lead.md'), '---\nharness: fake\nmodel: m\ngood_at: x\n---\nx\n');
+  const daemon = () => new Daemon({ home, repo, configDirs: [config], adapters: { fake: new FakeAdapter({}) }, pollMs: 0, settings: { approvals: 'ask' } });
+  const d1 = daemon();
+  const room = d1.startRoom({ topic: 'Talk it over' });
+  const branch = d1.goals.get(room)!.room!.worktree!.branch;
+  await d1.close();
+  const d2 = daemon();
+  try {
+    assert.deepEqual(d2.recover(), []);
+    assert.equal(d2.store.since(room).filter(e => e.type === 'goal.ended').length, 1);
+    assert.equal(git(repo, 'branch', '--list', branch), '', 'its branch, with nothing unmerged, is deleted');
+    assert.ok(!existsSync(join(home, 'goals', room, 'worktrees', 'room')), 'its worktree is removed');
+  } finally {
+    await d2.close();
+  }
+  const d3 = daemon();
+  d3.recover();
+  assert.equal(d3.store.since(room).filter(e => e.type === 'goal.ended').length, 1, 'it ends once');
+  await d3.close();
 });
 
 test("commits in the human's checkout are named after the agent whose command made them", async () => {

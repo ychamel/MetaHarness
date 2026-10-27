@@ -72,6 +72,8 @@ export interface AgentRec {
   /** A lens in a brainstorm room: what it's for, and how it should look at the question. */
   responsibility?: string;
   stance?: string;
+  /** In a room, works in the human's checkout and may change files there (the cartographer after a merge). */
+  inCheckout?: boolean;
   quick: boolean;
   isLead: boolean;
   cwd: string;
@@ -658,6 +660,7 @@ export class Daemon {
     this.tokens.set(token, { goal: goalId, agent: name });
     const rec: AgentRec = {
       goal: goalId, name, role, harness, model, ...(effort ? { effort } : {}), parent: o.parent, brief: o.brief, ...(o.responsibility ? { responsibility: o.responsibility } : {}), ...(o.stance ? { stance: o.stance } : {}),
+      ...(g.room && o.inCheckout ? { inCheckout: true } : {}),
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
       adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
       toolsRunning: 0, lastToolEnd: 0, progressAt: Date.now(), rules: new RuleState(), ruleNotes: [],
@@ -786,7 +789,7 @@ export class Daemon {
     const parts = [
       !inRoom ? (rec.role.helper ? this.config.helperMethodology : this.config.methodology)
       : rec.isLead ? leadMethodology({ topic: g.request, paths: paths!, lenses: this.lensRoster(g), branch: g.room!.worktree?.branch })
-      : lensMethodology({ topic: g.request, lead: g.lead || 'lead', paths: paths! }),
+      : lensMethodology({ topic: g.request, lead: g.lead || 'lead', paths: paths!, inCheckout: rec.inCheckout }),
     ];
     // A lens that's just a model has no role of its own: its responsibility says what it's for.
     if (rec.role.file !== '(room lens)') parts.push(`## Your role: ${rec.role.name}\n\n${rec.role.instructions}`);
@@ -1044,7 +1047,7 @@ export class Daemon {
       const seen = tool === 'Bash' ? elideHeredocs(shown) : shown;
       const j = await this.gatekeeperFor(g).judge({
         agent: rec.name, role: rec.role.name, brief: rec.brief, tool, detail: seen, shared: g.sharedDir,
-        where: `${rec.cwd}${g.room && !rec.quick ? (g.room.writers.has(rec.name) ? " (a discussion room's branch, on a patch job)" : ' (a discussion room: it may run and test the code, not change project files)') : rec.worktree ? ' (its own worktree)' : this.sharedCheckout(rec) ? " (the human's checkout, shared with teammates)" : ''}`,
+        where: `${rec.cwd}${g.room && !rec.quick ? (rec.inCheckout ? " (the human's checkout, from a discussion room)" : g.room.writers.has(rec.name) ? " (a discussion room's branch, on a patch job)" : ' (a discussion room: it may run and test the code, not change project files)') : rec.worktree ? ' (its own worktree)' : this.sharedCheckout(rec) ? " (the human's checkout, shared with teammates)" : ''}`,
       });
       this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.gatekeeper', data: { tool, detail: seen.slice(0, 2000), verdict: j.verdict, reason: j.reason, ...(j.remembered ? { remembered: true } : {}) } });
       if (j.verdict === 'allow') return { allow: true };
@@ -1886,7 +1889,7 @@ export class Daemon {
   doneRules(rec: AgentRec): string | undefined {
     // Answering in a room isn't finishing work, unless it was a patch.
     const room = this.goals.get(rec.goal)?.room;
-    if (room && !rec.quick && !room.writers.has(rec.name)) return undefined;
+    if (room && !rec.quick && !this.writesInRoom(room, rec)) return undefined;
     const n = onDone(this.agentRules(rec), ruleAgent(rec), rec.cwd, rec.rules);
     if (!n) return undefined;
     this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: [] } });
@@ -2330,7 +2333,7 @@ export class Daemon {
       case 'edit': {
         const g = this.goals.get(rec.goal)!;
         const inside = (dir: string) => !!t.path && (t.path === dir || t.path.startsWith(dir.endsWith('/') ? dir : dir + '/'));
-        if (g.room && !rec.quick && !g.room.writers.has(rec.name) && !inside(g.sharedDir)) {
+        if (g.room && !rec.quick && !this.writesInRoom(g.room, rec) && !inside(g.sharedDir)) {
           return { allow: false, reason: `This is a brainstorm room: you read the code, you don't change it. Say what you'd change in your answer${rec.isLead ? ', and send a lens with patch: true when the human wants it fixed' : `; ${g.lead} can give you a patch job`}.` };
         }
         if (rec.role.permissionMode === 'default' || (rec.quick && !inside(g.sharedDir))) return 'ask';
@@ -3219,6 +3222,11 @@ export class Daemon {
     return true;
   }
 
+  /** In a room, who may change project files: a lens on a patch job, and whoever works in the human's checkout. */
+  private writesInRoom(room: RoomState, rec: AgentRec): boolean {
+    return !!rec.inCheckout || room.writers.has(rec.name);
+  }
+
   /** A lens answered (or ended): the lead hears it as usual; the chat shows it, and a patch job's write access ends. */
   private lensAnswered(g: GoalRec, rec: AgentRec, note: string, how: 'done' | 'idle' | 'ended' | 'crashed', stopped = false): void {
     const st = g.room!;
@@ -3353,7 +3361,8 @@ export class Daemon {
       '',
       `Bring the docs you keep up to date for what these changed, rewriting only what changed. Commit in ${g.dir}, then call done with one line on what you updated.`,
     ].join('\n');
-    const existing = [...g.agents.values()].find(a => a.role.name === role.name && !FINISHED.includes(a.state));
+    // Only one already in the checkout: a cartographer sent as a lens works on the room's branch.
+    const existing = [...g.agents.values()].find(a => a.role.name === role.name && a.inCheckout && !FINISHED.includes(a.state));
     if (existing) {
       existing.doneNote = undefined;
       this.deliver(g.id, 'human', existing.name, brief, false, false, true);
@@ -3377,7 +3386,10 @@ export class Daemon {
     for (const start of this.store.ofType('goal.started')) {
       if (this.goals.has(start.goal) || start.data.dir !== this.repo) continue;
       // A room is one sitting: after a restart it's over (start a new room from it).
-      if (start.data.kind === 'room') continue;
+      if (start.data.kind === 'room') {
+        this.endLeftRoom(start.goal);
+        continue;
+      }
       const r = replayGoal(this.store.since(start.goal));
       if (!r || goalOver(r)) continue;
       const missing = [...new Set([...r.agents.values()].filter(a => !FINISHED.includes(a.state) && !this.adapters[a.harness]).map(a => a.harness))];
@@ -3390,6 +3402,18 @@ export class Daemon {
     this.restoreAccounts();
     if (this.goals.size) this.startPolling();
     return out;
+  }
+
+  /** A room the last daemon left open ends here, and its worktree and merged branch go as when the human ends one. */
+  private endLeftRoom(id: string): void {
+    const r = replayGoal(this.store.since(id));
+    if (!r || r.ended) return;
+    this.emit({ goal: id, type: 'goal.ended', data: { reason: 'the daemon restarted', stopped: [] } });
+    if (!this.autoClean) return;
+    const res = cleanGoal(this.home, r, false);
+    if (res.removed.length || res.deleted.length || res.kept.length) {
+      this.emit({ goal: id, type: 'goal.cleaned', data: { removed: res.removed, deleted: res.deleted, kept: res.kept, force: false } });
+    }
   }
 
   private restoreGoal(r: GoalReplay): { resumed: string[]; later: string[] } {
