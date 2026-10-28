@@ -38,7 +38,7 @@ const TABS: [GoalTab, string, string][] = [
   ['log', 'Log', 'Every event, as it happened'],
 ];
 /** A room's tabs: the room first, where a goal has its story; the rest as for a goal. */
-const ROOM_TABS: [GoalTab, string, string][] = [['thread', 'Room', 'The room: the chat with its lead, the canvas, and the lenses'], ...TABS.filter(([t]) => t !== 'story')];
+const ROOM_TABS: [GoalTab, string, string][] = [['thread', 'Room', 'The room: the chat with its lead, the board, and the makers'], ...TABS.filter(([t]) => t !== 'story')];
 
 export type { RoomFrom };
 
@@ -108,7 +108,7 @@ interface Props {
 export function GoalPage(p: Props) {
   const { goal, snapshot, events } = p;
   const isRoom = goal?.kind === 'room';
-  const roomView = useMemo(() => (isRoom ? roomOf(events, goal?.roomBranch ?? null) : undefined), [isRoom, events, goal?.roomBranch]);
+  const roomView = useMemo(() => (isRoom ? roomOf(events) : undefined), [isRoom, events]);
   // A room has its room tab (kept as "thread" in links) where a goal has a story.
   const tab: GoalTab = isRoom && p.tab === 'story' ? 'thread' : !isRoom && p.tab === 'thread' ? 'story' : p.tab;
   const inbox = useMemo(() => (snapshot?.inbox ?? []).filter(i => i.goal === goal?.id), [snapshot, goal?.id]);
@@ -265,7 +265,6 @@ export function GoalPage(p: Props) {
                 config={p.config}
                 onCommand={p.onCommand}
                 onSelectAgent={onAgent}
-                onOpenCommit={sha => openGit({ kind: 'commit', sha })}
                 file={p.file}
                 onFile={p.onFile}
                 onFilesTab={() => p.onTab('files')}

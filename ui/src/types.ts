@@ -53,10 +53,8 @@ export interface CostSplit {
 
 export interface Goal {
   id: string;
-  /** room: a discussion the human leads (no lead agent); its request is the topic. */
+  /** room: a brainstorm with a lead, makers and a board; its request is the topic. */
   kind: 'goal' | 'room';
-  /** A room's branch, where its patches go. */
-  roomBranch: string | null;
   request: string;
   status: GoalStatus;
   live: boolean;
@@ -269,14 +267,17 @@ export interface ConfigView {
   settings: { effective: Settings; files: { scope: Scope; dir: string; values: Partial<Settings> }[] };
   /** Every role runs on this harness instead (the daemon was started with --fake). */
   override: string | null;
-  /** Saved sets of lenses for rooms (casts/<name>.md). */
+  /** Saved sets of makers for rooms (casts/<name>.md). */
   casts: Cast[];
   responsibilities: ResponsibilityPreset[];
 }
 
-/** A lens the room's lead may send: a role, optionally on another harness/model, with a stance. */
+/** What a maker puts on the board. */
+export type Output = 'source' | 'image' | 'demo' | 'text';
+
+/** A maker in a room (a lens, in the protocol): a role, optionally on another harness/model, with a stance. */
 export interface Lens {
-  /** None: the lens is just a model. */
+  /** None: the maker is just a model. */
   role?: string;
   name?: string;
   /** harness/model[@effort] instead of the role's own. */
@@ -284,15 +285,20 @@ export interface Lens {
   /** What it's for in this room. */
   responsibility?: string;
   stance?: string;
-  /** Put away: the lead can't send it. */
+  /** Put away: nobody can send it. */
   off?: boolean;
+  /** As the room reports it: what it makes, and what its harness can do. */
+  makes?: Output;
+  web?: boolean;
+  images?: boolean;
 }
 
-/** A responsibility to start a lens from. */
+/** A responsibility to start a maker from. */
 export interface ResponsibilityPreset {
   name: string;
   text: string;
   roles: string[];
+  makes: Output;
 }
 
 export interface Cast {
@@ -301,20 +307,50 @@ export interface Cast {
   participants: Lens[];
 }
 
-export type CardKind = 'question' | 'idea' | 'finding' | 'risk' | 'decision';
+export type CardKind = 'question' | 'idea' | 'finding' | 'risk' | 'decision' | 'source' | 'image' | 'demo' | 'text' | 'concept';
 
-/** A card on a room's canvas (src/rooms.ts). */
+/** A card on a room's board (src/rooms.ts). */
 export interface CanvasCard {
   id: string;
   kind: CardKind;
   title: string;
   text?: string;
   refs?: string[];
+  /** An image or a demo, relative to the room's shared folder. */
+  file?: string;
+  url?: string;
+  values?: Record<string, number>;
+  pillars?: { name: string; text: string; cards?: string[] }[];
+  /** What it was made from, and what was taken from each. */
+  from?: { id: string; take?: string }[];
+  frame?: string;
+  /** Where you put it, outside a frame. */
+  at?: { x: number; y: number };
+  /** The maker making it: a placeholder until it's filled. */
+  pending?: string;
   status?: 'settled' | 'dropped';
   by: string;
   notes?: { by: string; text: string }[];
   /** Rooms branched off from it. */
   branches?: string[];
+}
+
+/** A named group of cards on a room's board. */
+export interface BoardFrame {
+  id: string;
+  title: string;
+  at?: { x: number; y: number };
+}
+
+/** A demo's knob, as its page declares it. */
+export interface Knob {
+  name: string;
+  label?: string;
+  min: number;
+  max: number;
+  step?: number;
+  value: number;
+  unit?: string;
 }
 
 export interface CanvasLink {

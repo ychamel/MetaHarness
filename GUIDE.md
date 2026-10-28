@@ -187,7 +187,7 @@ You review the result in your checkout like any other change, and push it yourse
   header. The goal's name beside it is a menu: other goals and **All goals…**, the full list
   with sizes on disk, where you delete the ones you're done with. A finished goal has
   **Discuss in a room**.
-- **Rooms:** discussions you lead (below).
+- **Rooms:** brainstorms for getting clear and deciding (below).
 - **Ask** (in the left rail, from any page): an assistant for questions about your goals and
   setup. It looks things up in the logs, shared files, costs and config. When you ask for a
   setup change, it suggests one with an **Apply** button; nothing changes until you click.
@@ -441,49 +441,65 @@ The terminal can do all of this too:
 - `mh spawn <role> "<brief>"`, `mh open <agent>`
 - `mh respawn <agent> [note] [--fresh] [--on <harness/model>]`
 
-### Rooms: brainstorms with a lead
+### Rooms: getting clear and deciding
 
-A room is for exploring a bug, understanding part of the code, or working out a design, before
-(or after) a goal. You talk with one agent, the room's **lead**, and it does two other things
-while you talk: it keeps a **canvas** of the discussion, and it sends **lenses** (other agents
-you set up) to look into things for it. **+ New room** (Rooms, Home, or a room's header): what
-to talk about, and the lenses.
+A goal needs a target: once you know what you want, its workflows design, review, audit and
+build it. A **room** is for before that, when you're unsure: exploring options, finding a feel
+or a look, combining ideas, until you reach a decision (or just clarity). You talk with one
+agent, the room's **lead**, a facilitator that offers directions, asks the question that narrows
+things down and keeps a **board**; **makers** find references and make images, playable demos
+and write-ups for it and for you. Nobody changes your project in a room. **+ New room** (Rooms,
+Home, or a room's header): what to talk about, and the makers.
 
-- **Lenses** are a role or **just a model**; the harness, model and effort are picked from three
-  lists (a role uses its own unless you pick others). Each has a **responsibility**, what it's
-  for here (start from Gather, Investigate, Big picture, Review, Ideas or Patch and edit it; a
-  model-only lens must have one), and optionally a **stance** ("look for what breaks"). Pick a
-  saved **cast** or save the lenses as one. The lead picks which lens to send; a lens starts the
-  first time it's sent and keeps what it learnt for the next ask.
-- **The chat** (left): you and the lead. Its replies are short; when something needs looking
-  into, it sends a lens, says so in a line (**→ scout** …), and keeps talking with you. A
-  lens's answer shows as a line (**↩ scout** …; click to read all of it) and wakes the lead,
-  which tells you what changed. **■ Stop** (beside the lead's name) cuts its turn short. A
-  shared file named in the chat (a report, the design) is a link and a 📄 chip that opens it in
-  the chat's place; **←** or **Esc** goes back. The lead runs on Antigravity's Gemini 3.8 Flash
-  by default (Claude Sonnet as its backup): Settings → Room lead.
-- **The lenses** (over the canvas): what each is for and doing. **■** stops one at work (what
-  it found so far goes to the lead), **⏻** puts one away so the lead can't send it (**↺**
-  brings it back), **+ Lens** adds one.
-- **The canvas:** cards in columns by kind (**questions**, **ideas**, **findings**, **risks**,
-  **decided**), with arrows for how they relate (an idea answers a question, a finding rules an
-  idea out). The lead and the lenses add and update them as you talk; new cards glow for a few
-  seconds. **Click** a card to read it (its detail, files, notes and links; its neighbours
-  light up); **shift-click** picks more. With cards picked: **Ask about it** (your next message
-  is about that card), **⑂ Branch** (a room of its own for that topic, starting with those cards
-  and the ones linked to them; the card shows where it branched), **✓ Settle**, **✗ Drop**,
-  **⟶ Link** (two cards). **+ Card** adds one yourself; ✎ edits one. Only you decide: the lead
-  puts a card under *Decided* when you agreed to it.
-- **Fixing on the go:** ask for a small fix and the lead sends a lens with a patch job; it
-  changes the code on the room's own branch and commits. **⤵ Merge** (header) brings the
-  room's patches into your branch, and the cartographer maps them.
-- **Where it goes** (header): **Write the design** has the lead write `room/design.md` from the
-  canvas; **→ Goal** points a goal's lead at the canvas, the design and the chat; **New room
-  from this** starts a fresh room with this canvas; **End room** keeps or discards patches you
-  didn't merge.
-- Rooms open with the team and agent columns put away (the lens bar and the chat show the
-  same); click a name to slide its panel in, or bring the columns back with the toggles at the
-  top right. Rooms remember this apart from goals.
+- **Makers** each make one kind of card. The built-in four: **researcher** (references from the
+  web and the code), **illustrator** (images: Codex by default, Antigravity as its backup),
+  **prototyper** (small playable demos) and **writer** (write-ups and ideas). They're roles like
+  any other: change their models in Setup → Roles, or add your own. In the dialog each maker is
+  a role or **just a model** (harness, model and effort from three lists), with a
+  **responsibility** (start from Research, Illustrate, Prototype, Write, Big picture or Review;
+  it says what it makes) and optionally a **stance**. Pick a saved **cast** or save the makers
+  as one. A maker starts the first time it's asked and keeps what it learnt.
+- **The chat** (left): you and the lead. Its replies are short; when something is worth making,
+  it sends a maker, says so in a line (**→ illustrator** …), and keeps talking. A maker's answer
+  shows as a line (**↩ illustrator** …; click to read it) and wakes the lead. **■ Stop** (beside
+  the lead's name) cuts its turn short. A shared file named in the chat opens in the chat's place.
+- **The makers** (over the board): what each makes and is doing. **■** stops one at work, **⏻**
+  puts one away (**↺** brings it back), **+ Maker** adds one. An image maker whose harness can't
+  generate images says **no image tool**.
+- **The board:** cards of every kind (ideas, questions, sources, images, demos, write-ups,
+  findings, risks, decisions, concepts) where you put them, or grouped in **frames** (Look,
+  Combat…) that lay their cards out themselves. **Drag** a card to move it, onto a frame to put
+  it in; drag a frame's title to move it with its cards; drag the background to pan,
+  **ctrl+wheel** to zoom; **Frames…** jumps to one, **Tidy** lays the loose cards out again.
+  Solid arrows are links the lead drew; dashed ones show what a card was mixed from. New cards
+  glow for a few seconds.
+- **Click** a card to open it beside the board: an image full size, a **demo** to play, a
+  source's link, a concept's pillars with the cards each comes from. **Shift-click** picks more.
+  With cards picked: **⚗ Mix…**, **Ask a maker…** (straight to it, about those cards), **Ask
+  the lead**, **▢ Frame**, **⑂ Branch** (a room of its own, starting with those cards and the
+  ones linked to them), **✓** settle, **✗** drop, **⟶** link two. **+ Card** and **+ Frame**
+  add your own.
+- **Mixing:** pick cards, **⚗ Mix…**, and say what to take from each (*its style*, *its
+  combat*, *its characters*), what to make (an image, a demo, a write-up, ideas, references)
+  and how many takes. Placeholders appear at once, linked to their ingredients, and the maker
+  fills them. Open a result and **⚗ Remix…** to swap an ingredient or change what's taken.
+  Makers you ask and mixes don't wake the lead; it hears of them with your next message.
+- **Demos** are throwaway pages, played sandboxed, with **knobs**: sliders for the values that
+  decide the feel (gravity, jump speed, camera lag…). When the project has the real code, the
+  prototyper ports its formulas and names the knobs after the real parameters. Tune until it
+  feels right, then **Keep these values**: a decision card with the numbers, which a goal
+  builds to (opening it plays the demo with those values).
+- **The concept card** is the idea as it stands, pillar by pillar (look, feel, mechanics,
+  story…), each pointing at the cards it comes from. The lead keeps it as things settle. Only
+  you decide: decision cards are what you agreed to.
+- **Where it goes** (header): **End room** when you're clear (that's an outcome too); **Write
+  the design** has the lead write `room/design.md` from the board, citing its cards; **→ Goal**
+  points a goal's lead at the board (concept, decisions, kept values, demos, images) and the
+  design; **New room from this** starts a fresh room with this board, its images and demos.
+- Images and demos live in the room's shared folder (`room/media/`, `room/demos/`). Makers may
+  generate images without asking in a room (you're watching; **■** stops one).
+- Rooms open with the team and agent columns put away; click a name to slide its panel in, or
+  bring the columns back with the toggles at the top right.
 - A room lasts one sitting: after a daemon restart, start a new room from it.
 
 ## 7. What agents can and can't do

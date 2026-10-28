@@ -5,7 +5,7 @@ import { Dialog, Field, Toggle, useConfirm } from './common.tsx';
 import { AccountChips, harnessOf } from './Accounts.tsx';
 import { EFFORTS, type RoomView } from '../roomData.ts';
 
-/** Roles a lens can be: the team's, without the built-in side sessions and the room lead. */
+/** Roles a maker can be: the team's, without the built-in side sessions and the room lead. */
 export function lensRoles(config?: ConfigView): string[] {
   const s = config?.settings.effective;
   const side = new Set([s?.gatekeeper, s?.assistant, s?.roomLead].filter(Boolean));
@@ -33,12 +33,12 @@ export function splitOn(on?: string): { harness: string; model: string; effort: 
 }
 const joinOn = (harness: string, model: string, effort: string) => (harness && model ? `${harness}/${model}${effort ? `@${effort}` : ''}` : undefined);
 
-/** A lens that's just a model needs a responsibility: it's all it's told. */
-export const lensProblem = (p: Lens) => (!p.role && !p.on ? 'Pick a model for this lens.' : !p.role && !p.responsibility?.trim() ? 'A lens that’s just a model needs a responsibility.' : '');
+/** A maker that's just a model needs a responsibility: it's all it's told. */
+export const lensProblem = (p: Lens) => (!p.role && !p.on ? 'Pick a model for this maker.' : !p.role && !p.responsibility?.trim() ? 'A maker that’s just a model needs a responsibility.' : '');
 
 /**
- * One lens: a role (or just a model), the harness, model and effort it runs on, what it's
- * responsible for in this room, and optionally a stance and a name.
+ * One maker: a role (or just a model), the harness, model and effort it runs on, what it makes
+ * and is responsible for in this room (a preset says both), and optionally a stance and a name.
  */
 export function LensEditor({ lens, config, onChange, onRemove }: { lens: Lens; config?: ConfigView; onChange: (p: Lens) => void; onRemove?: () => void }) {
   const roles = lensRoles(config);
@@ -97,7 +97,7 @@ export function LensEditor({ lens, config, onChange, onRemove }: { lens: Lens; c
         </select>
         <input type="text" className="lens-name" value={lens.name ?? ''} onChange={e => onChange({ ...lens, name: e.target.value.trim() || undefined })} placeholder="name" aria-label="Name" />
         {onRemove && (
-          <button className="btn ghost small" onClick={onRemove} aria-label="Remove this lens" title="Remove">
+          <button className="btn ghost small" onClick={onRemove} aria-label="Remove this maker" title="Remove">
             ×
           </button>
         )}
@@ -114,16 +114,16 @@ export function LensEditor({ lens, config, onChange, onRemove }: { lens: Lens; c
           <option value="">{lens.role ? `Usual${fallbackDefault ? `: ${fallbackDefault.name}` : ''}` : 'Responsibility…'}</option>
           {presets.map(r => (
             <option key={r.name} value={r.name}>
-              {r.name}
+              {r.name} ({r.makes === 'text' ? 'write-ups' : `${r.makes}s`})
             </option>
           ))}
-          <option value="custom">Your own…</option>
+          <option value="custom">Your own… (write-ups)</option>
         </select>
         <input
           type="text"
           value={lens.responsibility ?? ''}
           onChange={e => onChange({ ...lens, responsibility: e.target.value || undefined })}
-          placeholder={lens.role ? (fallbackDefault?.text ?? 'What this lens is for here (the lead picks lenses by it)') : 'Required: what this lens is for here'}
+          placeholder={lens.role ? (fallbackDefault?.text ?? 'What this maker is for here (the lead picks makers by it)') : 'Required: what this maker is for here'}
           aria-label="What it's responsible for"
           className={!lens.role && !lens.responsibility?.trim() ? 'needed' : undefined}
         />
@@ -146,11 +146,11 @@ export interface RoomFrom {
   kind: 'room' | 'goal';
   topic?: string;
   lenses?: Lens[];
-  /** Cards branched off a room's canvas. */
+  /** Cards branched off a room's board. */
   cards?: { id: string; title: string }[];
 }
 
-/** Starts a room: the topic, and the lenses its lead may send (from a saved cast or by hand). */
+/** Starts a room: the topic, and the makers its lead may send and you may ask (the built-in four, a saved cast, or by hand). */
 export function NewRoomDialog({ config, from, onClose, onStart, onCommand }: {
   config?: ConfigView;
   from?: RoomFrom;
@@ -168,7 +168,7 @@ export function NewRoomDialog({ config, from, onClose, onStart, onCommand }: {
   const [lenses, setLenses] = useState<Lens[]>(
     () =>
       from?.lenses?.map(({ role, name, on, responsibility, stance }) => ({ role, name, on, responsibility, stance })) ??
-      [firstRole(['scout', 'explorer']), firstRole(['designer', 'architect']), firstRole(['reviewer'])].filter((r, i, a): r is string => !!r && a.indexOf(r) === i).map(role => ({ role })),
+      ['researcher', 'illustrator', 'prototyper', 'writer'].filter(r => roles.includes(r)).map(role => ({ role })),
   );
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState<string>();
@@ -183,7 +183,7 @@ export function NewRoomDialog({ config, from, onClose, onStart, onCommand }: {
   return (
     <Dialog title={branching ? 'Branch into a new room' : from ? `New room from this ${from.kind}` : 'New room'} onClose={onClose} wide>
       <div className="dialog-body muted small">
-        You talk with the lead{lead ? ` (${lead.harness} · ${lead.model})` : ''}; it keeps the canvas and sends lenses to look into things. They read the code; a patch job lets one fix something on the room's own branch, which you merge.
+        A room is for getting clear and deciding. You talk with the lead{lead ? ` (${lead.harness} · ${lead.model})` : ''}, which helps you narrow things down, keeps the board and sends makers to find references and make images, playable demos and write-ups; you can ask makers yourself and mix cards into new ones. Nobody changes your project here: building is for a goal.
         {branching ? (
           <>
             {' '}
@@ -193,15 +193,15 @@ export function NewRoomDialog({ config, from, onClose, onStart, onCommand }: {
           from && (
             <>
               {' '}
-              It starts with what <b>{from.label}</b> {from.kind === 'room' ? 'has on its canvas' : 'came to'}.
+              It starts with what <b>{from.label}</b> {from.kind === 'room' ? 'has on its board' : 'came to'}.
             </>
           )
         )}
       </div>
       <Field label="What to talk about">
-        <textarea autoFocus rows={3} value={topic} onChange={e => setTopic(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && void start()} placeholder="e.g. Creatures die at the map edge: why, and what's the cleanest fix?" />
+        <textarea autoFocus rows={3} value={topic} onChange={e => setTopic(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && void start()} placeholder="e.g. What should the jump feel like? Or: a game about tides, what's the hook?" />
       </Field>
-      <Field label="Lenses the lead can send" hint="Each starts the first time the lead sends it, and keeps what it learnt. Run a role on another model for a second view. You can add more in the room.">
+      <Field label="Makers" hint="Each starts the first time it's asked, and keeps what it learnt. Change a maker's model, or run one role on two models for a second take. You can add more in the room.">
         <div className="seats">
           {casts.length > 0 && (
             <div className="row start">
@@ -217,17 +217,17 @@ export function NewRoomDialog({ config, from, onClose, onStart, onCommand }: {
             <LensEditor key={i} lens={p} config={config} onChange={n => setLenses(cs => cs.map((x, j) => (j === i ? n : x)))} onRemove={() => setLenses(cs => cs.filter((_, j) => j !== i))} />
           ))}
           <div className="row start">
-            <button className="btn small" onClick={() => setLenses(cs => [...cs, { role: firstRole(['reviewer']) ?? roles[0] }])} disabled={!roles.length}>
-              + Lens
+            <button className="btn small" onClick={() => setLenses(cs => [...cs, { role: firstRole(['writer', 'researcher']) ?? roles[0] }])} disabled={!roles.length}>
+              + Maker
             </button>
             {lenses.length > 0 &&
               (saving === undefined ? (
-                <button className="btn ghost small" onClick={() => setSaving('')} title="Save these lenses as a cast to pick next time">
+                <button className="btn ghost small" onClick={() => setSaving('')} title="Save these makers as a cast to pick next time">
                   Save as a cast…
                 </button>
               ) : (
                 <>
-                  <input type="text" className="cast-name" autoFocus value={saving} onChange={e => setSaving(e.target.value)} placeholder="cast name, e.g. bug-hunt" />
+                  <input type="text" className="cast-name" autoFocus value={saving} onChange={e => setSaving(e.target.value)} placeholder="cast name, e.g. game-feel" />
                   <button
                     className="btn small"
                     disabled={!saving.trim()}
@@ -265,7 +265,7 @@ interface HeaderProps {
   connected: boolean;
   onGoal: (id: string) => void;
   onNewRoom: () => void;
-  /** A new room that starts with this one's canvas. */
+  /** A new room that starts with this one's board. */
   onRoomFromThis: () => void;
   /** A goal that carries out what the room settled. */
   onStartGoal: () => void;
@@ -275,10 +275,9 @@ interface HeaderProps {
   onCommand: (body: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>;
 }
 
-/** The room's header: which room, its branch, and where it goes from here: a design, a goal, another room, merging, ending. */
+/** The room's header: which room, and where it goes from here: a design, a goal, another room, or just ending, clearer. */
 export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onGoal, onNewRoom, onRoomFromThis, onStartGoal, onDesign, onAllRooms, onCommand }: HeaderProps) {
   const confirm = useConfirm();
-  const [ending, setEnding] = useState(false);
   const live = goal.live && goal.status !== 'ended';
   const agents = goal.agents;
   const paused = agents.filter(a => a.state === 'paused' || a.pausing).length;
@@ -298,16 +297,10 @@ export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onG
         <div className="goal-meta">
           <span className={`pill ${live ? 'running' : 'ended'}`}>{live ? 'open' : 'ended'}</span>
           <span>{took}</span>
-          {goal.cost != null && <span title="Cost reported by the harnesses: the lead and its lenses">{money(goal.cost)}</span>}
+          {goal.cost != null && <span title="Cost reported by the harnesses: the lead and its makers">{money(goal.cost)}</span>}
           <span>
-            {room.lenses.length} lens{room.lenses.length === 1 ? '' : 'es'}
+            {room.lenses.length} maker{room.lenses.length === 1 ? '' : 's'} · {room.cards.length} card{room.cards.length === 1 ? '' : 's'}
           </span>
-          {goal.roomBranch && (
-            <span className="mono" title={room.ahead ? `${room.ahead} commit${room.ahead > 1 ? 's' : ''} on the room's branch that ${goal.branch ?? 'your branch'} doesn't have yet` : "The room's branch: patch jobs commit here"}>
-              {goal.roomBranch}
-              {room.ahead > 0 && <span className="badge warn">{room.ahead}</span>}
-            </span>
-          )}
           {live && snapshot && <AccountChips accounts={snapshot.accounts.filter(a => agents.some(x => x.harness === harnessOf(a.id)))} />}
           {!connected && goal.live && <span className="warn-text">reconnecting…</span>}
           {goal.notice && (
@@ -325,82 +318,40 @@ export function RoomHeader({ rooms, goal, room, events, snapshot, connected, onG
           {live && room.cards.length > 0 && (
             <button
               className="btn ghost"
-              onClick={() => void onCommand({ cmd: 'room.post', goal: goal.id, text: `Write the design for a goal to carry out, as ${shared}room/design.md: the problem, what we decided and why, the plan in steps, what to test, and the risks still open. Work from the canvas and the chat, or send a lens to write it.` })}
-              title="Ask the lead to write room/design.md from the canvas"
+              onClick={() => void onCommand({ cmd: 'room.post', goal: goal.id, text: `Write the design for a goal to carry out, as ${shared}room/design.md: what we're making and why, what we decided (citing the cards by id, with any kept values), the references to match (images, demos, sources), the plan in steps, what to test, and what's still open. Work from the board and the chat.` })}
+              title="Ask the lead to write room/design.md from the board, citing its cards"
             >
               Write the design
             </button>
           )}
-          <button className="btn ghost" onClick={onStartGoal} title="A goal that carries out what the room settled; its lead reads the canvas and the design">
+          <button className="btn ghost" onClick={onStartGoal} title="A goal that builds what the room settled; its lead reads the board (the concept, the decisions and their values, the demos) and the design">
             → Goal
           </button>
-          <button className="btn ghost" onClick={onRoomFromThis} title="A new room that starts with this canvas (to branch off a few cards, pick them on the canvas)">
+          <button className="btn ghost" onClick={onRoomFromThis} title="A new room that starts with this board (to branch off a few cards, pick them on the board)">
             New room from this
           </button>
           {live && (
             <>
-              {room.ahead > 0 && (
-                <button
-                  className="btn"
-                  title={`Merge the room's branch into ${goal.branch ?? 'your branch'}; the cartographer then maps what changed`}
-                  onClick={async () => {
-                    if (await confirm({ title: `Merge into ${goal.branch ?? 'your branch'}?`, body: `${room.ahead} commit${room.ahead > 1 ? 's' : ''} from ${goal.roomBranch} land in your checkout. The room stays open, so the cartographer can map the result and you can carry on.`, confirm: 'Merge' }))
-                      void onCommand({ cmd: 'room.merge', goal: goal.id });
-                  }}
-                >
-                  ⤵ Merge
-                </button>
-              )}
               {agents.length > 0 && (
-                <button className="btn" onClick={() => void onCommand({ cmd: allPaused ? 'goal.resume' : 'goal.pause', goal: goal.id })} title={allPaused ? '' : 'The lead and every lens stop after their current step'}>
+                <button className="btn" onClick={() => void onCommand({ cmd: allPaused ? 'goal.resume' : 'goal.pause', goal: goal.id })} title={allPaused ? '' : 'The lead and every maker stop after their current step'}>
                   {allPaused ? '▶ Resume all' : '⏸ Pause all'}
                 </button>
               )}
-              <button className="btn ghost danger" onClick={() => setEnding(true)}>
+              <button
+                className="btn ghost danger"
+                onClick={async () => {
+                  if (await confirm({ title: 'End this room?', body: 'The lead and its makers stop. The chat, the board, its images and demos stay, and a new room or a goal can start from it.', confirm: 'End the room' }))
+                    void onCommand({ cmd: 'room.end', goal: goal.id });
+                }}
+                title="Done here: clarity is a fine outcome on its own"
+              >
                 End room
               </button>
             </>
           )}
         </div>
       </div>
-      {ending && <EndRoomDialog goal={goal} room={room} onClose={() => setEnding(false)} onCommand={onCommand} />}
     </header>
-  );
-}
-
-/** Ending a room: with unmerged patches, keep the branch (to merge later) or throw it away. */
-function EndRoomDialog({ goal, room, onClose, onCommand }: { goal: Goal; room: RoomView; onClose: () => void; onCommand: HeaderProps['onCommand'] }) {
-  const end = async (discard: boolean) => {
-    onClose();
-    await onCommand({ cmd: 'room.end', goal: goal.id, discard });
-  };
-  return (
-    <Dialog title="End this room?" onClose={onClose}>
-      <div className="dialog-body">
-        <p>The lead and its lenses stop. The chat, the canvas and the shared folder stay, and a new room can start from this one.</p>
-        {room.ahead > 0 && (
-          <p>
-            <b>
-              {room.ahead} patch commit{room.ahead > 1 ? 's are' : ' is'} not merged
-            </b>{' '}
-            into {goal.branch ?? 'your branch'}. Merge first to keep {room.ahead > 1 ? 'them' : 'it'} in your checkout, keep the branch {goal.roomBranch} to merge later, or discard {room.ahead > 1 ? 'them' : 'it'}.
-          </p>
-        )}
-      </div>
-      <div className="row">
-        <button className="btn" onClick={onClose}>
-          Cancel
-        </button>
-        {room.ahead > 0 && (
-          <button className="btn danger-solid" onClick={() => void end(true)}>
-            End and discard the patches
-          </button>
-        )}
-        <button className="btn primary" autoFocus onClick={() => void end(false)}>
-          {room.ahead > 0 ? 'End, keep the branch' : 'End the room'}
-        </button>
-      </div>
-    </Dialog>
   );
 }
 

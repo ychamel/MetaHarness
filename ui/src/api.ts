@@ -24,6 +24,11 @@ export function loadToken(): string {
   return current;
 }
 
+/** A room's image or demo page, for an <img> or an <iframe> (design §21); a demo may start from kept knob values. */
+export function mediaUrl(goal: string, path: string, values?: Record<string, number>): string {
+  return `/media?goal=${encodeURIComponent(goal)}&path=${encodeURIComponent(path)}${values ? `&values=${encodeURIComponent(JSON.stringify(values))}` : ''}&token=${encodeURIComponent(current)}`;
+}
+
 export function setToken(t: string): void {
   current = t.trim();
   try {

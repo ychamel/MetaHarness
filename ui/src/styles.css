@@ -1265,11 +1265,11 @@ details.more { display: grid; gap: 6px; }
 .tk-tag { color: var(--syn-tag); }
 .tk-operator { color: var(--syn-operator); }
 
-/* ---------------- rooms: the chat with the lead, the lenses, the canvas (design §21) ---------------- */
+/* ---------------- rooms: the chat with the lead, the makers, the board (design §21) ---------------- */
 
 .row.start { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .btn.new-btn { white-space: nowrap; font-weight: 600; padding: 5px 14px; }
-/* The chat and the canvas; the chat's width is the human's (--pane-room-chat). */
+/* The chat and the board; the chat's width is the human's (--pane-room-chat). */
 .room-wrap { flex: 1; min-height: 0; display: grid; grid-template-columns: clamp(300px, var(--pane-room-chat, 32%), 65%) 0 minmax(0, 1fr); }
 .room-chat { min-height: 0; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); }
 .room-chat .side-file { min-height: 0; flex: 1; display: flex; flex-direction: column; }
@@ -1309,7 +1309,7 @@ details.more { display: grid; gap: 6px; }
 .composer-input { display: flex; gap: 8px; align-items: flex-end; }
 .composer-input textarea { flex: 1; resize: vertical; min-height: 40px; }
 
-/* The lenses, over the canvas. */
+/* The makers, over the board. */
 .lens-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .lens-bar .kicker { margin: 0 4px 0 0; }
 .lens-chip { display: inline-flex; gap: 6px; align-items: center; max-width: 100%; padding: 2px 4px 2px 9px; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--panel); font-size: 12px; }
@@ -1324,21 +1324,92 @@ details.more { display: grid; gap: 6px; }
 .lens-chip.off { opacity: 0.5; }
 .lens-add { flex-basis: 100%; display: grid; gap: 8px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); box-shadow: var(--shadow); }
 
-/* The canvas: a column per kind of card, links drawn between them. */
-.canvas-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* The board: cards placed freely or in frames, links and what mixes were made from drawn between them. */
+.board-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.board-area { position: relative; flex: 1; min-height: 0; }
+.board { position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; user-select: none; background-color: var(--bg); background-image: radial-gradient(circle, color-mix(in srgb, var(--text-3) 22%, transparent) 1px, transparent 1.2px); background-size: 22px 22px; }
+.board.dragging { cursor: grabbing; }
+.board-layer { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.board-frame { position: absolute; border: 1px dashed color-mix(in srgb, var(--text-3) 60%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+.frame-head { display: flex; gap: 6px; align-items: center; height: 30px; padding: 0 6px 0 12px; cursor: move; font-size: 12.5px; }
+.frame-title { font-weight: 700; letter-spacing: 0.02em; }
+.frame-head input { font-size: 12.5px; padding: 1px 5px; width: 60%; }
+.frame-head .btn.small { padding: 0 5px; opacity: 0.6; }
+.board-frame:hover .frame-head .btn.small { opacity: 1; }
+.board-wires { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.board-wires .wire { fill: none; stroke: var(--line-strong); stroke-width: 1.5; transition: opacity 0.15s; }
+.board-wires .wire.made { stroke: color-mix(in srgb, var(--accent) 55%, var(--line-strong)); stroke-dasharray: 5 4; }
+.board-wires .wire.lit { stroke: var(--accent); stroke-width: 2.2; }
+.board-wires .wire.dim { opacity: 0.2; }
+.board-wires .wire-head { fill: var(--line-strong); }
+.canvas-card.board-card { position: absolute; cursor: grab; user-select: none; }
+.canvas-card.board-card.lifted { cursor: grabbing; z-index: 5; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25); opacity: 0.92; }
+.canvas-card.picked { box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); border-color: var(--accent); border-left-color: var(--kind); }
+.canvas-card.source { --kind: var(--series-2); }
+.canvas-card.image { --kind: var(--series-3); }
+.canvas-card.demo { --kind: var(--series-4); }
+.canvas-card.text { --kind: var(--series-5); }
+.canvas-card.concept { --kind: var(--series-6); background: color-mix(in srgb, var(--series-6) 7%, var(--panel)); }
+.canvas-card.pending { border-style: dashed; }
+.card-kind { color: var(--kind); font-weight: 650; white-space: nowrap; }
+.card-pending { display: flex; gap: 6px; align-items: center; color: var(--text-2); font-style: italic; }
+.spinner { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--working); animation: spin 0.9s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.card-thumb { width: 100%; max-height: 150px; object-fit: cover; border-radius: 6px; background: var(--panel-2); pointer-events: none; }
+.card-play { font-size: 12px; font-weight: 600; color: var(--kind); }
+.card-pillars { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 12px; color: var(--text-2); }
+.card-pillars b { color: var(--text); }
+.card-values { display: flex; flex-wrap: wrap; gap: 4px; }
+.value-chip { font-size: 11px; padding: 0 5px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line); }
+.canvas-tools .zoom { display: inline-flex; align-items: center; }
+.canvas-tools .zoom .btn.small { padding: 0 6px; }
+.canvas-tools .frame-jump { font-size: 12px; padding: 1px 4px; max-width: 160px; }
+/* A card in full, beside the board. */
+.board-panel { --kind: var(--text-3); position: absolute; top: 0; right: 0; bottom: 0; width: min(420px, 92%); z-index: 10; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); box-shadow: var(--shadow); animation: drawer-in 0.15s ease-out; }
+.board-panel.question { --kind: var(--waiting); }
+.board-panel.idea { --kind: var(--accent); }
+.board-panel.finding { --kind: var(--done); }
+.board-panel.risk { --kind: var(--crashed); }
+.board-panel.decision { --kind: var(--you); }
+.board-panel.source { --kind: var(--series-2); }
+.board-panel.image { --kind: var(--series-3); }
+.board-panel.demo { --kind: var(--series-4); }
+.board-panel.text { --kind: var(--series-5); }
+.board-panel.concept { --kind: var(--series-6); }
+.panel-head { display: flex; gap: 6px; align-items: baseline; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); border-top: 3px solid var(--kind); font-size: 12px; color: var(--text-3); }
+.panel-body { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; display: grid; gap: 10px; align-content: start; font-size: 13px; }
+.panel-title { margin: 0; font-size: 16px; line-height: 1.3; }
+.panel-image { width: 100%; border-radius: 8px; display: block; background: var(--panel-2); }
+.panel-link { overflow-wrap: anywhere; font-size: 12.5px; }
+.panel-section { display: grid; gap: 5px; justify-items: start; }
+.panel-section .kicker { margin: 0; }
+.card-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pillars { display: grid; gap: 8px; }
+.pillar { padding-left: 8px; border-left: 3px solid var(--kind); display: grid; gap: 4px; }
+.values-table { border-collapse: collapse; font-size: 12.5px; }
+.values-table td { padding: 2px 12px 2px 0; border-bottom: 1px solid var(--line); }
+.panel-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px; border-top: 1px solid var(--line); }
+/* A demo, played in a sandbox, with its knobs. */
+.demo-player { display: grid; gap: 8px; }
+.demo-frame { width: 100%; height: 280px; border: 1px solid var(--line-strong); border-radius: 8px; background: #000; }
+.knobs { display: grid; gap: 4px; }
+.knob { display: grid; grid-template-columns: minmax(80px, 34%) 1fr auto; gap: 8px; align-items: center; font-size: 12.5px; }
+.knob-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knob-value { font-size: 11.5px; color: var(--text-2); min-width: 64px; text-align: right; }
+.knob-value.changed { color: var(--accent); font-weight: 650; }
+/* Mixing, and asking a maker. */
+.mix-list { display: grid; gap: 6px; }
+.mix-row { display: grid; grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.mix-row .card-chip { cursor: default; }
+.mix-make { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mix-make select { width: auto; }
+.ask-bar { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 11; display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); }
+.ask-bar input[type='text'] { flex: 1; min-width: 0; }
+.chat-line.yours { background: color-mix(in srgb, var(--you) 6%, transparent); }
 .canvas-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 5px 12px; border-bottom: 1px solid var(--line); min-height: 34px; }
 .card-add { display: inline-flex; gap: 4px; }
 .card-add select, .card-add input { font-size: 12.5px; padding: 2px 6px; }
 .card-add input { width: 220px; }
-.canvas { position: relative; flex: 1; min-height: 0; overflow: auto; }
-.canvas-wires { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
-.canvas-wires .wire path { fill: none; stroke: var(--line-strong); stroke-width: 1.5; transition: opacity 0.15s; }
-.canvas-wires .wire-head { fill: var(--line-strong); }
-.canvas-wires .wire.lit path { stroke: var(--accent); stroke-width: 2.2; }
-.canvas-wires .wire.dim { opacity: 0.25; }
-.canvas-cols { display: grid; gap: 30px; padding: 12px 40px 40px 16px; min-width: min-content; align-items: start; }
-.canvas-col { display: grid; gap: 10px; align-content: start; min-height: 120px; }
-.canvas-col-head { font-size: 11.5px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); padding: 0 2px; }
 .canvas-empty { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%); color: var(--text-3); max-width: 420px; text-align: center; }
 
 .canvas-card { --kind: var(--text-3); position: relative; z-index: 1; background: var(--panel); border: 1px solid var(--line-strong); border-left: 3px solid var(--kind); border-radius: 8px; padding: 6px 9px 7px; box-shadow: var(--shadow); font-size: 13px; cursor: pointer; display: grid; gap: 3px; transition: opacity 0.15s, box-shadow 0.2s; }

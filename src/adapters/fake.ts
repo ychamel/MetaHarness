@@ -61,6 +61,8 @@ export class FakeAdapter implements HarnessAdapter {
       reportsCost: true,
       reportsContext: true,
       reportsRateLimits: true,
+      web: true,
+      images: true,
       ...manifest,
     };
   }
@@ -295,32 +297,88 @@ export const demoScripts: Record<string, FakeScript> = {
 };
 
 /**
- * A room's lead, scripted: it opens with the question on the canvas, sends the first lens with
- * whatever the human asks, and puts each lens's answer on the canvas as a finding.
+ * A room's lead, scripted: it opens with the question on the board, sends the first maker with
+ * whatever the human asks, and puts each maker's answer on the board as a finding.
  */
 const demoRoomLead: FakeTurnScript = async (ctx, text) => {
-  const lenses = [...(ctx.spec.systemPrompt.split('The human set these up for you to send:\n')[1] ?? '').matchAll(/^- ([\w.-]+) \(/gm)].map(m => m[1]);
+  const lenses = [...(ctx.spec.systemPrompt.split('each makes one kind of card:\n')[1] ?? '').matchAll(/^- ([\w.-]+) \(/gm)].map(m => m[1]);
   const finished = [...text.matchAll(/\[MetaHarness\] ([\w.-]+) finished: ([^\n]+)/g)];
   if (finished.length) {
-    for (const [, who, note] of finished) await ctx.tool('canvas', { ops: [{ op: 'add', kind: 'finding', title: note.slice(0, 80), text: note, links: [{ to: 'c1', label: 'answers' }] }] });
-    ctx.say(`${finished.map(([, who]) => who).join(' and ')} came back: ${finished.map(([, , note]) => note.slice(0, 120)).join(' ')} It's on the canvas. Want to dig further, or settle it?`);
+    for (const [, , note] of finished) await ctx.tool('canvas', { ops: [{ op: 'add', kind: 'finding', title: note.slice(0, 80), text: note, links: [{ to: 'c1', label: 'answers' }] }] });
+    ctx.say(`${finished.map(([, who]) => who).join(' and ')} came back: ${finished.map(([, , note]) => note.slice(0, 120)).join(' ')} It's on the board. Want to see it another way, or settle it?`);
     return;
   }
   const asked = /\[MetaHarness\] Message from human: ([\s\S]+)/.exec(text)?.[1]?.trim();
   if (!asked) {
     const topic = text.split('\n[Room]')[0].trim();
-    await ctx.tool('canvas', { ops: [{ op: 'add', kind: 'question', title: topic.split('\n')[0].slice(0, 100) }] });
-    ctx.say(`I read it as: ${topic.split('\n')[0].slice(0, 120)}. It's on the canvas. What matters most to you here?`);
+    await ctx.tool('canvas', { ops: [{ op: 'add', kind: 'question', title: topic.split('\n')[0].slice(0, 100), frame: 'The question' }] });
+    ctx.say(`I read it as: ${topic.split('\n')[0].slice(0, 120)}. Two ways in: start from how it should feel, or from what it should look like. Which matters more to you?`);
     return;
   }
   if (!lenses.length) {
-    ctx.say('Noted. There are no lenses to send yet: add one and I can have it look.');
+    ctx.say('Noted. There are no makers to send yet: add one and I can have it make something.');
     return;
   }
-  await ctx.tool('spawn', { role: lenses[0], brief: asked });
-  ctx.say(`Sending ${lenses[0]} to look into that; I'll be back when it answers.`);
+  // A demo for anything about feel, else the first maker.
+  const to = /feel|jump|move|play/i.test(asked) ? (lenses.find(l => /proto/.test(l)) ?? lenses[0]) : lenses[0];
+  await ctx.tool('spawn', { role: to, brief: asked });
+  ctx.say(`Sending ${to} on that; I'll be back when it has something.`);
 };
 
-/** Later turns of the demo roles (a room's lead hears from the human and its lenses again and again). */
-export const demoTurns: Record<string, FakeTurnScript> = { 'room-lead': demoRoomLead };
-demoScripts['room-lead'] = ctx => demoRoomLead(ctx, ctx.spec.brief);
+/** The placeholders an ask says to fill ("Fill cards c4, c5"), else none. */
+const toFill = (text: string) => /Fill cards? ([c\d, ]+)/.exec(text)?.[1].split(/,\s*/).map(s => s.trim()).filter(Boolean) ?? [];
+const asked = (text: string) => text.replace(/^\[MetaHarness\] Message from [^:]+:\s*/, '').split('\n').find(l => l.trim() && !l.startsWith('[')) ?? 'the ask';
+
+/** Puts a maker's cards on the board: filling the placeholders it was given, else adding new ones. */
+async function makeCards(ctx: FakeCtx, text: string, cards: (n: number) => Record<string, unknown>): Promise<string[]> {
+  const fill = toFill(text);
+  const ops = fill.length ? fill.map((id, n) => ({ op: 'edit', id, ...cards(n) })) : [{ op: 'add', ...cards(0) }];
+  await ctx.tool('canvas', { ops });
+  return fill.length ? fill : ['a new card'];
+}
+
+const HUES = ['#d96c4f', '#4f8fd9', '#6cbf6a', '#c9a23f'];
+
+/** A small jump to tune: gravity, jump speed and coyote time as knobs. */
+const JUMP_DEMO = `<!doctype html><html><head><meta charset="utf-8"><title>Jump</title>
+<script type="application/json" id="knobs">[{"name":"gravity","label":"Gravity","min":400,"max":4000,"step":50,"value":1800,"unit":"px/s²"},{"name":"jump","label":"Jump speed","min":200,"max":1400,"step":10,"value":720,"unit":"px/s"},{"name":"coyote","label":"Coyote time","min":0,"max":0.3,"step":0.01,"value":0.1,"unit":"s"}]</script>
+<style>html,body{margin:0;background:#15181d;color:#ccd;font:13px sans-serif;overflow:hidden}canvas{display:block}</style></head>
+<body><canvas id="c"></canvas><script>
+const c=document.getElementById('c'),g=c.getContext('2d');let W,H;function size(){W=c.width=innerWidth;H=c.height=innerHeight}size();addEventListener('resize',size);
+const p={x:60,y:0,vy:0,ground:true,since:0};let keys={};addEventListener('keydown',e=>{keys[e.code]=true;if(e.code==='Space')e.preventDefault()});addEventListener('keyup',e=>keys[e.code]=false);
+let last=performance.now(),acc=0;const DT=1/120;
+function step(){const k=window.knobs;const floor=H-40;p.since+=DT;
+if((keys.Space||keys.ArrowUp)&&(p.ground||p.since<k.coyote)){p.vy=-k.jump;p.ground=false;p.since=1}
+p.vy+=k.gravity*DT;p.y+=p.vy*DT;p.x+=((keys.ArrowRight?1:0)-(keys.ArrowLeft?1:0))*260*DT;if(p.x>W)p.x=0;if(p.x<0)p.x=W;
+if(p.y>=floor-24){if(!p.ground)p.since=0;p.y=floor-24;p.vy=0;p.ground=true}else if(p.ground){p.ground=false;p.since=0}}
+function frame(t){acc+=Math.min(0.1,(t-last)/1000);last=t;while(acc>=DT){step();acc-=DT}
+g.fillStyle='#15181d';g.fillRect(0,0,W,H);g.fillStyle='#2b3038';g.fillRect(0,H-40,W,40);g.fillStyle='#d96c4f';g.fillRect(p.x-12,p.y,24,24);
+g.fillStyle='#889';g.fillText('Space to jump, arrows to move',12,18);requestAnimationFrame(frame)}requestAnimationFrame(frame);
+</script></body></html>
+`;
+
+/** Room makers, scripted: each answers an ask with the kind of card it makes. */
+const demoMaker = (make: 'source' | 'image' | 'demo' | 'text'): FakeTurnScript => async (ctx, text) => {
+  const what = asked(text).slice(0, 60);
+  const made = await makeCards(ctx, text, n => {
+    if (make === 'image') {
+      const file = `room/media/${ctx.spec.agent}-${Date.now().toString(36)}-${n}.svg`;
+      ctx.writeShared(file, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200"><rect width="320" height="200" fill="#1d2129"/><circle cx="${110 + n * 40}" cy="110" r="60" fill="${HUES[n % 4]}"/><rect x="190" y="60" width="80" height="100" rx="12" fill="${HUES[(n + 1) % 4]}" opacity="0.8"/><text x="16" y="28" fill="#ccd" font-family="sans-serif" font-size="14">${what.replace(/[<&]/g, '')}</text></svg>`);
+      return { kind: 'image', title: `Take ${n + 1}: ${what}`, text: `Prompt: ${what}, flat shapes, warm palette.`, file };
+    }
+    if (make === 'demo') {
+      const file = `room/demos/jump-${Date.now().toString(36)}.html`;
+      ctx.writeShared(file, JUMP_DEMO);
+      return { kind: 'demo', title: `Jump feel: ${what}`.slice(0, 80), text: 'Try short hops and running jumps off the ledge; tune gravity against jump speed.', file };
+    }
+    if (make === 'source') return { kind: 'source', title: `How others do it: ${what}`.slice(0, 80), url: 'https://example.com/reference', text: '"Keep the jump arc short and the fall fast." — a talk on platformer feel' };
+    return { kind: 'text', title: `${what}`.slice(0, 80), text: `The gist: ${what}. It plays fast and readable; the twist is that every action leaves something behind.` };
+  });
+  await ctx.tool('done', { note: `Made ${made.join(', ')} for: ${what}` });
+};
+
+/** Later turns of the demo roles (a room's lead and its makers hear asks again and again). */
+export const demoTurns: Record<string, FakeTurnScript> = {
+  'room-lead': demoRoomLead, researcher: demoMaker('source'), illustrator: demoMaker('image'), prototyper: demoMaker('demo'), writer: demoMaker('text'),
+};
+for (const [role, turn] of Object.entries(demoTurns)) demoScripts[role] = ctx => turn(ctx, ctx.spec.brief);

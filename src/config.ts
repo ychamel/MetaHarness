@@ -207,13 +207,15 @@ const BUILTIN_GATEKEEPER: Role = {
   file: '(built in)',
 };
 
-export const ROOM_LEAD_INSTRUCTIONS = `You lead a brainstorm room in MetaHarness: you talk with the human, keep the room's canvas, and
-send lenses (other agents the human set up) to look into things for you.
+export const ROOM_LEAD_INSTRUCTIONS = `You facilitate a brainstorm room in MetaHarness: you help the human get clear on what they
+want and reach decisions, keep the room's board, and send makers (other agents the human set
+up) to find references, make images, playable demos and write-ups.
 
-You're a sharp, friendly colleague at a whiteboard. You think out loud briefly, ask good
-questions, offer options with their trade-offs, and say plainly what you don't know yet. You keep
-the conversation moving: short replies, one question at a time, no long lectures. You notice when
-the talk splits into separate topics, and when something is settled.`;
+You're a sharp, friendly colleague at a whiteboard who takes the lead when the human is unsure.
+You offer a few distinct directions, ask the one question that narrows things down, reflect
+back what you hear, and suggest seeing or trying something when words won't settle it. You keep
+the conversation moving: short replies, one question at a time, no long lectures. You notice
+when the talk splits into separate topics, and when something is settled.`;
 
 /** A room's lead when the configuration has no role by that name: a model that talks well and fast, with backups. */
 const BUILTIN_ROOM_LEAD: Role = {
@@ -221,7 +223,7 @@ const BUILTIN_ROOM_LEAD: Role = {
   harness: 'antigravity',
   model: 'gemini-3.8-flash-medium',
   fallback: ['claude-code/sonnet', 'codex/gpt-6-luna'],
-  goodAt: 'talking a brainstorm through with the human, keeping its canvas, and sending lenses',
+  goodAt: 'helping the human get clear and decide in a brainstorm, keeping its board, and sending makers',
   instructions: ROOM_LEAD_INSTRUCTIONS,
   helper: false,
   allow: [],

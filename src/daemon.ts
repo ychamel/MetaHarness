@@ -1,6 +1,6 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { join, normalize, relative, sep } from 'node:path';
+import { extname, join, normalize, relative, sep } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventStore } from './store.ts';
 import { loadConfig, type Config } from './config.ts';
@@ -30,8 +30,9 @@ import { foldEfforts, splitEffort, type EffortVariant } from './effort.ts';
 import { matchesPaths, onCommit, onDone, onToolCall, rulesPrompt, RuleState, toolPaths, type Rule, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
 import { claimedSkills, skillsFor, skillsPrompt, withSkills, type Skill } from './skills.ts';
 import {
-  applyCanvas, branchCards, canvasMarkdown, castText, leadMethodology, lensLines, lensMethodology, lensName, modelRole, parseCanvasOps, patchNote, RESPONSIBILITIES, responsibilityOf, seedCanvas,
-  type Canvas, type CanvasOp, type CanvasResult, type Card, type CardLink, type Lens, type RoomPaths, type RoomState,
+  applyCanvas, branchCards, canvasMarkdown, castText, DEFAULT_MAKERS, demoPage, leadMethodology, lensLines, lensMethodology, lensName, makesOf, mixAsk, modelRole, parseCanvasOps, RESPONSIBILITIES,
+  responsibilityOf, seedCanvas, sharedPath,
+  type Canvas, type CanvasOp, type CanvasResult, type Card, type CardKind, type CardLink, type Ingredient, type Lens, type MakerCan, type Output, type RoomPaths, type RoomState,
 } from './rooms.ts';
 
 export interface InboxEntry {
@@ -69,11 +70,11 @@ export interface AgentRec {
   effort?: string;
   parent: string;
   brief: string;
-  /** A lens in a brainstorm room: what it's for, and how it should look at the question. */
+  /** A maker in a brainstorm room: what it's for, and how it should look at the question. */
   responsibility?: string;
   stance?: string;
-  /** In a room, works in the human's checkout and may change files there (the cartographer after a merge). */
-  inCheckout?: boolean;
+  /** A maker in a room: who asked its current turn, the lead or the human (its answer goes back to them). */
+  askedBy?: string;
   quick: boolean;
   isLead: boolean;
   cwd: string;
@@ -120,7 +121,7 @@ export interface AgentRec {
   interrupting?: boolean;
   /** In a room, stopped by the human mid-turn: what it said is already its answer, so the turn's end isn't another. */
   roomStopped?: boolean;
-  /** Its last message in the current turn, for a room: the lead's reply, a lens's answer. */
+  /** Its last message in the current turn, for a room: the lead's reply, a maker's answer. */
   turnText?: string;
   /** Tool calls the harness reported as started and not yet finished, in the current turn. */
   toolsRunning: number;
@@ -368,6 +369,12 @@ const GIT_COMMITS = /\bgit\b[^|;&\n]*?\s(?:commit|merge|cherry-pick|revert|pull|
 /** How long after such a command a new commit in the checkout is put down to that agent. */
 const GIT_ACTOR_MS = 120_000;
 
+/** What GET /media serves from a room's folder: images, and demo pages. */
+const MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
+};
+
 export class Daemon {
   readonly home: string;
   readonly repo: string;
@@ -590,8 +597,8 @@ export class Daemon {
       role: string; roleDef?: Role; brief: string; parent: string; name?: string; quick?: boolean; isLead?: boolean; workflow?: string;
       /** Its own git worktree instead of the shared folder. Default: the role's setting, or yes when `from` is given. */
       worktree?: boolean; from?: string;
-      /** A room's lens: its responsibility and stance; and inCheckout works in the human's checkout instead of the room's branch (the cartographer after a merge). */
-      responsibility?: string; stance?: string; inCheckout?: boolean;
+      /** A room's maker: its responsibility and stance, and who asked its first turn. */
+      responsibility?: string; stance?: string; askedBy?: string;
     },
   ): SpawnResult {
     const g = this.goals.get(goalId);
@@ -633,12 +640,6 @@ export class Daemon {
     let note = picked.note;
     const wantWorktree = !o.quick && !o.isLead && !g.room && (o.worktree ?? (role.worktree || !!o.from));
     if (o.quick && parentRec) cwd = parentRec.cwd;
-    else if (g.room && !o.inCheckout && g.room.worktree) {
-      // Everyone in a room reads, and patches, on the room's one branch.
-      worktree = g.room.worktree;
-      cwd = worktree.path;
-      startedFrom = `${g.git?.branch ?? 'the checkout'}`;
-    }
     else if (wantWorktree && !g.git) {
       note = [note, `${name} works in the shared folder, because there are no worktrees here: ${g.gitNote}.`].filter(Boolean).join(' ');
     } else if (wantWorktree && g.git) {
@@ -659,8 +660,7 @@ export class Daemon {
     const token = randomBytes(16).toString('hex');
     this.tokens.set(token, { goal: goalId, agent: name });
     const rec: AgentRec = {
-      goal: goalId, name, role, harness, model, ...(effort ? { effort } : {}), parent: o.parent, brief: o.brief, ...(o.responsibility ? { responsibility: o.responsibility } : {}), ...(o.stance ? { stance: o.stance } : {}),
-      ...(g.room && o.inCheckout ? { inCheckout: true } : {}),
+      goal: goalId, name, role, harness, model, ...(effort ? { effort } : {}), parent: o.parent, brief: o.brief, ...(o.responsibility ? { responsibility: o.responsibility } : {}), ...(o.stance ? { stance: o.stance } : {}), ...(o.askedBy ? { askedBy: o.askedBy } : {}),
       quick: !!o.quick, isLead: !!o.isLead, cwd, worktree, state: 'starting', status: '', lastText: '',
       adapter, gen: 0, token, systemPrompt: '', inbox: [], waiters: [], doneWaiters: [], pendingApprovals: 0, fileNotes: new Map(),
       toolsRunning: 0, lastToolEnd: 0, progressAt: Date.now(), rules: new RuleState(), ruleNotes: [],
@@ -788,10 +788,10 @@ export class Daemon {
     const paths = inRoom ? this.roomPaths(g) : undefined;
     const parts = [
       !inRoom ? (rec.role.helper ? this.config.helperMethodology : this.config.methodology)
-      : rec.isLead ? leadMethodology({ topic: g.request, paths: paths!, lenses: this.lensRoster(g), branch: g.room!.worktree?.branch })
-      : lensMethodology({ topic: g.request, lead: g.lead || 'lead', paths: paths!, inCheckout: rec.inCheckout }),
+      : rec.isLead ? leadMethodology({ topic: g.request, paths: paths!, lenses: this.lensRoster(g) })
+      : lensMethodology({ topic: g.request, lead: g.lead || 'lead', paths: paths!, makes: this.makesOfAgent(g, rec) }),
     ];
-    // A lens that's just a model has no role of its own: its responsibility says what it's for.
+    // A maker that's just a model has no role of its own: its responsibility says what it's for.
     if (rec.role.file !== '(room lens)') parts.push(`## Your role: ${rec.role.name}\n\n${rec.role.instructions}`);
     if (rec.responsibility) parts.push(`## Your responsibility in this room\n\n${rec.responsibility}`);
     if (rec.stance) parts.push(`## Your stance in this room\n\n${rec.stance}`);
@@ -830,13 +830,6 @@ export class Daemon {
     const branch = g.git.branch === 'HEAD' ? 'a detached HEAD' : `branch ${g.git.branch}`;
     const lead = rec.isLead ? 'you' : g.lead || 'the lead';
     const wt = rec.worktree;
-    if (wt && wt === g.room?.worktree) {
-      return [
-        `- Git: this is the room's worktree on branch ${wt.branch}, started from ${g.git.branch} at ${wt.base.slice(0, 7)} (${git.subject(g.git, wt.base)}). Everyone in the room reads here, and patches are committed here; the human merges the branch into ${g.git.branch} at the end.`,
-        ...(g.git.dirty ? [`- The human's checkout, ${g.dir}, has uncommitted changes this worktree doesn't: look there for their latest work.`] : []),
-        ...depsLines(wt.deps ?? []),
-      ];
-    }
     if (wt) {
       const sha = wt.base.slice(0, 7);
       return [
@@ -868,7 +861,7 @@ export class Daemon {
         brief,
         '',
         '---',
-        "[MetaHarness] You lead this brainstorm room: you talk with the human, keep the canvas (the `canvas` tool), and send lenses (`spawn`, role: the lens's name). Your final message each turn is your reply to the human: keep it short.",
+        "[MetaHarness] You are the facilitator of this brainstorm room: you help the human get clear and decide, keep the board (the `canvas` tool), and send makers (`spawn`, role: the maker's name). Your final message each turn is your reply to the human: keep it short.",
       ].join('\n');
     }
     if (g?.room && !rec.quick) {
@@ -876,11 +869,11 @@ export class Daemon {
         brief,
         '',
         '---',
-        `[MetaHarness] You are ${rec.name}${rec.role.file === '(room lens)' ? '' : `, the ${rec.role.name}`}, a lens in a brainstorm room: ${rec.parent} sent you the ask above.`,
+        `[MetaHarness] You are ${rec.name}${rec.role.file === '(room lens)' ? '' : `, the ${rec.role.name}`}, a maker in a brainstorm room: ${rec.askedBy === 'human' ? 'the human' : rec.parent} sent you the ask above.`,
         ...(rec.responsibility ? [`Your responsibility here: ${rec.responsibility}`] : [rec.role.instructions]),
         ...(rec.stance ? [`Your stance: ${rec.stance}`] : []),
         '',
-        `Put what you establish on the canvas (the \`canvas\` tool), then call \`done\` with a short answer for ${rec.parent}.`,
+        `Put what you make on the board (the \`canvas\` tool), then call \`done\` with a short answer.`,
       ].join('\n');
     }
     const lines = [
@@ -1050,7 +1043,7 @@ export class Daemon {
       const seen = tool === 'Bash' ? elideHeredocs(shown) : shown;
       const j = await this.gatekeeperFor(g).judge({
         agent: rec.name, role: rec.role.name, brief: rec.brief, tool, detail: seen, shared: g.sharedDir,
-        where: `${rec.cwd}${g.room && !rec.quick ? (rec.inCheckout ? " (the human's checkout, from a discussion room)" : g.room.writers.has(rec.name) ? " (a discussion room's branch, on a patch job)" : ' (a discussion room: it may run and test the code, not change project files)') : rec.worktree ? ' (its own worktree)' : this.sharedCheckout(rec) ? " (the human's checkout, shared with teammates)" : ''}`,
+        where: `${rec.cwd}${g.room && !rec.quick ? ' (a brainstorm room: it may run and test the code, and write in the shared folder, not change project files)' : rec.worktree ? ' (its own worktree)' : this.sharedCheckout(rec) ? " (the human's checkout, shared with teammates)" : ''}`,
       });
       this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.gatekeeper', data: { tool, detail: seen.slice(0, 2000), verdict: j.verdict, reason: j.reason, ...(j.remembered ? { remembered: true } : {}) } });
       if (j.verdict === 'allow') return { allow: true };
@@ -1238,7 +1231,7 @@ export class Daemon {
   private endedTurnWithoutDone(rec: AgentRec): void {
     this.setState(rec, 'idle');
     const g = this.goals.get(rec.goal)!;
-    // In a room, the turn's last message is the lead's reply, or a lens's answer.
+    // In a room, the turn's last message is the lead's reply, or a maker's answer.
     if (g.room && this.roomTurnWithoutDone(g, rec)) return;
     // A role woken by events (the cartographer) rests between them: nothing to report.
     if (rec.inbox.length || rec.role.wake?.length) return;
@@ -1301,10 +1294,11 @@ export class Daemon {
     if (quick.length) return;
     const g = this.goals.get(rec.goal)!;
     if (g.room && !rec.quick) {
-      // A lens's answer goes to the lead, as any teammate's; the chat shows it too. The lead's
-      // replies never come here; others the human started (the cartographer) say how it went.
-      if (rec.parent === g.lead && !rec.isLead) this.lensAnswered(g, rec, note, how);
-      else if (rec.parent === 'human') {
+      // A maker's answer goes to whoever asked: the lead, as any teammate's, or the human, the
+      // lead only hearing of it; the chat shows it either way. The lead's replies never come here.
+      if (rec.parent === g.lead && !rec.isLead) {
+        if (this.lensAnswered(g, rec, note, how)) return;
+      } else if (rec.parent === 'human') {
         this.roomNote(g, `${rec.name}: ${note}`);
         if (how === 'crashed') this.toHuman(g, rec.name, 'crash', note);
         return;
@@ -1811,6 +1805,8 @@ export class Daemon {
         this.emit({ goal: g.id, agent: by, type: 'shared.clash', data: { path: c.path, owner, by, previous: c.before?.history ?? null } });
       }
     }
+    // A room's images and demos are on its board, where the lead hears of them.
+    if (g.room && /^room\/(media|demos)\//.test(c.path)) return;
     for (const a of g.agents.values()) {
       if (a.quick || FINISHED.includes(a.state)) continue;
       if (a.name === by && !clash) continue;
@@ -1821,7 +1817,7 @@ export class Daemon {
   /** Who wrote a shared file just now: the agent whose latest recent tool call named it. */
   private sharedWriter(g: GoalRec, path: string): string | undefined {
     // The room's canvas and chat are written by MetaHarness itself.
-    if (g.room && path.startsWith('room/') && !path.endsWith('design.md')) return undefined;
+    if (g.room && (path === 'room/canvas.md' || path === 'room/chat.md')) return undefined;
     const since = Date.now() - SHARED_TOUCH_MS;
     g.sharedTouches = g.sharedTouches.filter(t => t.at >= since);
     const full = join(g.sharedDir, path);
@@ -1890,9 +1886,8 @@ export class Daemon {
 
   /** The done rules an agent hasn't had this session: the reply that holds its first done back. */
   doneRules(rec: AgentRec): string | undefined {
-    // Answering in a room isn't finishing work, unless it was a patch.
-    const room = this.goals.get(rec.goal)?.room;
-    if (room && !rec.quick && !this.writesInRoom(room, rec)) return undefined;
+    // Answering in a room isn't finishing work: nobody changes the project there.
+    if (this.goals.get(rec.goal)?.room && !rec.quick) return undefined;
     const n = onDone(this.agentRules(rec), ruleAgent(rec), rec.cwd, rec.rules);
     if (!n) return undefined;
     this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: [] } });
@@ -2325,6 +2320,8 @@ export class Daemon {
       case 'ask_user':
         return { allow: false, reason: 'Ask with the MetaHarness send tool, to: human. The answer arrives as a message.' };
       case 'message':
+        // A harness subagent let through (Antigravity's image-generator) reports back to the session that started it.
+        if (rec.session?.nativeId && t.detail.startsWith(`${rec.session.nativeId}:`)) return { allow: true };
         return { allow: false, reason: 'Message teammates with the MetaHarness send tool (to: their name, or human); it reaches them on any harness.' };
       case 'schedule':
         return { allow: false, reason: 'To wait, use the MetaHarness wait tool (timeout in seconds, up to 600); a message ends it early.' };
@@ -2336,8 +2333,8 @@ export class Daemon {
       case 'edit': {
         const g = this.goals.get(rec.goal)!;
         const inside = (dir: string) => !!t.path && (t.path === dir || t.path.startsWith(dir.endsWith('/') ? dir : dir + '/'));
-        if (g.room && !rec.quick && !this.writesInRoom(g.room, rec) && !inside(g.sharedDir)) {
-          return { allow: false, reason: `This is a brainstorm room: you read the code, you don't change it. Say what you'd change in your answer${rec.isLead ? ', and send a lens with patch: true when the human wants it fixed' : `; ${g.lead} can give you a patch job`}.` };
+        if (g.room && !rec.quick && !inside(g.sharedDir)) {
+          return { allow: false, reason: `This is a brainstorm room: nobody changes the project's files here; your own files (images, demos, reports) go in the shared folder, ${g.sharedDir}. Say what you'd change in your answer: building it is for a goal, once the human decides.` };
         }
         if (rec.role.permissionMode === 'default' || (rec.quick && !inside(g.sharedDir))) return 'ask';
         return inside(rec.cwd) || inside(g.sharedDir) ? { allow: true } : 'ask';
@@ -2347,6 +2344,9 @@ export class Daemon {
         if (refused) return { allow: false, reason: refused };
         return roleAllows(rec.role, t.detail) ? { allow: true } : 'ask';
       }
+      case 'image':
+        // In a room, making images is what makers are there for, and the human is watching.
+        return this.goals.get(rec.goal)?.room ? { allow: true } : 'ask';
       default:
         return 'ask';
     }
@@ -2775,7 +2775,7 @@ export class Daemon {
 
   /** Spawns a quick helper and waits for its answer, up to quickTimeoutMs. */
   async quickSpawn(caller: AgentRec, role: string, brief: string, name?: string): Promise<{ text: string }> {
-    // A room's lead never waits on a helper: it sends a lens and ends its turn.
+    // A room's lead never waits on a helper: it sends a maker and ends its turn.
     const g = this.goals.get(caller.goal);
     if (g?.room && caller.isLead) return { text: this.roomSpawn(caller, role, brief) ?? '' };
     const r = this.spawnAgent(caller.goal, { role, brief, parent: caller.name, quick: true, name });
@@ -2872,42 +2872,37 @@ export class Daemon {
   }
 
   roomPaths(g: GoalRec): RoomPaths {
-    return { canvas: join(g.sharedDir, 'room', 'canvas.md'), chat: join(g.sharedDir, 'room', 'chat.md'), reports: join(g.sharedDir, 'reports') };
+    const room = join(g.sharedDir, 'room');
+    return { canvas: join(room, 'canvas.md'), chat: join(room, 'chat.md'), reports: join(g.sharedDir, 'reports'), media: join(room, 'media'), demos: join(room, 'demos') };
   }
 
   /**
-   * Opens a room on a topic, with the lenses its lead may send. With git, everyone reads (and
-   * patches) on the room's own branch, mh/<room>/room, from the checkout's current commit. `from`
-   * carries a past room's canvas (or, with `cards`, the cards branched off it), or a goal's outcome, over.
+   * Opens a room on a topic, with the makers its lead may send and the human may ask (the
+   * built-in four when none are given). Everyone reads the human's checkout; nobody changes it.
+   * `from` carries a past room's board (or, with `cards`, the cards branched off it), or a goal's
+   * outcome, over.
    */
   startRoom(o: { topic: string; lenses?: Lens[]; from?: string; cards?: string[] }): string {
-    const lenses = (o.lenses ?? []).map(p => this.checkLens(p));
+    const lenses = (o.lenses ?? DEFAULT_MAKERS.filter(r => this.teamRoles().some(x => x.name === r)).map(role => ({ role }))).map(p => this.checkLens(p));
     const leadRole = this.config.roles.get(this.config.settings.roomLead);
     if (!leadRole) throw new Error(`There's no role called ${this.config.settings.roomLead} to lead the room (Settings → Room lead).`);
     const id = randomUUID().slice(0, 8);
     const sharedDir = join(this.home, 'goals', id, 'shared');
-    mkdirSync(join(sharedDir, 'room'), { recursive: true });
     let resolveLeadDone!: (note: string) => void;
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
-    const room: RoomState = { topic: o.topic, lenses: [], canvas: { cards: [], links: [], seq: 0 }, writers: new Set() };
+    const room: RoomState = { topic: o.topic, lenses: [], canvas: { cards: [], links: [], frames: [], seq: 0 } };
     const g: GoalRec = {
       id, kind: 'room', room, request: o.topic, dir: this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
       refs: new Map(), seenOn: new Map(), chained: [], conflicts: new Map(), notes: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
       status: 'running', agents: new Map(), counters: new Map(), gatekeeperCost: new Map(), leadDone, resolveLeadDone,
     };
+    const paths = this.roomPaths(g);
+    for (const dir of [paths.media, paths.demos]) mkdirSync(dir, { recursive: true });
     const gs = git.setupGoal(g.dir, id);
     if ('reason' in gs) g.gitNote = gs.reason;
     else {
       g.git = gs;
       g.refs.set(gs.branch, gs.base);
-      try {
-        const wt = git.addWorktree(gs, join(this.home, 'goals', id, 'worktrees', 'room'), git.agentBranch(id, 'room'), gs.base);
-        wt.deps = git.copyDependencies(gs, wt.path);
-        room.worktree = wt;
-        g.refs.set(wt.branch, wt.base);
-      } catch (e) {
-        g.gitNote = `the room's branch couldn't be made (${(e as Error).message.trim()}), so everyone reads your checkout and patches it directly`;
-      }
       this.watchAuthors(g, gs);
     }
     this.goals.set(id, g);
@@ -2916,13 +2911,24 @@ export class Daemon {
       goal: id, type: 'goal.started',
       data: {
         kind: 'room', request: o.topic, lead: leadRole.name, sharedDir, dir: g.dir, branch: g.git?.branch ?? null, base: g.git?.base ?? null,
-        roomBranch: room.worktree?.branch ?? null, roomWorktree: room.worktree?.path ?? null, from: o.from ?? null, ...(o.cards?.length ? { cards: o.cards } : {}), notice: this.goalNotice(g) ?? null,
+        from: o.from ?? null, ...(o.cards?.length ? { cards: o.cards } : {}), notice: this.goalNotice(g) ?? null,
       },
     });
     this.emitLenses(g);
-    writeFileSync(this.roomPaths(g).chat, `# ${o.topic.split('\n')[0]}\n\nThe room's chat, as it goes.\n`);
+    writeFileSync(paths.chat, `# ${o.topic.split('\n')[0]}\n\nThe room's chat, as it goes.\n`);
     const seed = o.from ? this.roomSeed(o.from, o.cards) : undefined;
-    if (seed) seedCanvas(room.canvas, seed, seed.by);
+    if (seed) {
+      seedCanvas(room.canvas, seed, seed.by);
+      // Images and demos come along, at the same place in this room's folder.
+      if (seed.dir) {
+        for (const c of room.canvas.cards) {
+          const src = c.file && join(seed.dir, c.file);
+          if (!src || !existsSync(src)) continue;
+          mkdirSync(join(sharedDir, c.file!, '..'), { recursive: true });
+          copyFileSync(src, join(sharedDir, c.file!));
+        }
+      }
+    }
     this.canvasChanged(g);
     if (o.from && o.cards?.length) this.markBranch(o.from, o.cards, id);
     const r = this.spawnAgent(id, { role: leadRole.name, roleDef: leadRole, brief: this.roomOpening(g, seed?.cards.length ?? 0), parent: 'human', isLead: true, name: 'lead' });
@@ -2943,13 +2949,13 @@ export class Daemon {
       g.request,
       '',
       seeded
-        ? `[Room] The canvas starts with ${seeded} card${seeded > 1 ? 's' : ''} carried over: read it with \`canvas\` first.`
-        : '[Room] The canvas is empty.',
-      'Open the room: put the question (and anything the topic already says: ideas, constraints) on the canvas, send a lens if something needs looking into right away, and greet the human with a line on how you read the topic and the one thing you most need to know. Keep it short.',
+        ? `[Room] The board starts with ${seeded} card${seeded > 1 ? 's' : ''} carried over: read it with \`canvas\` first.`
+        : '[Room] The board is empty.',
+      'Open the room: put the question (and anything the topic already says: ideas, constraints, references) on the board, send a maker if something is worth making or finding right away, and greet the human with a line on how you read the topic and the one question that would narrow it down most. Keep it short.',
     ].join('\n');
   }
 
-  /** A lens as declared: a role that exists, or a model on a harness that runs here; a model-only lens needs a responsibility. */
+  /** A maker as declared: a role that exists, or a model on a harness that runs here; a model-only maker needs a responsibility. */
   private checkLens(p: Lens): Lens {
     const lens: Lens = { ...p };
     for (const k of ['role', 'name', 'on', 'responsibility', 'stance'] as const) if (typeof lens[k] !== 'string' || !lens[k]!.trim()) delete lens[k];
@@ -2959,8 +2965,8 @@ export class Daemon {
       if (!res.match) throw new Error(`There's no role called "${lens.role}". Roles: ${this.teamRoles().map(r => r.name).join(', ')}.`);
       lens.role = res.match;
     } else {
-      if (!lens.on) throw new Error('A lens without a role needs a model (harness/model).');
-      if (!lens.responsibility) throw new Error(`The ${lens.on} lens needs a responsibility: it's all it's told about its part.`);
+      if (!lens.on) throw new Error('A maker without a role needs a model (harness/model).');
+      if (!lens.responsibility) throw new Error(`The ${lens.on} maker needs a responsibility: it's all it's told about its part.`);
     }
     if (lens.on) {
       const harness = lens.role ? this.routeRole(this.config.roles.get(lens.role)!, lens.on).harness : modelRole(lens).harness;
@@ -2970,18 +2976,18 @@ export class Daemon {
   }
 
   /**
-   * What a new room's canvas starts with: a past room's cards (the ones picked and those linked
-   * to them, or every card not dropped), or a goal's outcome and its reports.
+   * What a new room's board starts with: a past room's cards (the ones picked and those linked
+   * to them, or every card not dropped) and the folder their files are in, or a goal's outcome and its reports.
    */
-  private roomSeed(from: string, cards?: string[]): { by: string; cards: Card[]; links: CardLink[] } | undefined {
-    const live = this.goals.get(from)?.room;
-    const events = live ? [] : this.store.since(from);
-    const start = live ? undefined : events.find(e => e.type === 'goal.started');
-    if (live || start?.data.kind === 'room') {
-      const last = live?.canvas ?? (events.filter(e => e.type === 'room.canvas').at(-1)?.data as unknown as Canvas | undefined);
-      const canvas: Canvas = { cards: last?.cards ?? [], links: last?.links ?? [], seq: 0 };
+  private roomSeed(from: string, cards?: string[]): { by: string; cards: Card[]; links: CardLink[]; dir?: string } | undefined {
+    const live = this.goals.get(from);
+    const events = live?.room ? [] : this.store.since(from);
+    const start = live?.room ? undefined : events.find(e => e.type === 'goal.started');
+    if (live?.room || start?.data.kind === 'room') {
+      const last = live?.room?.canvas ?? (events.filter(e => e.type === 'room.canvas').at(-1)?.data as unknown as Canvas | undefined);
+      const canvas: Canvas = { cards: last?.cards ?? [], links: last?.links ?? [], frames: [], seq: 0 };
       const picked = cards?.length ? branchCards(canvas, cards) : { cards: canvas.cards.filter(c => c.status !== 'dropped'), links: canvas.links };
-      return { by: `room ${from}`, ...picked };
+      return { by: `room ${from}`, ...picked, dir: live?.sharedDir ?? String(start?.data.sharedDir ?? '') };
     }
     if (!start) return undefined;
     const r = replayGoal(events);
@@ -3014,21 +3020,34 @@ export class Daemon {
     const design = ['room/design.md', 'design.md'].map(p => join(shared, p)).find(p => existsSync(p));
     return [
       `[MetaHarness] This goal comes out of a brainstorm room (${roomId}) on: ${String(start.data.request).split('\n')[0]}`,
-      `- Its canvas (questions, ideas, findings, risks, decisions): ${join(shared, 'room', 'canvas.md')}`,
+      `- Its board: ${join(shared, 'room', 'canvas.md')}. The concept card holds the idea pillar by pillar; decision cards are what the human settled, some with the exact values they kept from a demo; the demos (${join(shared, 'room', 'demos')}) and images (${join(shared, 'room', 'media')}) are references to match.`,
       ...(design ? [`- The design written there: ${design}`] : []),
       `- The whole chat: ${join(shared, 'room', 'chat.md')}`,
-      'Read the canvas and the design before you plan.',
+      'Read the board and the design before you plan.',
     ].join('\n');
   }
 
-  /** The lenses, with each one's responsibility as it will be told. */
+  /** The makers, with each one's responsibility as it will be told and what it makes. */
   private emitLenses(g: GoalRec): void {
-    this.emit({ goal: g.id, type: 'room.lenses', data: { lenses: g.room!.lenses.map(p => ({ ...p, responsibility: responsibilityOf(p) })) } });
+    this.emit({ goal: g.id, type: 'room.lenses', data: { lenses: g.room!.lenses.map(p => ({ ...p, responsibility: responsibilityOf(p), makes: makesOf(p), ...this.makerCan(p) })) } });
   }
 
-  /** The lenses as the lead reads them. */
+  /** The makers as the lead reads them. */
   private lensRoster(g: GoalRec): string[] {
-    return lensLines(g.room!.lenses, n => g.agents.has(n));
+    return lensLines(g.room!.lenses, n => g.agents.has(n), p => this.makerCan(p));
+  }
+
+  /** What a maker's harness can do: the first route of its role that runs here. */
+  private makerCan(p: Lens): MakerCan {
+    const role = this.lensRole(p);
+    const route = role && this.routes(role).find(r => this.adapters[this.harnessOverride ?? r.harness]);
+    const m = route && this.adapters[this.harnessOverride ?? route.harness]?.manifest;
+    return { ...(m?.web ? { web: true } : {}), ...(m?.images ? { images: true } : {}) };
+  }
+
+  /** What an agent in a room makes: its maker's output, else its role's usual one. */
+  private makesOfAgent(g: GoalRec, rec: AgentRec): Output {
+    return makesOf(g.room!.lenses.find(l => l.name === rec.name) ?? { role: rec.role.name, responsibility: rec.responsibility });
   }
 
   /** A note for the lead: it rides along with whatever reaches it next. */
@@ -3037,7 +3056,7 @@ export class Daemon {
     if (lead && !FINISHED.includes(lead.state)) lead.ruleNotes.push(note);
   }
 
-  /** The human adds a lens. The lead hears of it. */
+  /** The human adds a maker. The lead hears of it. */
   roomAddLens(goalId: string, p: Lens): string {
     const g = this.goals.get(goalId)!;
     const st = g.room!;
@@ -3046,15 +3065,15 @@ export class Daemon {
     st.lenses.push({ ...lens, name });
     this.emitLenses(g);
     const r = responsibilityOf(lens);
-    this.tellLead(g, `[Room] The human added a lens you can send: ${name} (${lens.role ?? lens.on}${r ? `: ${r}` : ''}).`);
-    return `${name} is a lens the lead can send.`;
+    this.tellLead(g, `[Room] The human added a maker you can send: ${name} (${lens.role ?? lens.on}, makes ${makesOf(lens)} cards${r ? `: ${r}` : ''}).`);
+    return `${name} is a maker the lead can send.`;
   }
 
-  /** The human puts a lens away (the lead can't send it) or brings it back. One at work finishes first. */
+  /** The human puts a maker away (nobody can send it) or brings it back. One at work finishes first. */
   roomLensOff(goalId: string, name: string, off: boolean): string {
     const g = this.goals.get(goalId)!;
     const lens = g.room!.lenses.find(c => c.name === name);
-    if (!lens) throw new Error(`There's no lens called ${name}.`);
+    if (!lens) throw new Error(`There's no maker called ${name}.`);
     if (!!lens.off === off) return off ? `${name} is already put away.` : `${name} is already available.`;
     if (off) lens.off = true;
     else delete lens.off;
@@ -3063,21 +3082,21 @@ export class Daemon {
     return off ? `Put ${name} away.` : `${name} is available again.`;
   }
 
-  /** A lens's role: its own (on its own model, if it has one), or one made from its model. */
+  /** A maker's role: its own (on its own model, if it has one), or one made from its model. */
   private lensRole(lens: Lens): Role | undefined {
     if (!lens.role) return modelRole(lens);
     const role = this.config.roles.get(lens.role);
     return role && lens.on ? this.routeRole(role, lens.on) : role;
   }
 
-  /** A role on the harness/model a lens asks for, with no backups of its own. */
+  /** A role on the harness/model a maker asks for, with no backups of its own. */
   private routeRole(role: Role, on: string): Role {
     const { model, effort } = splitEffort(on);
     const slash = model.indexOf('/');
     return { ...role, ...(slash > 0 ? { harness: model.slice(0, slash), model: model.slice(slash + 1) } : { model }), ...(effort ? { effort } : {}), fallback: [] };
   }
 
-  /** A lens by its name, or the first available one in a role. */
+  /** A maker by its name, or the first available one in a role. */
   private findLens(g: GoalRec, name: string): Lens | undefined {
     const t = name.trim().replace(/^@/, '').toLowerCase();
     const lenses = g.room!.lenses;
@@ -3107,8 +3126,7 @@ export class Daemon {
 
   /** The human says something to the lead, about a card or not. */
   roomPost(goalId: string, o: { text: string; card?: string }): string {
-    const g = this.goals.get(goalId)!;
-    if (g.status === 'ended') throw new Error('This room has ended. Start a new room from it to carry on.');
+    const g = this.openRoom(goalId);
     const lead = g.agents.get(g.lead);
     if (!lead || FINISHED.includes(lead.state)) throw new Error(`The lead has ${lead?.state ?? 'gone'}: respawn it from its panel to carry on.`);
     const card = o.card ? g.room!.canvas.cards.find(c => c.id === o.card) : undefined;
@@ -3118,57 +3136,122 @@ export class Daemon {
     return 'Sent.';
   }
 
-  /**
-   * The lead sends a lens (its `spawn` in a room): the lens's session starts the first time, and
-   * later asks are new turns of it, so it keeps what it learnt. Undefined: not the lead in a room.
-   */
-  roomSpawn(rec: AgentRec, name: string, brief: string, patch = false): string | undefined {
+  /** A room that's still open. */
+  private openRoom(goalId: string): GoalRec {
+    const g = this.goals.get(goalId)!;
+    if (g.status === 'ended') throw new Error('This room has ended. Start a new room from it to carry on.');
+    return g;
+  }
+
+  /** The lead sends a maker (its `spawn` in a room). Undefined: not in a room. */
+  roomSpawn(rec: AgentRec, name: string, brief: string): string | undefined {
     const g = this.goals.get(rec.goal);
     if (!g?.room || rec.quick) return undefined;
-    const st = g.room;
-    if (!rec.isLead) return `Only ${g.lead} sends lenses. Say in your answer what else should be looked into, and by whom.`;
+    if (!rec.isLead) return `Only ${g.lead} sends makers. Say in your answer what else should be made or looked into, and by whom.`;
     const lens = this.findLens(g, name);
     if (!lens) {
-      const open = st.lenses.filter(c => !c.off).map(c => c.name);
-      return `There's no lens called "${name}". ${open.length ? `Lenses you can send: ${open.join(', ')}.` : 'There are no lenses to send: tell the human which kind you need, and they can add one.'}`;
+      const open = g.room.lenses.filter(c => !c.off).map(c => c.name);
+      return `There's no maker called "${name}". ${open.length ? `Makers you can send: ${open.join(', ')}.` : 'There are no makers to send: tell the human which kind you need, and they can add one.'}`;
     }
-    if (lens.off) return `${lens.name} is put away by the human, so it can't be sent. Lenses you can send: ${st.lenses.filter(c => !c.off).map(c => c.name).join(', ') || 'none'}.`;
-    const ask = patch ? `${brief}\n\n${patchNote({ worktree: st.worktree?.path, branch: st.worktree?.branch })}` : brief;
-    if (patch && !st.writers.has(lens.name!)) {
-      st.writers.add(lens.name!);
-      this.emit({ goal: g.id, agent: lens.name, type: 'room.writer', data: { on: true } });
-    }
-    const unwrite = () => {
-      if (st.writers.delete(lens.name!)) this.emit({ goal: g.id, agent: lens.name, type: 'room.writer', data: { on: false } });
-    };
+    if (lens.off) return `${lens.name} is put away by the human, so it can't be sent. Makers you can send: ${g.room.lenses.filter(c => !c.off).map(c => c.name).join(', ') || 'none'}.`;
+    return this.sendMaker(g, lens, brief, rec.name);
+  }
+
+  /**
+   * Gives a maker an ask, from the lead or straight from the human: its session starts the first
+   * time, and later asks are new turns of it, so it keeps what it learnt. Its answer goes back to
+   * whoever asked (the lead hears of the human's). `shown` is what the chat says was asked.
+   */
+  private sendMaker(g: GoalRec, lens: Lens, ask: string, from: string, shown = ask): string {
+    const askedBy = from === 'human' ? 'human' : g.lead;
     const existing = g.agents.get(lens.name!);
-    if (existing && FINISHED.includes(existing.state)) {
-      unwrite();
-      return `${lens.name} has ${existing.state}. The human can respawn it from its panel; send another lens meanwhile.`;
-    }
-    this.say(g, { from: rec.name, to: [lens.name!], text: brief, kind: 'dispatch', ...(patch ? { patch: true } : {}) });
+    if (existing && FINISHED.includes(existing.state)) return `${lens.name} has ${existing.state}. It can be respawned from its panel; ask another maker meanwhile.`;
+    this.say(g, { from, to: [lens.name!], text: shown, kind: 'dispatch' });
+    const after = from === 'human' ? 'Its answer shows in the chat.' : 'Its answer reaches you as a message: end your turn meanwhile.';
     if (existing) {
       existing.doneNote = undefined;
-      this.deliver(g.id, rec.name, existing.name, ask, false, false, true);
-      return `Sent ${existing.name} (${existing.harness} · ${existing.model}) the ask. Its answer reaches you as a message: end your turn meanwhile.`;
+      existing.askedBy = askedBy;
+      this.deliver(g.id, from, existing.name, ask, false, false, true);
+      return `Sent ${existing.name} (${existing.harness} · ${existing.model}) the ask. ${after}`;
     }
     const role = this.lensRole(lens);
-    if (!role) {
-      unwrite();
-      return `${lens.name}'s role, ${lens.role}, isn't in the configuration any more.`;
-    }
-    const r = this.spawnAgent(g.id, { role: role.name, roleDef: role, brief: ask, parent: rec.name, name: lens.name, stance: lens.stance, responsibility: responsibilityOf(lens) });
+    if (!role) return `${lens.name}'s role, ${lens.role}, isn't in the configuration any more.`;
+    const r = this.spawnAgent(g.id, { role: role.name, roleDef: role, brief: ask, parent: g.lead, name: lens.name, stance: lens.stance, responsibility: responsibilityOf(lens), askedBy });
     if (!r.ok) {
-      unwrite();
       this.roomNote(g, `${lens.name} couldn't start: ${r.error}`);
       return `${lens.name} couldn't start: ${r.error}`;
     }
-    return `Sent ${r.name} (${r.rec.harness} · ${r.rec.model}).${r.note ? ` ${r.note}` : ''} Its answer reaches you as a message: end your turn meanwhile.`;
+    return `Sent ${r.name} (${r.rec.harness} · ${r.rec.model}).${r.note ? ` ${r.note}` : ''} ${after}`;
+  }
+
+  /** A maker the human can ask: by name, else the first available one that makes `makes`. */
+  private pickMaker(g: GoalRec, name: string | undefined, makes?: Output): Lens {
+    const lenses = g.room!.lenses;
+    if (name) {
+      const lens = this.findLens(g, name);
+      if (!lens) throw new Error(`There's no maker called ${name}.`);
+      if (lens.off) throw new Error(`${lens.name} is put away: bring it back first.`);
+      return lens;
+    }
+    const lens = lenses.find(l => !l.off && makesOf(l) === makes);
+    if (!lens) throw new Error(`No maker here makes ${makes} cards: add one (+ Maker) and try again.`);
+    return lens;
+  }
+
+  /** The human asks a maker directly, about some cards or not. The lead hears of it. */
+  roomAsk(goalId: string, o: { maker: string; text: string; cards?: string[] }): string {
+    const g = this.openRoom(goalId);
+    const lens = this.pickMaker(g, o.maker);
+    const cards = (o.cards ?? []).map(id => g.room!.canvas.cards.find(c => c.id === id)).filter((c): c is Card => !!c);
+    const ask = [
+      ...(cards.length ? [`[About ${cards.map(c => `${c.id} (${c.kind}) "${c.title}"`).join(', ')}]`] : []),
+      o.text,
+      '',
+      `[Room] The human asks you directly. Put what you make on the board${cards.length ? `, with "from" naming the cards it builds on` : ''}, then answer them with \`done\`.`,
+    ].join('\n');
+    this.tellLead(g, `[Room] The human asked ${lens.name} directly${cards.length ? ` about ${cards.map(c => c.id).join(', ')}` : ''}: ${o.text.replace(/\s+/g, ' ').slice(0, 300)}`);
+    return this.sendMaker(g, lens, ask, 'human', cards.length ? `[${cards.map(c => c.id).join(', ')}] ${o.text}` : o.text);
+  }
+
+  /**
+   * Mixes cards into something new: placeholders for the results go on the board at once,
+   * linked to what they're made from, and the maker that makes that kind fills them. The lead
+   * hears of it.
+   */
+  roomMix(goalId: string, o: { cards: Ingredient[]; make: string; count?: number; note?: string; maker?: string }): string {
+    const g = this.openRoom(goalId);
+    const c = g.room!.canvas;
+    const ingredients = o.cards.map(i => ({ card: c.cards.find(x => x.id === i.id), take: i.take })).filter((i): i is { card: Card; take: string | undefined } => !!i.card);
+    if (!ingredients.length) throw new Error('A mix needs cards from the board.');
+    const make = (['image', 'demo', 'text', 'ideas', 'source'] as const).find(m => m === o.make);
+    if (!make) throw new Error('A mix makes an image, a demo, a text, ideas or a source.');
+    const output: Output = make === 'ideas' ? 'text' : make;
+    const lens = this.pickMaker(g, o.maker, output);
+    const count = Math.max(1, Math.min(4, Math.round(o.count ?? 1)));
+    const kind: CardKind = make === 'ideas' ? 'idea' : make;
+    const from = ingredients.map(i => ({ id: i.card.id, ...(i.take?.trim() ? { take: i.take.trim().slice(0, 60) } : {}) }));
+    const made: string[] = [];
+    for (let n = 0; n < count; n++) {
+      const card: Card = { id: `c${++c.seq}`, kind, title: `Mixing ${from.map(i => i.id).join(' + ')}…`, by: lens.name!, pending: lens.name!, from };
+      c.cards.push(card);
+      made.push(card.id);
+    }
+    this.canvasChanged(g);
+    const ask = mixAsk({ ingredients, make, cards: made, note: o.note, shared: g.sharedDir });
+    const shown = `Mix ${from.map(i => `${i.id}${i.take ? ` (${i.take})` : ''}`).join(' + ')} → ${count > 1 ? `${count} ` : ''}${make}${count > 1 && make !== 'ideas' ? 's' : ''}${o.note?.trim() ? `: ${o.note.trim()}` : ''}`;
+    this.tellLead(g, `[Room] The human mixed cards: ${shown}. ${lens.name} fills ${made.join(', ')}.`);
+    const r = this.sendMaker(g, lens, ask, 'human', shown);
+    if (!g.agents.has(lens.name!)) {
+      // It couldn't start: the placeholders go.
+      applyCanvas(c, made.map(id => ({ op: 'remove' as const, id })), 'MetaHarness');
+      this.canvasChanged(g);
+    }
+    return r;
   }
 
   /**
    * What someone in a room `send`s. The lead's message to the human is a reply in the chat, and
-   * to a lens, sends it. A lens talks only with the lead. Undefined: delivered as usual.
+   * to a maker, sends it. A maker talks only with the lead. Undefined: delivered as usual.
    */
   private roomSend(g: GoalRec, from: string, to: string, text: string): string | undefined {
     const t = to.trim().replace(/^@/, '').toLowerCase();
@@ -3179,14 +3262,14 @@ export class Daemon {
         this.roomReply(g, rec, text);
         return 'Posted to the human. Their answer reaches you as a message.';
       }
-      // To a lens, it's an ask like any other: the lens answers it.
+      // To a maker, it's an ask like any other: the maker answers it.
       const lens = this.findLens(g, to);
       return lens ? this.roomSpawn(rec, lens.name!, text) : undefined;
     }
     if (rec.parent !== g.lead) return undefined;
     if (human || (t !== 'lead' && t !== g.lead.toLowerCase() && g.room!.lenses.some(c => c.name!.toLowerCase() === t || c.role?.toLowerCase() === t))) {
       this.deliver(g.id, from, g.lead, human ? `(for the human) ${text}` : `(for ${to}) ${text}`, false, false, true);
-      return `In a room, ${g.lead} talks with the human and sends the lenses: it has your message.`;
+      return `In a room, ${g.lead} talks with the human and sends the makers: it has your message.`;
     }
     return undefined;
   }
@@ -3203,10 +3286,10 @@ export class Daemon {
     const g = this.goals.get(rec.goal);
     if (!g?.room || !rec.isLead) return undefined;
     this.roomReply(g, rec, note);
-    return 'Posted to the human. End your turn now; their next message, or a lens\'s answer, wakes you.';
+    return 'Posted to the human. End your turn now; their next message, or a maker\'s answer, wakes you.';
   }
 
-  /** A turn in a room ended without `done`: the lead's last message is its reply, a lens's its answer. */
+  /** A turn in a room ended without `done`: the lead's last message is its reply, a maker's its answer. */
   private roomTurnWithoutDone(g: GoalRec, rec: AgentRec): boolean {
     if (rec.quick) return false;
     if (rec.roomStopped) {
@@ -3225,19 +3308,24 @@ export class Daemon {
     return true;
   }
 
-  /** In a room, who may change project files: a lens on a patch job, and whoever works in the human's checkout. */
-  private writesInRoom(room: RoomState, rec: AgentRec): boolean {
-    return !!rec.inCheckout || room.writers.has(rec.name);
+  /**
+   * A maker answered (or ended): the chat shows it, and the placeholders it was filling stop
+   * being placeholders. Returns true when the human asked, so the lead only hears of it.
+   */
+  private lensAnswered(g: GoalRec, rec: AgentRec, note: string, how: 'done' | 'idle' | 'ended' | 'crashed', stopped = false): boolean {
+    const toHuman = rec.askedBy === 'human';
+    const c = g.room!.canvas;
+    const unfilled = c.cards.filter(x => x.pending === rec.name);
+    if (unfilled.length) {
+      for (const x of unfilled) delete x.pending;
+      this.canvasChanged(g);
+    }
+    this.say(g, { from: rec.name, to: [toHuman ? 'human' : g.lead], text: note, kind: how === 'ended' || how === 'crashed' ? 'note' : 'lens', ...(stopped ? { stopped: true } : {}) });
+    if (toHuman) this.tellLead(g, `[Room] ${rec.name} answered the human${stopped ? ' (stopped by them)' : ''}: ${note.replace(/\s+/g, ' ').slice(0, 400)}`);
+    return toHuman;
   }
 
-  /** A lens answered (or ended): the lead hears it as usual; the chat shows it, and a patch job's write access ends. */
-  private lensAnswered(g: GoalRec, rec: AgentRec, note: string, how: 'done' | 'idle' | 'ended' | 'crashed', stopped = false): void {
-    const st = g.room!;
-    if (st.writers.delete(rec.name)) this.emit({ goal: g.id, agent: rec.name, type: 'room.writer', data: { on: false } });
-    this.say(g, { from: rec.name, to: [g.lead], text: note, kind: how === 'ended' || how === 'crashed' ? 'note' : 'lens', ...(stopped ? { stopped: true } : {}) });
-  }
-
-  /** The human stops what the lead or a lens is doing; it stays, to be asked again. What it said so far goes on as its reply or answer. */
+  /** The human stops what the lead or a maker is doing; it stays, to be asked again. What it said so far goes on as its reply or answer. */
   roomStop(goalId: string, name: string): string {
     const g = this.goals.get(goalId)!;
     const rec = g.agents.get(name);
@@ -3261,8 +3349,7 @@ export class Daemon {
     }
     this.emit({ goal: g.id, agent: name, type: 'agent.interrupted', data: { how: 'stopped', by: 'human' } });
     if (rec.isLead) this.roomReply(g, rec, said, true);
-    else {
-      this.lensAnswered(g, rec, said, 'idle', true);
+    else if (!this.lensAnswered(g, rec, said, 'idle', true)) {
       const lead = g.agents.get(rec.parent);
       if (lead) this.enqueue(lead, { id: randomUUID(), kind: 'done', from: rec.name, text: `(the human stopped it here) ${said}`, urgent: false, ts: new Date().toISOString() });
     }
@@ -3270,110 +3357,75 @@ export class Daemon {
     return `Stopped ${name}.`;
   }
 
-  /** The `team` tool in a room: the lead, the lenses, and what each is doing. */
+  /** The `team` tool in a room: the lead, the makers, and what each is doing. */
   roomTeam(rec: AgentRec): string | undefined {
     const g = this.goals.get(rec.goal);
     if (!g?.room || rec.quick) return undefined;
+    const paths = this.roomPaths(g);
     return [
       `Room: ${g.request}`,
       `Lead: ${g.lead}${rec.name === g.lead ? '  ← you' : ''}`,
-      `Shared folder: ${g.sharedDir} (the canvas: ${this.roomPaths(g).canvas}; the chat: ${this.roomPaths(g).chat})`,
+      `Shared folder: ${g.sharedDir} (the board: ${paths.canvas}; images: ${paths.media}; demos: ${paths.demos}; the chat: ${paths.chat})`,
       '',
-      'Lenses:',
+      'Makers:',
       ...g.room.lenses.map(l => {
         const a = g.agents.get(l.name!);
-        const line = lensLines([l], () => !!a)[0];
+        const line = lensLines([l], () => !!a, p => this.makerCan(p))[0];
         return `${line}${a ? `, ${a.state}${a.status ? `: ${a.status.slice(0, 120)}` : ''}` : ''}${l.name === rec.name ? '  ← you' : ''}`;
       }),
       ...(g.room.lenses.length ? [] : ['(none)']),
       '',
-      rec.isLead ? 'Send a lens with spawn (role: its name).' : `You talk with ${g.lead}; put what you find on the canvas.`,
+      rec.isLead ? 'Send a maker with spawn (role: its name).' : `You talk with ${g.lead}; put what you make on the board.`,
     ].join('\n');
   }
 
-  /** Someone changes the canvas: the lead or a lens through the `canvas` tool, the human from the room. */
+  /** Someone changes the board: the lead or a maker through the `canvas` tool, the human from the room. */
   roomCanvas(goalId: string, ops: CanvasOp[], by: string): CanvasResult {
     const g = this.goals.get(goalId)!;
-    const r = applyCanvas(g.room!.canvas, ops, by);
+    const r = applyCanvas(g.room!.canvas, ops, by, g.sharedDir);
     if (!r.changed) return r;
     this.canvasChanged(g);
-    if (by !== g.lead) this.tellLead(g, `[Room] ${by === 'human' ? 'The human' : by} changed the canvas: ${r.done.join('; ')}.`);
+    // Where the human put cards is theirs: only what changed on the board is worth the lead's attention.
+    const said = r.done.filter(d => !/^(moved|tidied)/.test(d));
+    if (by !== g.lead && said.length) this.tellLead(g, `[Room] ${by === 'human' ? 'The human' : by} changed the board: ${said.join('; ')}.`);
     return r;
   }
 
-  /** The `canvas` tool: changes, or the whole canvas to read. */
+  /** The `canvas` tool: changes, or the whole board to read. */
   canvasTool(rec: AgentRec, ops: CanvasOp[]): string {
     const g = this.goals.get(rec.goal);
-    if (!g?.room) return 'The canvas is for brainstorm rooms; there is none in a goal.';
-    if (!ops.length) return canvasMarkdown(g.request, g.room.canvas);
+    if (!g?.room) return 'The board is for brainstorm rooms; there is none in a goal.';
+    if (!ops.length) return canvasMarkdown(g.request, g.room.canvas, g.sharedDir);
     const r = this.roomCanvas(g.id, ops, rec.name);
     return [r.done.length ? `Done: ${r.done.join('; ')}.` : 'Nothing changed.', ...(r.skipped.length ? [`Skipped: ${r.skipped.join('; ')}.`] : [])].join('\n');
   }
 
   private canvasChanged(g: GoalRec): void {
     const c = g.room!.canvas;
-    this.emit({ goal: g.id, type: 'room.canvas', data: { cards: c.cards, links: c.links } });
+    this.emit({ goal: g.id, type: 'room.canvas', data: { cards: c.cards, links: c.links, frames: c.frames } });
     try {
-      writeFileSync(this.roomPaths(g).canvas, canvasMarkdown(g.request, c));
+      writeFileSync(this.roomPaths(g).canvas, canvasMarkdown(g.request, c, g.sharedDir));
     } catch {
       // The event has it; the file is for the agents.
     }
   }
 
   /**
-   * Merges the room's branch into the checkout's branch (design §21: once, at the end), then has
-   * a cartographer map the result, when the map rules are on.
+   * A file of a room's for the browser (GET /media): an image as it is, a demo page with the
+   * room's knobs wired in (starting from `values` when given). Rooms not loaded here are read
+   * from where their log says.
    */
-  roomMerge(goalId: string): string {
-    const g = this.goals.get(goalId)!;
-    const wt = g.room!.worktree;
-    const gg = g.git;
-    if (!wt || !gg) throw new Error("This room has no branch of its own: its patches are in your checkout already.");
-    const ahead = git.countCommits(gg, gg.branch, wt.branch);
-    if (!ahead) return `Nothing to merge: ${wt.branch} has no commits ${gg.branch} lacks.`;
-    const writing = [...g.room!.writers].filter(n => g.agents.get(n)?.state === 'working');
-    if (writing.length) throw new Error(`${writing.join(', ')} ${writing.length > 1 ? 'are' : 'is'} still patching. Merge once ${writing.length > 1 ? 'they answer' : 'it answers'}.`);
-    const now = git.setupGoal(g.dir, g.id);
-    if ('reason' in now || now.branch !== gg.branch) throw new Error(`Your checkout isn't on ${gg.branch} any more. Switch back to it to merge, or merge ${wt.branch} yourself.`);
-    const subjects = git.commitsBetween(gg, gg.branch, wt.branch).map(c => c.summary);
-    try {
-      git.git(gg.repo, 'merge', '--no-ff', '-m', `Merge room ${g.id}: ${g.request.split('\n')[0].slice(0, 60)}`, wt.branch);
-    } catch (e) {
-      try {
-        git.git(gg.repo, 'merge', '--abort');
-      } catch {
-        // Nothing to abort: the merge never started.
-      }
-      throw new Error(`The merge didn't go through, so nothing changed: ${(e as Error).message.trim().split('\n').slice(-3).join(' ')}`);
-    }
-    const sha = git.resolveCommit(gg, 'HEAD') ?? '';
-    this.emit({ goal: g.id, type: 'room.merged', data: { branch: wt.branch, into: gg.branch, sha, commits: ahead, summaries: subjects.slice(-20) } });
-    this.refreshGit(g.id);
-    this.tellLead(g, `[Room] The human merged the room's branch into ${gg.branch} (${ahead} commit${ahead > 1 ? 's' : ''}).`);
-    const mapped = this.roomCartographer(g, gg.branch, sha, subjects);
-    return `Merged ${ahead} commit${ahead > 1 ? 's' : ''} from ${wt.branch} into ${gg.branch}.${mapped ? ` ${mapped}` : ''}`;
-  }
-
-  /** The cartographer maps what a room's merge brought in, once. */
-  private roomCartographer(g: GoalRec, branch: string, sha: string, subjects: string[]): string {
-    const role = this.config.roles.get('cartographer');
-    if (!role || this.config.rules.get('cartographer')?.off) return '';
-    const brief = [
-      `The room's patches were just merged into ${branch} (${sha.slice(0, 7)}):`,
-      ...subjects.map(s => `- ${s}`),
-      '',
-      `Bring the docs you keep up to date for what these changed, rewriting only what changed. Commit in ${g.dir}, then call done with one line on what you updated.`,
-    ].join('\n');
-    // Only one already in the checkout: a cartographer sent as a lens works on the room's branch.
-    const existing = [...g.agents.values()].find(a => a.role.name === role.name && a.inCheckout && !FINISHED.includes(a.state));
-    if (existing) {
-      existing.doneNote = undefined;
-      this.deliver(g.id, 'human', existing.name, brief, false, false, true);
-      return `${existing.name} maps the result.`;
-    }
-    const name = lensName({ role: role.name }, [...g.room!.lenses.map(c => c.name!), ...g.agents.keys()]);
-    const r = this.spawnAgent(g.id, { role: role.name, brief, parent: 'human', name, inCheckout: true });
-    return r.ok ? `${r.name} maps the result.` : `The cartographer couldn't start: ${r.error}`;
+  roomMedia(goalId: string, path: string, values?: Record<string, number>): { type: string; body: Buffer | string } {
+    if (!/^[0-9a-f-]+$/i.test(goalId)) throw new Error(`There's no room ${goalId}.`);
+    const dir = this.goals.get(goalId)?.sharedDir ?? join(this.home, 'goals', goalId, 'shared');
+    const rel = sharedPath(dir, path);
+    const ext = extname(path).toLowerCase();
+    const type = MEDIA_TYPES[ext];
+    if (!rel || !type || rel.split('/')[0] === HISTORY) throw new Error(`${path} isn't an image or a demo in the room's folder.`);
+    const file = join(dir, rel);
+    if (!existsSync(file) || !statSync(file).isFile()) throw new Error(`There's no ${rel} in the room's folder.`);
+    if (ext === '.html' || ext === '.htm') return { type, body: demoPage(readFileSync(file, 'utf8'), values) };
+    return { type, body: readFileSync(file) };
   }
 
   /* ---------------- restart recovery ---------------- */
@@ -3761,8 +3813,6 @@ export class Daemon {
     return {
       id: g.id,
       kind: g.kind ?? 'goal',
-      /** A room's branch, where its patches go. */
-      roomBranch: g.room?.worktree?.branch ?? null,
       request: g.request,
       status: this.goalStatus(g),
       live: true,
@@ -3860,7 +3910,6 @@ export class Daemon {
     return {
       id: r.id,
       kind: r.kind ?? 'goal',
-      roomBranch: r.roomBranch ?? null,
       request: r.request,
       status: (r.ended ? 'ended' : lead && (lead.doneNote !== undefined || ['ended', 'crashed'].includes(lead.state)) ? 'done' : 'stopped') as GoalStatus,
       live: false,
@@ -3941,7 +3990,8 @@ export class Daemon {
       case 'room.start': {
         const topic = s('topic');
         if (!topic) throw new Error('room.start needs a topic.');
-        const lenses = Array.isArray(b.lenses) ? (b.lenses as Lens[]).filter(p => p && (p.role || p.on)) : [];
+        // No makers given: the built-in ones.
+        const lenses = Array.isArray(b.lenses) ? (b.lenses as Lens[]).filter(p => p && (p.role || p.on)) : undefined;
         const cards = Array.isArray(b.cards) ? b.cards.map(String) : undefined;
         const room = this.startRoom({ topic, lenses, from: s('from'), cards });
         return { goal: room, room, notice: this.goalNotice(this.goals.get(room)!) ?? null };
@@ -3952,7 +4002,7 @@ export class Daemon {
         return { result: this.roomPost(this.roomId(s('goal')), { text, card: s('card') }) };
       }
       case 'room.lens': {
-        if (!s('role') && !s('on')) throw new Error('room.lens needs a role, or a model (on).');
+        if (!s('role') && !s('on')) throw new Error('room.lens needs a role, or a model (on), for the maker.');
         return { result: this.roomAddLens(this.roomId(s('goal')), { role: s('role'), name: s('name'), on: s('on'), responsibility: s('responsibility'), stance: s('stance') }) };
       }
       case 'room.lensOff': {
@@ -3969,17 +4019,26 @@ export class Daemon {
         const ops = parseCanvasOps(b);
         const r = this.roomCanvas(this.roomId(s('goal')), ops, 'human');
         if (!r.changed && r.skipped.length) throw new Error(r.skipped.join('; '));
-        return { result: r.changed ? 'Canvas updated.' : 'Nothing changed.' };
+        return { result: r.changed ? 'Board updated.' : 'Nothing changed.' };
       }
-      case 'room.merge': {
-        return { result: this.roomMerge(this.roomId(s('goal'))) };
+      case 'room.ask': {
+        const text = s('text');
+        if (!text) throw new Error('room.ask needs "text".');
+        const maker = s('maker') ?? s('lens');
+        if (!maker) throw new Error('room.ask needs "maker".');
+        return { result: this.roomAsk(this.roomId(s('goal')), { maker, text, cards: Array.isArray(b.cards) ? b.cards.map(String) : undefined }) };
+      }
+      case 'room.mix': {
+        const cards: Ingredient[] = Array.isArray(b.cards)
+          ? b.cards.map(c => (c && typeof c === 'object' ? { id: String((c as Ingredient).id ?? ''), take: typeof (c as Ingredient).take === 'string' ? (c as Ingredient).take : undefined } : { id: String(c) }))
+          : [];
+        const make = s('make');
+        if (!cards.length || !make) throw new Error('room.mix needs "cards" (ids, or {id, take}) and "make" (image, demo, text, ideas or source).');
+        return { result: this.roomMix(this.roomId(s('goal')), { cards, make, count: Number(b.count) || 1, note: s('note'), maker: s('maker') }) };
       }
       case 'room.end': {
         const id = this.roomId(s('goal'));
-        const result = this.endGoal(id);
-        if (b.discard !== true) return { goal: id, result };
-        const r = this.cleanGoals(id, true);
-        return { goal: id, result: `${result} ${r.results.map(x => describeClean(x, '')).filter(Boolean).join(' ')}`.trim() };
+        return { goal: id, result: this.endGoal(id) };
       }
       case 'cast.save': {
         const name = s('name')?.trim().replace(/[^\w.-]+/g, '-');
@@ -4259,7 +4318,7 @@ export class Daemon {
       files: scopesOf(this.configDirs).map(s => ({ scope: s.scope, dir: s.dir, values: readSettingsFile(s.dir) })),
     };
     const casts = [...this.config.casts.values()].map(c => ({ name: c.name, goodAt: c.goodAt, participants: c.participants }));
-    const responsibilities = RESPONSIBILITIES.map(r => ({ name: r.name, text: r.text, roles: r.roles }));
+    const responsibilities = RESPONSIBILITIES.map(r => ({ name: r.name, text: r.text, roles: r.roles, makes: r.makes }));
     return { ...configView(scopesOf(this.configDirs)), harnesses, settings, casts, responsibilities, override: this.harnessOverride ?? null };
   }
 

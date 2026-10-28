@@ -18,7 +18,6 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
       name: 'Optional name',
       worktree: "true to give them their own git worktree and branch, for code written in parallel with others. Default: they work in the shared folder, like everyone else",
       from: "Optional: a teammate (or branch) whose latest commit their own worktree starts from, e.g. the implementer whose code a reviewer checks. Implies worktree",
-      patch: "In a brainstorm room: true to let the lens change files for this ask (a small fix the human wants), committed on the room's branch",
     },
   },
   respawn: {
@@ -54,9 +53,9 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
     params: { name: 'Skill name (optional)', part: 'A section heading or a file path from the summary (optional)' },
   },
   canvas: {
-    description: "Change the brainstorm room's canvas: cards (question, idea, finding, risk, decision) and the links between them. Without ops, shows the whole canvas.",
+    description: "Change the brainstorm room's board: cards (question, idea, finding, risk, decision, source, image, demo, text, concept), the links between them, and the frames that group them. Without ops, shows the whole board.",
     params: {
-      ops: 'A list of changes: {"op": "add", "kind": "finding", "title": "a few words", "text": "detail", "refs": ["src/x.ts:40"], "links": [{"to": "c2", "label": "answers"}], "ref": "a"}, {"op": "edit", "id": "c3", "title": "…"}, {"op": "settle" | "drop" | "reopen" | "remove", "id": "c3"}, {"op": "note", "id": "c3", "text": "…"}, {"op": "link", "from": "c4", "to": "c2", "label": "rules out"}, {"op": "unlink", "from": "c4", "to": "c2"}',
+      ops: 'A list of changes: {"op": "add", "kind": "image", "title": "a few words", "text": "detail", "file": "room/media/x.png", "url": "https://…", "refs": ["src/x.ts:40"], "from": [{"id": "c2", "take": "its palette"}], "frame": "Look", "links": [{"to": "c2", "label": "answers"}], "ref": "a"}, {"op": "edit", "id": "c3", "title": "…", "file": "…", "pillars": [{"name": "Look", "text": "…", "cards": ["c3"]}]}, {"op": "settle" | "drop" | "reopen" | "remove", "id": "c3"}, {"op": "note", "id": "c3", "text": "…"}, {"op": "link", "from": "c4", "to": "c2", "label": "rules out"}, {"op": "unlink", "from": "c4", "to": "c2"}, {"op": "frame", "title": "Combat", "cards": ["c3", "c5"]}',
     },
   },
 };
@@ -149,8 +148,8 @@ export class Hub {
           ?? '(No brief was given. Ask whoever spawned you what they need.)';
         const name = str(pick(a, 'name', 'id'));
         if (truthy(pick(a, 'quick', 'helper', 'blocking'))) return (await d.quickSpawn(rec, role, brief, name)).text;
-        // In a room, the lead sends lenses; nobody else starts anyone.
-        const lens = d.roomSpawn(rec, role, brief, truthy(pick(a, 'patch', 'write', 'fix')));
+        // In a room, the lead sends makers; nobody else starts anyone.
+        const lens = d.roomSpawn(rec, role, brief);
         if (lens !== undefined) return lens;
         const from = str(pick(a, 'from', 'base', 'branch', 'start_from', 'starting_from'));
         const wt = pick(a, 'worktree', 'own_worktree', 'isolated', 'isolation');
@@ -241,7 +240,9 @@ export class Hub {
         const held = again ? undefined : d.doneRules(rec);
         if (held) return held;
         const warning = d.done(rec, note);
-        const ok = again ? 'Updated your note. Whoever spawned you has the new one.' : rec.parent === 'human' ? 'Done. The human has your note.' : `Done. ${rec.parent} has your note.`;
+        // A room's maker answers whoever asked its turn: the lead, or the human.
+        const to = rec.askedBy === 'human' ? 'human' : rec.parent;
+        const ok = again ? 'Updated your note. Whoever spawned you has the new one.' : to === 'human' ? 'Done. The human has your note.' : `Done. ${to} has your note.`;
         return warning ? `${ok}\n\n${warning}` : ok;
       }
     }

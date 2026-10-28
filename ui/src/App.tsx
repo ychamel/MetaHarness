@@ -149,7 +149,7 @@ function Shell() {
     async (body: Record<string, unknown>) => {
       try {
         const r = await api.command(body);
-        if (typeof r.result === 'string' && !['agent.message', 'inbox.resolve', 'room.post', 'room.canvas', 'room.lens', 'room.lensOff', 'room.stop'].includes(String(body.cmd))) say(r.result);
+        if (typeof r.result === 'string' && !['agent.message', 'inbox.resolve', 'room.post', 'room.canvas', 'room.lens', 'room.lensOff', 'room.stop', 'room.ask', 'room.mix'].includes(String(body.cmd))) say(r.result);
         if (body.cmd === 'agent.message') say('Sent.');
         void refresh();
         void loadGoals();
@@ -276,7 +276,7 @@ function Shell() {
           <div className="page">
             <div className="empty big">
               <div>
-                <b>Rooms</b> are brainstorms: you talk with a lead agent, which keeps a canvas of questions, ideas, findings and decisions, and sends lenses (a scout, a designer, a reviewer, the same role on two models) to look into things meanwhile. A lens can fix small things on the room's own branch; a topic can branch into a room of its own; a bigger plan becomes a goal.
+                <b>Rooms</b> are for getting clear and deciding, when you don't know yet what you want. A lead agent helps you narrow it down and keeps a board; makers find references and make images, playable demos with knobs and write-ups; you mix cards into new ideas. A topic can branch into a room of its own; what you settle becomes a goal.
               </div>
               <button className="btn primary" onClick={() => setDialog({ kind: 'room' })}>
                 New room

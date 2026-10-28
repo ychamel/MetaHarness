@@ -64,7 +64,6 @@ export interface GoalReplay {
   id: string;
   /** A room: over only once ended. Rooms from before 2026-10-26 had no lead. */
   kind?: 'room';
-  roomBranch?: string;
   /** What a room's coordinator spent, in rooms from before they had a lead (2026-10-26). */
   coordinatorCost: number;
   request: string;
@@ -104,7 +103,7 @@ export function replayGoal(events: MhEvent[]): GoalReplay | undefined {
   // The first agent the human started leads, except in rooms from before rooms had a lead (they started seats).
   const led = d.kind !== 'room' || !!d.lead;
   const g: GoalReplay = {
-    id: start.goal, ...(d.kind === 'room' ? { kind: 'room' as const, roomBranch: str(d.roomBranch) || undefined } : {}), coordinatorCost: 0, request: str(d.request), dir: str(d.dir), sharedDir: str(d.sharedDir), createdAt: start.ts,
+    id: start.goal, ...(d.kind === 'room' ? { kind: 'room' as const } : {}), coordinatorCost: 0, request: str(d.request), dir: str(d.dir), sharedDir: str(d.sharedDir), createdAt: start.ts,
     workflow: str(d.workflow) || undefined, branch: str(d.branch) || undefined, base: str(d.base) || undefined,
     ended: false, lead: '', agents: new Map(), counters: new Map(), inbox: [], refs: new Map(), seenOn: new Map(),
     conflicts: new Map(), shared: new Map(), gatekeeperCost: 0, notes: new Map(),

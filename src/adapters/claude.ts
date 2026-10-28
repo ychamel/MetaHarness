@@ -31,6 +31,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       reportsCost: true,
       reportsContext: true,
       reportsRateLimits: true,
+      web: true,
     };
   }
 

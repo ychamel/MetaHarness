@@ -45,6 +45,8 @@ export class AgyAdapter implements HarnessAdapter {
     reportsCost: false,
     reportsContext: false,
     reportsRateLimits: true,
+    web: true,
+    images: true,
   };
   private bin: string;
   private sessions = new Set<AgySession>();
@@ -385,14 +387,21 @@ export function agyToolRequest(tool: string, args: Record<string, unknown>): Too
       const server = pick(args, 'ServerName', 'server') ?? '';
       return { kind: 'mcp', tool: `${server}.${pick(args, 'ToolName', 'tool') ?? '?'}`, detail: JSON.stringify(args.Arguments ?? {}).slice(0, 8000), server };
     }
+    case 'generate_image':
+      return { kind: 'image', tool, detail: pick(args, 'Prompt', 'prompt', 'ImageName') ?? JSON.stringify(args).slice(0, 8000), path };
+    case 'invoke_subagent':
+      // Its image-generator subagent is how it makes images in print mode (it never calls
+      // generate_image there): an image request, the one subagent that isn't refused.
+      if (/^image-generator$/i.test(pick(args, 'TypeName', 'typeName', 'type') ?? '')) return { kind: 'image', tool, detail: pick(args, 'Prompt', 'prompt') ?? JSON.stringify(args).slice(0, 8000) };
+      return { kind: 'delegate', tool, detail: JSON.stringify(args).slice(0, 300) };
     // run_workflow: a Python script that starts agents (and calls tools) of its own.
-    case 'invoke_subagent': case 'define_subagent': case 'manage_subagents': case 'browser_subagent': case 'run_workflow':
+    case 'define_subagent': case 'manage_subagents': case 'browser_subagent': case 'run_workflow':
       return { kind: 'delegate', tool, detail: JSON.stringify(args).slice(0, 300) };
     case 'ask_question': case 'ask_permission': case 'ask_custom_permission':
       return { kind: 'ask_user', tool, detail: JSON.stringify(args).slice(0, 300) };
     default:
       // The human decides: browser actions (open_browser_url, clicks, typing, scripts), which act
-      // as the user on their signed-in sites, generate_image, which spends quota, and new tools.
+      // as the user on their signed-in sites, and new tools.
       return { kind: 'other', tool, detail: JSON.stringify(args).slice(0, 8000), path };
   }
 }

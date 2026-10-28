@@ -19,6 +19,8 @@ export function isolationConfig(userMcpServers: string[], keep: string[] = [], h
     'features.remote_plugin': false,
     'features.skill_search': false,
     'features.tool_suggest': false,
+    // Its own search, live: read-only, like Claude Code's WebSearch.
+    web_search: 'live',
   };
   for (const name of userMcpServers) {
     if (name !== MCP_SERVER_NAME && !keep.includes(name) && /^[\w-]+$/.test(name)) cfg[`mcp_servers.${name}.enabled`] = false;
@@ -117,6 +119,8 @@ export class CodexAdapter implements HarnessAdapter {
     reportsCost: false,
     reportsContext: true,
     reportsRateLimits: true,
+    web: true,
+    images: true,
   };
   private bin: string;
   private server?: Promise<AppServer>;

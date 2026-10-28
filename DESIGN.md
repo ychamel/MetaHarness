@@ -626,7 +626,7 @@ VS Code panel works the same way.
 | **Replay** | Time scrubber over a finished goal; every view replays | Improving roles and workflows |
 | **Search** | Across streams, messages and shared files | Finding anything |
 | **Goals** | Current and past goals, with retrospectives | History |
-| **Rooms** | Brainstorms (§21): the chat with the room's lead, the lenses it sends, and the canvas it keeps; the goal tabs besides | Exploring and deciding before or after a goal |
+| **Rooms** | Brainstorms (§21): the chat with the room's lead, the makers it sends (or you ask), and the board it keeps: images, playable demos, references, mixes; the goal tabs besides | Getting clear and deciding, before a goal |
 
 ### When the team gets big
 
@@ -1334,76 +1334,108 @@ Claude Code, and the team. Compare result quality, cost, time, and how often you
 
 ## 21. Brainstorm rooms
 
-A goal hands the work to a lead. A **room** is for before or after that: the human brainstorms a
-question about the code (exploring a bug, understanding a part, working out a design) and either
-settles it there, fixes small things on the go, or writes a design for a goal to carry out.
+A goal needs a target: given one, its workflows design, analyse, review, audit and build. A
+**room** is for the human who doesn't have one yet: exploring options, finding a feel or a look,
+mixing ideas, until they reach a decision, or just clarity. It ends in a decision; a goal starts
+from one. Nobody changes the project's files in a room.
 
-First built on 2026-10-25 as a discussion the human led among seats, with a coordinator routing
-who spoke. The first real rooms showed it was too slow (every hop was a full agent turn, and the
-coordinator's decisions were turns too) and tiring to follow (the thread was the record). Reworked
-on 2026-10-26 (brainstorm → "go"): **one lead the human talks with**, which sends **lenses**
-behind the scenes and keeps a **canvas** that is the record. A summary from the lead is enough;
-the canvas keeps every lens's findings visible anyway.
+History. First built on 2026-10-25 as a discussion the human led among seats, with a
+coordinator routing who spoke: too slow (every hop a full agent turn) and tiring to follow. On
+2026-10-26, one lead the human talks with, lenses sent behind the scenes, a canvas as the
+record, and patches on the room's own branch. On 2026-10-28 (brainstorm → "go") the use cases
+were split from goals as above, which reshaped it: the lead became a **facilitator**, lenses
+became **makers** picked by what they make, the canvas a free **board** with images, demos and
+mixes, and patches (the room's branch, Merge, the cartographer after it) were dropped.
 
 **Underneath, a room is a goal** (`kind: room` on `goal.started`) whose lead is the room's lead:
 the same agents, sessions, events, costs and views (Graph, Sequence, Timeline, Costs, Files, Git,
-Design, Log). Its request is the topic. It's one sitting: rooms aren't recovered after a daemon
-restart, but end then, cleaned as when the human ends one ("New room from…" carries the canvas on).
+Design, Log). Its request is the topic. Everyone works in the human's checkout, reading; their
+own files go in the shared folder (`room/media/` for images, `room/demos/` for demos,
+`reports/`). It's one sitting: rooms aren't recovered after a daemon restart, but end then
+("New room from…" carries the board on).
 
 - **The lead** is a role (Settings → Room lead, `roomLead`; built in: `room-lead` on Antigravity
-  `gemini-3.8-flash-medium`, Claude Sonnet then Codex luna as backups: a model that talks well
-  and answers fast). It's told the room's methodology in place of the team's: reply short; never
-  make the human wait on lenses (send one, say so in a line, end the turn: its answer wakes it);
-  keep the canvas; only the human decides; suggest branching when the talk splits. Its **reply**
-  is its turn's last message, or its `done` note (a room's lead never finishes: `done` just
-  posts), or what it `send`s to the human. It never changes project files. Its opening turn puts
-  the question on the canvas and greets the human.
-- **Lenses** (`room.lenses`): a **role**, or **just a model** (`on: harness/model@effort`, then a
-  responsibility is required), plus a **responsibility** (what it's for; the lead picks by it;
-  six presets in `RESPONSIBILITIES`, each role getting its usual one) and an optional **stance**.
-  The human sets them up (new room, `room.lens`) and can put one away (`room.lensOff`). The lead
-  sends one with `spawn` (role: the lens's name); the first ask starts its session, later ones
-  are new turns of it, so it keeps what it learnt. A `spawn` with `quick: true` from the lead is
-  sent the same way (the lead never blocks on a helper). A lens's answer (`done`, or its turn's
-  last message) goes to the lead as any teammate's result and shows in the chat. Lenses talk only
-  with the lead: what they `send` the human or another lens goes to the lead; they can't start
-  anyone (quick helpers aside). **Casts**: `casts/<name>.md`, a `## <role or "model"> [as
-  <name>]` heading per lens with `on:`, `responsibility:` and `stance:` lines.
-- **The canvas** (`room.canvas`, the whole of it each time; `shared/room/canvas.md` for the
-  agents): **cards** (`question`, `idea`, `finding`, `risk`, `decision`; a short title, optional
-  detail, file refs, notes from others, a status: open, *settled* or *dropped*) and **links**
-  between them with an optional label. Everyone changes it through ops by id (add, edit, settle,
-  drop, reopen, note, link, unlink, remove): the lead and the lenses with the `canvas` tool
-  (published only in rooms), the human from the UI. A card added with a `ref` can be linked to in
-  the same call; the same title twice in a kind is refused with the existing id. The lead hears
-  what others changed (a note riding along with its next message).
-- **Asking** (`room.post`): what the human says goes to the lead, optionally about a card (the
-  lead gets `[About c3, idea: …]`). Said mid-turn, it joins the lead's running turn where the
-  harness allows.
-- **Stop** (`room.stop`): cuts the lead's or a lens's turn and keeps its session (natively, else
-  the process is stopped and resumed on the next message). What it said in that turn is posted,
-  marked *stopped*: the lead's as its reply, a lens's as its answer, which the lead hears.
+  `gemini-3.8-flash-medium`, Claude Sonnet then Codex luna as backups). It's told the room's
+  methodology in place of the team's: lead actively (offer 2–3 directions, ask one narrowing
+  question at a time, reflect back what it hears), show rather than tell (suggest an image or a
+  demo when a choice is about look or feel), point out gaps and mixes worth trying, reply short,
+  never make the human wait on makers (send one, say so, end the turn), keep the board (frames
+  by theme, a concept card), only the human decides. Its **reply** is its turn's last message,
+  or its `done` note (a room's lead never finishes), or what it `send`s to the human.
+- **Makers** (`room.lenses`; called lenses in the protocol and the code): a **role**, or **just
+  a model** (`on: harness/model@effort`, then a responsibility is required), plus a
+  **responsibility** and an optional **stance**. Each responsibility preset (`RESPONSIBILITIES`)
+  says what the maker **makes**: Research → source cards, Illustrate → images, Prototype →
+  demos, Write, Big picture and Review → text; a responsibility of one's own makes text. A room
+  starts with the built-in **researcher** (Antigravity Flash; it searches the web), **illustrator**
+  (Codex luna; image generation, Antigravity as backup), **prototyper** (Codex luna) and
+  **writer** (Claude Sonnet) when none are picked: ordinary roles in `defaults/roles/`, edited or
+  overridden like any other. The lead sends one with `spawn` (role: its name); the first ask
+  starts its session, later ones are new turns of it. Its prompt says how to make its kind:
+  images with the harness's own tool, saved in `room/media/`; demos as below; sources with a link
+  and a quote. Makers talk only with the lead; what they `send` anyone else goes to it.
+- **What harnesses can do**: the capability manifest says `web` (Claude Code, Codex, Antigravity)
+  and `images` (Codex, Antigravity). The lead reads them in its maker list, and the room marks
+  an image maker whose harness can't. Codex threads get `web_search: "live"`. An image request
+  (`image` kind: Antigravity's `generate_image`, and its `image-generator` subagent, which is
+  how it makes images in print mode: the one native subagent let through, as an exception, on
+  2026-10-28; its `send_message` back to the session that started it is let through too) is
+  allowed without asking in a room (the human is there and can stop it) and asks
+  in a goal. Makers are told never to draw an image by hand instead (seen: Flash, refused the
+  subagent, drew pixel art with Python).
+- **Asking a maker directly** (`room.ask`: maker, text, cards) and **mixing** (`room.mix`: cards
+  each with what to `take` from it, `make` image | demo | text | ideas | source, `count` 1–4, an
+  optional maker and note) go straight to the maker, not through the lead. A mix puts `count`
+  placeholder cards on the board at once (`pending`: the maker; `from`: the ingredients) and asks
+  the maker that makes that kind to fill them (`mixAsk`). The maker's answer goes back to the
+  human, in the chat (`askedBy` on the agent says who asked its turn); the lead isn't woken, but
+  hears of the ask and the answer with its next message. Placeholders a maker leaves unfilled
+  stop being placeholders when it answers.
+- **The board** (`room.canvas`, the whole of it each time; `shared/room/canvas.md` for the
+  agents): **cards** (`question`, `idea`, `finding`, `risk`, `decision`, `source`, `image`,
+  `demo`, `text`, `concept`; a title, optional detail, file refs, notes, a status) that may carry
+  a `file` (relative to the shared folder; one outside it is refused), a `url`, kept `values`, a
+  concept's `pillars` (name, text, cards), what they were made `from` (card + take), a `frame`, a
+  place (`at`, set by the human), and `pending`; **links** with an optional label; and
+  **frames**, named groups. Everyone changes it through ops by id (add, edit, settle, drop,
+  reopen, note, link, unlink, remove, frame, move, tidy): the lead and the makers with the
+  `canvas` tool (published only in rooms), the human from the UI. A new frame title on a card or
+  a `frame` op makes the frame; removing a frame keeps its cards. The lead hears what others
+  changed, except where cards were moved.
+- **Demos** are one self-contained HTML page each, played in a sandbox. A page declares its
+  **knobs** as JSON in `<script type="application/json" id="knobs">` (name, label, min, max,
+  step, value, unit). `GET /media` serves a room's images as they are, and a demo with a script
+  first in its head that sets `window.knobs` (the declared values, or kept ones passed as
+  `values`) and updates it on a `mh-knobs` message from the page around it (a `knobs` event
+  fires); HTML is served with `Content-Security-Policy: sandbox allow-scripts`, and the app
+  frames it with `sandbox="allow-scripts"`, so a demo never reaches the app or its token. The
+  room draws the sliders; **Keep these values** adds a decision card with the `values`, made
+  from the demo. When the project has the real code, the prototyper ports its formulas, units
+  and timestep and names the knobs after the real parameters, so the kept values carry back.
+- **The concept card** holds the idea pillar by pillar, each pointing at its cards; the lead
+  keeps it current.
+- **Asking the lead** (`room.post`): what the human says, optionally about a card (the lead gets
+  `[About c3, idea: …]`). Said mid-turn, it joins the lead's running turn where the harness
+  allows. **Stop** (`room.stop`) cuts the lead's or a maker's turn and keeps its session; what
+  it said is posted, marked *stopped*, as its reply or answer.
 - **Branching:** `room.start` with `from` (a room) and `cards` starts a room with those cards,
-  the ones linked to them and the links between them (renumbered); the parent's cards show the
-  branch while the parent is open, and its lead is told. `from` alone carries every card not
-  dropped (a room), or a goal's outcome and reports as a finding.
-- **Patches**: the lead sends a lens with `patch: true`; it may then change files on the room's
-  own branch, `mh/<room>/room`, in the one worktree everyone reads in, until it answers. The
-  human merges the branch (`room.merge`); then a cartographer (if the map rules are on) maps the
-  result in the checkout, where it may change and commit files (`inCheckout`).
-- **Endings** (when the human chooses): *Write the design* (a message asking the lead for
-  `shared/room/design.md`), *→ Goal* (`fromRoom`: the goal's lead is pointed at the canvas, the
-  design and the chat), *New room from this*, *End room* (keep the branch, or discard unmerged
-  patches).
+  the ones linked to them and the links between them (renumbered, out of their frames, with
+  their files copied over); the parent's cards show the branch while it's open, and its lead is
+  told. `from` alone carries every card not dropped (a room), or a goal's outcome and reports.
+- **Endings** (when the human chooses): *End room* (clarity is an outcome), *Write the design*
+  (a message asking the lead for `shared/room/design.md`, citing the cards), *→ Goal*
+  (`fromRoom`: the goal's lead is pointed at the board, its concept, decisions and kept values,
+  demos and images, the design and the chat), *New room from this*.
 
 The UI's **Rooms** tab opens on the open room. Its **Room** tab has the **chat** (you and the
-lead; a line for each lens sent and each answer, the whole text a click away; the lead's and
-lenses' progress while they work; shared files named there open in the chat's place) beside the
-**canvas** (the lenses over it with what each is doing, ■ stop and ⏻ put away; a column per
-kind of card there is, arrows for links drawn after layout; new cards glow; a card opens on a
-click and lights its neighbours; picked cards can be asked about, branched, settled, dropped or
-linked). The header holds the endings, Merge and End. Rooms keep their own make-room setting,
-apart from goals', and start with the team and agent columns put away.
+lead; a line for each ask sent to a maker, the lead's or yours, and each answer) beside the
+**board**: the makers over it, then a toolbar (what's picked and what to do with it; + Card,
++ Frame, Frames…, Tidy, zoom), then the board itself, panned and zoomed, laid out by
+`ui/src/boardLayout.ts` (what the human placed stays; the rest flows into columns beside it;
+frames lay out their own cards). A card opens in a panel beside the board (image, demo with its
+sliders, source, concept, what it was made from and mixed into, Remix). The header holds the
+endings. Rooms keep their own make-room setting, apart from goals', and start with the team and
+agent columns put away.
 
 ---
 

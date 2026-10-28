@@ -67,6 +67,18 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
       if (!goal || !path) return json(res, 400, { error: 'GET /file needs ?goal=<id>&path=<path in the shared folder>.' });
       return json(res, 200, d.sharedFile(goal, path, v ? Number(v) : undefined));
     }
+    // A room's images and demos (design §21). A demo page runs sandboxed: it can't reach the app or its token.
+    if (req.method === 'GET' && url.pathname === '/media') {
+      const goal = url.searchParams.get('goal'), path = url.searchParams.get('path');
+      if (!goal || !path) return json(res, 400, { error: 'GET /media needs ?goal=<room>&path=<file in its shared folder>.' });
+      const raw = url.searchParams.get('values');
+      const m = d.roomMedia(goal, path, raw ? (JSON.parse(raw) as Record<string, number>) : undefined);
+      res.writeHead(200, {
+        'content-type': m.type, 'cache-control': 'no-cache',
+        ...(m.type.startsWith('text/html') ? { 'content-security-policy': 'sandbox allow-scripts' } : {}),
+      });
+      return void res.end(m.body);
+    }
     // The Git and Design views (design §14): diffs and designs are read when asked for, never logged.
     const goalOf = () => {
       const goal = url.searchParams.get('goal');
@@ -130,7 +142,7 @@ function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse):
   });
 }
 
-const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/git', '/diff', '/design', '/design/scope', '/design/compare', '/design/code', '/design/source', '/design/docs', '/commands']);
+const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/media', '/git', '/diff', '/design', '/design/scope', '/design/compare', '/design/code', '/design/source', '/design/docs', '/commands']);
 
 /** The built web app (ui/dist). */
 export const UI_DIR = join(import.meta.dirname, '..', 'ui', 'dist');

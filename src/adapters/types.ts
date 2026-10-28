@@ -18,6 +18,10 @@ export interface CapabilityManifest {
   reportsContext: boolean;
   /** Reports how close its account is to a rate limit before it's hit. */
   reportsRateLimits: boolean;
+  /** Its agents can search the web (a room's makers are picked by it). */
+  web?: boolean;
+  /** Its agents can generate images. */
+  images?: boolean;
 }
 
 /** Where an account stands against its subscription's rate limit. */
@@ -175,7 +179,7 @@ export interface HarnessAdapter {
  * message and schedule: refused, because MetaHarness provides those (spawn, send, wait).
  */
 export interface ToolRequest {
-  kind: 'read' | 'edit' | 'shell' | 'mcp' | 'delegate' | 'ask_user' | 'message' | 'schedule' | 'other';
+  kind: 'read' | 'edit' | 'shell' | 'mcp' | 'delegate' | 'ask_user' | 'message' | 'schedule' | 'image' | 'other';
   /** Name shown to the human, e.g. Bash or Edit. */
   tool: string;
   detail: string;

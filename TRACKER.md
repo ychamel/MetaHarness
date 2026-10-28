@@ -525,6 +525,24 @@ Findings from the run:
   runtime doc and the doc comments. `map-bootstrap` writes the layers. Rule text only, plus the
   cartographer's and rooms' wording made generic. Checked with tests (143). Not yet in a real
   run: the throwaway `docs-migrate` workflow waits in Evolution_meta's `.metaharness/workflows/`.
+- [x] **Rooms, round 5: a design board for getting clear** (DESIGN.md §21, brainstorm → "go" on
+  2026-10-28). Use cases split: goals build from a decision, rooms reach one. The lead becomes a
+  facilitator (directions, narrowing questions, a concept card); lenses become makers picked by
+  what they make, with four built-in roles (researcher, illustrator, prototyper, writer); the
+  canvas becomes a free board (new card kinds: source, image, demo, text, concept; frames;
+  places; tidy). The human asks makers directly (`room.ask`) and mixes cards (`room.mix`:
+  placeholders linked to their ingredients, what to take from each, remix). Demos are sandboxed
+  pages with knobs (`GET /media` wires `window.knobs`); **Keep these values** makes a decision.
+  Harness manifests say `web` and `images`; image tool calls are allowed in rooms; Codex gets
+  live web search. Patches, the room branch, Merge and the room cartographer are gone. Checked
+  with tests (148 in all), in headless Chrome against a scripted daemon (board, demo sliders,
+  kept values, mix dialog, drag onto a frame), and live through MetaHarness on 2026-10-28:
+  Codex luna made an image (its tool, copied into `room/media/`, the gatekeeper allowing the
+  copy) and a source card from a web search, both answering the human without waking the lead.
+  Antigravity Flash never calls `generate_image`: it uses its `image-generator` subagent, which
+  was refused (it then drew pixel art with Python). On the user's call, that subagent is now
+  let through as an image request, with its report back to its parent session; retested live,
+  it generated the image, saved it to `room/media/` and put the card on the board in ~2 minutes.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search
