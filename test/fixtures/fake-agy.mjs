@@ -60,7 +60,9 @@ async function turn(text) {
   const reply = `Heard: ${text.split('\n')[0].slice(0, 80)} | tools ${decisions.join(' ')} | injected ${injected.join(' / ') || 'nothing'}`;
   out({ event: 'step_update', step_update: { step_index: idx, state: 'ACTIVE', step_type: 'agent_response', text_delta: reply.slice(0, 10) } });
   out({ event: 'step_update', step_update: { step_index: idx, state: 'DONE', step_type: 'agent_response', text_delta: reply.slice(10) } });
-  out({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: reply, usage: { input_tokens: 100, output_tokens: 10, thinking_tokens: 5 } } });
+  // FAKE_AGY_RECOVERED: as when an attempt timed out and agy's retry answered, the result still carries the error.
+  const error = process.env.FAKE_AGY_RECOVERED;
+  out({ event: 'result', result: { conversation_id: conv, status: error ? 'ERROR' : 'SUCCESS', ...(error ? { error } : {}), response: reply, usage: { input_tokens: 100, output_tokens: 10, thinking_tokens: 5 } } });
 }
 async function pump() {
   if (busy) return;

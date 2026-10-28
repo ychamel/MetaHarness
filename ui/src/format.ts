@@ -54,6 +54,7 @@ export function eventText(e: MhEvent): string {
     case 'agent.state': return `is ${STATE_LABEL[d.state as AgentState] ?? d.state}`;
     case 'agent.status': return `status: ${oneLine(d.text)}`;
     case 'agent.text': return oneLine(d.text, 400);
+    case 'agent.warning': return `warning: ${oneLine(d.text, 300)}`;
     case 'agent.tool_call': return `→ ${d.tool} ${oneLine(d.summary, 140)}`;
     case 'message.sent': return `✉ to ${d.to === 'human' ? 'you' : d.to}${d.urgent ? ' (urgent)' : ''}: ${oneLine(d.text, 300)}`;
     case 'agent.done': return `done: ${oneLine(d.note, 400)}`;
@@ -145,7 +146,7 @@ export function importance(e: MhEvent): 'key' | 'minor' | 'hidden' {
       return e.data.kind === 'approval' ? 'key' : 'hidden';
     case 'shared.write':
       return e.data.version === 1 ? 'key' : 'minor';
-    case 'agent.text': case 'agent.status': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'approval.gatekeeper': case 'agent.cache_expiring': case 'shared.delete':
+    case 'agent.text': case 'agent.status': case 'agent.warning': case 'agent.tool_call': case 'approval.auto': case 'approval.refused': case 'approval.gatekeeper': case 'agent.cache_expiring': case 'shared.delete':
     case 'agent.paused': case 'agent.resumed': case 'agent.paused_between_steps': case 'agent.interrupted': case 'account.limit': case 'agent.context_full':
     case 'rule.fired': case 'skill.read':
       return 'minor';

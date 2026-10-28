@@ -111,6 +111,8 @@ export interface SessionEvents {
   turnStarted(): void;
   turnEnded(): void;
   text(text: string): void;
+  /** Something went wrong in a turn that carried on anyway (a harness's retry): worth showing, not the agent's words. */
+  warning?(text: string): void;
   /** info: what kind of call it is (from the adapter's toolRequest), and files it created when the harness says. */
   toolCall(tool: string, summary: string, info?: import('../rules.ts').ToolInfo): void;
   toolResult(summary: string, ok: boolean): void;

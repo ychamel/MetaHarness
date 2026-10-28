@@ -95,6 +95,47 @@ test('agy: hooks deliver mid-turn messages and gate tools; quota is read per poo
   delete process.env.FAKE_AGY_LOG;
 });
 
+test('agy: an error the turn recovered from is a warning, and its answer stays its last words', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'mh-agy-'));
+  mkdirSync(join(tmp, 'user', '.gemini', 'config'), { recursive: true });
+  process.env.FAKE_AGY_RECOVERED = 'API error (attempt 1): request failed: stream idle timeout (5m0s): context deadline exceeded';
+  const d = makeTeam({
+    roles: { architect: '---\nharness: antigravity\nmodel: gemini-3.8-flash-low\nallow: Bash(npm test*)\ngood_at: x\n---\nYou design.\n' },
+    adapters: { antigravity: new AgyAdapter({ bin: fakeAgy, isolate: join(tmp, 'mh'), userHome: join(tmp, 'user') }) },
+  });
+  const server = await startServer(d, 0, 'client-token');
+  try {
+    const goal = d.startGoal({ request: 'Plan the change' });
+    const approval = await withTimeout(
+      (async () => {
+        let item;
+        while (!(item = d.humanInbox.find(i => i.kind === 'approval'))) await settle();
+        return item;
+      })(),
+      5000,
+      'approval',
+    );
+    d.resolveInbox(approval.id, 'deny');
+    await withTimeout(
+      (async () => {
+        while (!d.store.since(goal).some(e => e.type === 'agent.warning')) await settle();
+      })(),
+      8000,
+      'the warning',
+    );
+    const events = d.store.since(goal);
+    const texts = events.filter(e => e.type === 'agent.text').map(e => String(e.data.text));
+    assert.match(texts.at(-1)!, /^Heard: Plan the change/);
+    assert.ok(!texts.some(t => /turn ended with an error/.test(t)), 'the error is not its words');
+    assert.match(String(events.find(e => e.type === 'agent.warning')!.data.text), /recovered from: API error \(attempt 1\).*stream idle timeout/);
+    assert.match(d.agent(goal, 'architect')!.lastText, /^Heard: /);
+  } finally {
+    server.close();
+    await d.close();
+    delete process.env.FAKE_AGY_RECOVERED;
+  }
+});
+
 test('agy pieces: arguments, quota pools', () => {
   const spec = { model: 'gemini-4-argon-high', sharedDir: '/s', agentDir: '/a' } as Parameters<typeof agyArgs>[0];
   assert.deepEqual(agyArgs(spec, 'conv-9').slice(-3), ['--conversation', 'conv-9', '-p=']);

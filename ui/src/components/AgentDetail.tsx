@@ -52,6 +52,9 @@ function streamOf(events: MhEvent[], name: string): Item[] {
       case 'agent.status':
         out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: `status: ${d.text}` });
         break;
+      case 'agent.warning':
+        out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: d.text, warn: true });
+        break;
       case 'approval.auto':
         out.push({ kind: 'note', seq: e.seq, ts: e.ts, text: `ran without asking (read-only): ${oneLine(d.detail, 120)}` });
         break;

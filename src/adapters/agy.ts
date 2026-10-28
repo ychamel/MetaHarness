@@ -415,6 +415,8 @@ class AgySession implements Session {
   private stderrTail = '';
   private texts = new Map<number, string>();
   private toolsSeen = new Set<number>();
+  /** It answered after its last tool call: a turn that then reports an error has recovered from it. */
+  private answered = false;
   private onError: () => void;
 
   constructor(bin: string, spec: SessionSpec, env: NodeJS.ProcessEnv, ev: SessionEvents, resume: string | undefined, onError: () => void, extra: string[] = []) {
@@ -512,9 +514,13 @@ class AgySession implements Session {
       if (s.state === 'DONE') {
         const text = this.texts.get(idx)?.trim();
         this.texts.delete(idx);
-        if (text) this.ev.text(text);
+        if (text) {
+          this.ev.text(text);
+          this.answered = true;
+        }
       }
     } else if (s.step_type === 'tool') {
+      this.answered = false;
       const info = s.tool_info ?? {};
       const params = info.parameters ?? {};
       // Our own tools are already logged by the daemon as they happen.
@@ -541,10 +547,16 @@ class AgySession implements Session {
     });
     if (r.status && r.status !== 'SUCCESS') {
       const why = String(r.error ?? r.status);
-      if (LIMIT_ERROR.test(why)) this.ev.rateLimit({ status: 'limited' });
       this.onError();
-      this.ev.text(`(turn ended with an error: ${why.slice(0, 300)})`);
+      // Seen: an attempt timed out, agy retried, and the turn went on to answer. The answer stays
+      // the turn's last words, and the error is a warning beside it.
+      if (this.answered) this.ev.warning?.(`Antigravity reported an error it recovered from: ${why.slice(0, 300)}`);
+      else {
+        if (LIMIT_ERROR.test(why)) this.ev.rateLimit({ status: 'limited' });
+        this.ev.text(`(turn ended with an error: ${why.slice(0, 300)})`);
+      }
     }
+    this.answered = false;
     this.toolsSeen.clear();
     this.pending = Math.max(0, this.pending - 1);
     if (this.pending === 0 && this.running) {

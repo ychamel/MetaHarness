@@ -32,6 +32,8 @@ export function eventLine(e: MhEvent): string {
       return `${t}  ${who}status: ${oneLine(d.text)}`;
     case 'agent.text':
       return `${t}  ${who}says: ${oneLine(d.text)}`;
+    case 'agent.warning':
+      return `${t}  ${who}warning: ${oneLine(d.text)}`;
     case 'agent.tool_call':
       return `${t}  ${who}→ ${d.tool} ${oneLine(d.summary, 100)}`;
     case 'message.sent':

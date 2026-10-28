@@ -934,6 +934,9 @@ export class Daemon {
         rec.lastCallAt = Date.now();
         this.emit({ ...base, type: 'agent.text', data: { text } });
       },
+      warning: text => {
+        if (live()) this.emit({ ...base, type: 'agent.warning', data: { text } });
+      },
       toolCall: (tool, summary, info) => {
         if (!live()) return;
         rec.toolsRunning++;
