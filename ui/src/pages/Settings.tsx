@@ -31,7 +31,7 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
   const from = (k: keyof Draft) => [...config.settings.files].reverse().find(f => f.values[k] !== undefined)?.scope;
   const where = (k: keyof Draft) => {
     const s = from(k);
-    return s ? `from ${s === 'repo' ? 'this repository' : 'your personal'} settings` : 'the default';
+    return s ? `from ${s === 'repo' ? 'this project' : 'your personal'} settings` : 'the default';
   };
 
   const save = async () => {
@@ -47,7 +47,7 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
         <div>
           <h1>Settings</h1>
           <div className="muted intro">
-            How approvals are decided, when you hear about expiring prompt caches, how often plan limits are checked, and how agents are kept going. Saved in <span className="mono">settings.json</span>; this repository’s settings win over your personal ones.
+            How approvals are decided, when you hear about expiring prompt caches, how often plan limits are checked, and how agents are kept going. Saved in <span className="mono">settings.json</span>; this project’s settings win over your personal ones.
           </div>
         </div>
       </div>

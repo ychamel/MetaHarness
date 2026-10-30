@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, ApiError, loadToken, setToken } from './api.ts';
 import { useGoal } from './useGoal.ts';
-import type { ConfigView, GoalSummary } from './types.ts';
+import type { ConfigView, GoalSummary, ProjectSummary } from './types.ts';
 import { SpawnDialog, StartGoalDialog } from './components/Dialogs.tsx';
 import { ConfirmProvider, ErrorBoundary, useToast } from './components/common.tsx';
 import { Home } from './pages/Home.tsx';
@@ -16,12 +16,15 @@ import { Guidelines } from './pages/Guidelines.tsx';
 import { Rules } from './pages/Rules.tsx';
 import { Tools } from './pages/Tools.tsx';
 import { Goals } from './pages/Goals.tsx';
+import { Projects } from './pages/Projects.tsx';
 
-type Page = 'home' | 'goal' | 'room' | 'goals' | 'roles' | 'workflows' | 'rules' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
+type Page = 'home' | 'projects' | 'goal' | 'room' | 'goals' | 'roles' | 'workflows' | 'rules' | 'guidelines' | 'tools' | 'harnesses' | 'settings';
 
 /** Where you are, kept in the address so a reload or a shared link comes back to it. */
 interface Place {
   page: Page;
+  /** The project you're working in (design §22). */
+  project?: string;
   goal?: string;
   room?: string;
   agent?: string;
@@ -35,14 +38,32 @@ function readHash(): Place {
   const p = new URLSearchParams(location.hash.slice(1));
   const get = (k: string) => p.get(k) ?? undefined;
   const page = (get('page') as Page) ?? (get('goal') ? 'goal' : 'home');
-  return { page, goal: get('goal'), room: get('room'), agent: get('agent'), tab: get('tab') as GoalTab, file: get('file'), item: get('item') };
+  return { page, project: get('project') ?? lastProject(), goal: get('goal'), room: get('room'), agent: get('agent'), tab: get('tab') as GoalTab, file: get('file'), item: get('item') };
 }
 
 function writeHash(pl: Place): string {
   const p = new URLSearchParams();
   p.set('page', pl.page);
-  for (const k of ['goal', 'room', 'agent', 'tab', 'file', 'item'] as const) if (pl[k]) p.set(k, pl[k]!);
+  for (const k of ['project', 'goal', 'room', 'agent', 'tab', 'file', 'item'] as const) if (pl[k]) p.set(k, pl[k]!);
   return `#${p}`;
+}
+
+/** The project this browser last worked in, for an address that names none. */
+const PROJECT_KEY = 'metaharness-project';
+function lastProject(): string | undefined {
+  try {
+    return localStorage.getItem(PROJECT_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+function keepProject(id?: string): void {
+  try {
+    if (id) localStorage.setItem(PROJECT_KEY, id);
+    else localStorage.removeItem(PROJECT_KEY);
+  } catch {
+    /* private window */
+  }
 }
 
 export function App() {
@@ -57,6 +78,7 @@ function Shell() {
   const [token, setTok] = useState(() => loadToken());
   const [authFailed, setAuthFailed] = useState(false);
   const [goals, setGoals] = useState<GoalSummary[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [config, setConfig] = useState<ConfigView>();
   const [place, setPlace] = useState<Place>(readHash);
@@ -82,25 +104,33 @@ function Shell() {
 
   const loadGoals = useCallback(async () => {
     try {
-      setGoals(await api.goals());
+      const [g, p] = await Promise.all([api.goals(), api.projects()]);
+      setGoals(g);
+      setProjects(p);
       setLoaded(true);
       setAuthFailed(false);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) setAuthFailed(true);
     }
   }, []);
-  const loadConfig = useCallback(() => void api.config().then(setConfig, () => {}), []);
+  // The project: the one in the address, if it's still one you opened.
+  const project = projects.find(p => p.id === place.project && p.opened) ?? (loaded ? undefined : projects.find(p => p.id === place.project));
+  const projectId = project?.id ?? (loaded ? undefined : place.project);
+  useEffect(() => keepProject(projectId), [projectId]);
+  const loadConfig = useCallback(() => void api.config(projectId).then(setConfig, () => {}), [projectId]);
   useEffect(() => {
     if (!token) return;
     void loadGoals();
-    loadConfig();
     const t = setInterval(() => void loadGoals(), 4000);
     return () => clearInterval(t);
-  }, [token, loadGoals, loadConfig]);
+  }, [token, loadGoals]);
+  useEffect(() => {
+    if (token) loadConfig();
+  }, [token, loadConfig]);
 
-  // Goals and rooms share the log; each tab lists its own.
-  const goalList = useMemo(() => goals.filter(g => g.kind !== 'room'), [goals]);
-  const rooms = useMemo(() => goals.filter(g => g.kind === 'room'), [goals]);
+  // Goals and rooms share the log; each tab lists the project's own.
+  const goalList = useMemo(() => goals.filter(g => g.kind !== 'room' && g.project === projectId), [goals, projectId]);
+  const rooms = useMemo(() => goals.filter(g => g.kind === 'room' && g.project === projectId), [goals, projectId]);
   // The goal page opens on the running goal, or the latest one; the room page likewise.
   // One that was deleted falls back to those.
   const pick = (list: GoalSummary[], want?: string) => {
@@ -109,8 +139,10 @@ function Shell() {
   };
   const goalId = pick(goalList, place.goal);
   const roomId = pick(rooms, place.room);
-  const onGoalPage = place.page === 'goal';
-  const onRoomPage = place.page === 'room';
+  // Goals and rooms are shown in their project; with none open, the projects are.
+  const noProject = loaded && !project;
+  const onGoalPage = place.page === 'goal' && !noProject;
+  const onRoomPage = place.page === 'room' && !noProject;
   const shownId = onGoalPage ? goalId : onRoomPage ? roomId : undefined;
   const { snapshot, events, connected, error, refresh } = useGoal(token && !authFailed ? shownId : undefined);
   const goal = snapshot?.goals.find(g => g.id === shownId);
@@ -145,10 +177,18 @@ function Shell() {
   }, [events, say]);
   useEffect(() => void (seenSeq.current = undefined), [goalId]);
 
+  // An address naming a goal of another project you opened opens that project.
+  useEffect(() => {
+    const id = place.page === 'room' ? place.room : place.page === 'goal' ? place.goal : undefined;
+    const p = id && goals.find(g => g.id === id)?.project;
+    if (p && p !== projectId && projects.some(x => x.id === p && x.opened)) go({ project: p }, true);
+  }, [place.page, place.goal, place.room, goals, projects, projectId, go]);
+
   const command = useCallback(
     async (body: Record<string, unknown>) => {
       try {
-        const r = await api.command(body);
+        // Setup, goals and rooms are the project's: every command says which (the daemon ignores it where it doesn't matter).
+        const r = await api.command(projectId && !('project' in body) ? { ...body, project: projectId } : body);
         if (typeof r.result === 'string' && !['agent.message', 'inbox.resolve', 'room.post', 'room.canvas', 'room.lens', 'room.lensOff', 'room.stop', 'room.ask', 'room.mix'].includes(String(body.cmd))) say(r.result);
         if (body.cmd === 'agent.message') say('Sent.');
         void refresh();
@@ -159,7 +199,7 @@ function Shell() {
         return undefined;
       }
     },
-    [refresh, say, loadGoals],
+    [refresh, say, loadGoals, projectId],
   );
 
   const saveConfig = useCallback(
@@ -199,6 +239,7 @@ function Shell() {
     );
   }
 
+  const pickProject = (id: string) => go({ project: id, page: 'home', goal: undefined, room: undefined, agent: undefined, item: undefined, file: undefined });
   const current = goalList.find(g => g.id === goalId);
   const currentRoom = rooms.find(g => g.id === roomId);
   const allKind = place.page === 'goals' && place.item === 'rooms' ? 'room' : 'goal';
@@ -214,20 +255,21 @@ function Shell() {
             <circle cx="12" cy="12" r="2.5" fill="var(--waiting)" />
           </svg>
         </div>
-        <RailButton icon={ICONS.home} label="Home" on={place.page === 'home'} badge={needs} onClick={() => go({ page: 'home', item: undefined })} />
+        <RailButton icon={ICONS.project} label={project?.name ?? 'Projects'} on={place.page === 'projects' || (place.page === 'home' && !project)} badge={projects.filter(p => p.id !== projectId).reduce((n, p) => n + p.needs, 0)} onClick={() => go({ page: 'projects', item: undefined })} />
+        <RailButton icon={ICONS.home} label="Home" on={place.page === 'home' && !!project} badge={project?.needs} onClick={() => go({ page: 'home', item: undefined })} />
         <RailButton
           icon={ICONS.goal}
           label="Goals"
           on={onGoalPage || (place.page === 'goals' && allKind === 'goal')}
           dot={current?.status === 'running'}
-          onClick={() => (goalList.length ? go({ page: 'goal', goal: goalId, item: undefined, tab: place.tab === 'thread' ? 'story' : place.tab }) : setDialog({ kind: 'goal' }))}
+          onClick={() => (noProject ? go({ page: 'projects' }) : goalList.length ? go({ page: 'goal', goal: goalId, item: undefined, tab: place.tab === 'thread' ? 'story' : place.tab }) : setDialog({ kind: 'goal' }))}
         />
         <RailButton
           icon={ICONS.room}
           label="Rooms"
           on={onRoomPage || (place.page === 'goals' && allKind === 'room')}
           dot={currentRoom?.status === 'running'}
-          onClick={() => go({ page: 'room', room: roomId, item: undefined, tab: 'thread' })}
+          onClick={() => go(noProject ? { page: 'projects' } : { page: 'room', room: roomId, item: undefined, tab: 'thread' })}
         />
         <RailButton icon={ICONS.ask} label="Ask" on={asking} onClick={() => setAsking(a => !a)} />
         <div className="rail-sep" />
@@ -244,7 +286,10 @@ function Shell() {
       <main className="content">
         <ErrorBoundary resetKey={place.page}>
         {error && (onGoalPage || onRoomPage) && <div className="error-bar">{error}</div>}
-        {place.page === 'home' && (
+        {(place.page === 'projects' || (noProject && ['home', 'goal', 'room'].includes(place.page))) && (
+          <Projects projects={projects} loaded={loaded} current={projectId} onPick={pickProject} onCommand={command} onChanged={() => void loadGoals()} />
+        )}
+        {place.page === 'home' && project && (
           <Home
             goals={goalList}
             rooms={rooms}
@@ -261,13 +306,20 @@ function Shell() {
         )}
         {place.page === 'goals' && (
           <Goals
-            goals={allKind === 'room' ? rooms : goalList}
+            goals={goals.filter(g => (allKind === 'room') === (g.kind === 'room'))}
+            projectDir={project?.dir}
             kind={allKind}
             loaded={loaded}
             config={config}
             onKind={k => go({ page: 'goals', item: k === 'room' ? 'rooms' : undefined })}
             onNew={() => setDialog({ kind: allKind })}
-            onOpen={(g, tab) => (allKind === 'room' ? go({ page: 'room', room: g, agent: undefined, tab: tab ?? 'thread', file: undefined }) : go({ page: 'goal', goal: g, agent: undefined, tab: tab ?? 'story', file: undefined }))}
+            onOpen={(g, tab) => {
+              // A goal from another project opens in it.
+              const p = goals.find(x => x.id === g)?.project;
+              const there = p && p !== projectId && projects.some(x => x.id === p && x.opened) ? { project: p } : {};
+              if (allKind === 'room') go({ ...there, page: 'room', room: g, agent: undefined, tab: tab ?? 'thread', file: undefined });
+              else go({ ...there, page: 'goal', goal: g, agent: undefined, tab: tab ?? 'story', file: undefined });
+            }}
             onCommand={command}
             onChanged={() => void loadGoals()}
           />
@@ -367,18 +419,21 @@ function Shell() {
       )}
       <AssistantPanel
         open={asking}
+        project={projectId}
         onClose={() => setAsking(false)}
         onApplied={() => {
           loadConfig();
+          void loadGoals();
           void refresh();
         }}
-        context={
+        context={[
+          project ? `project ${project.name} (${project.dir})` : 'no project open',
           (onGoalPage || onRoomPage) && goal
             ? `${onRoomPage ? 'room' : 'goal'} ${goal.id} ("${goal.request.split('\n')[0].slice(0, 60)}")${place.agent ? `, agent ${place.agent}` : ''}${place.tab ? `, its ${place.tab} tab` : ''}`
             : place.page !== 'home' && place.page !== 'goal' && place.page !== 'room'
               ? `the ${place.page} page${place.item ? ` (${place.item})` : ''}`
-              : undefined
-        }
+              : undefined,
+        ].filter(Boolean).join('; ')}
       />
       {toast}
     </div>
@@ -403,6 +458,7 @@ const svg = (d: ReactNode) => (
   </svg>
 );
 const ICONS = {
+  project: svg(<path d="M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />),
   home: svg(<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z" />),
   goal: svg(
     <>

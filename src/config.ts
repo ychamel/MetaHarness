@@ -65,7 +65,8 @@ function markdownFiles(dir: string): string[] {
  * Loads config from each directory in order; later directories override earlier ones. The
  * built-in rules and workflows come first, unless `builtIn` is false (one folder on its own).
  */
-export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string } = {}): Config {
+/** `repo`: the project the last folder belongs to; null when every folder is personal (no project). */
+export function loadConfig(dirs: string[], o: { builtIn?: boolean; repo?: string | null } = {}): Config {
   const builtIn = o.builtIn !== false;
   const settings = loadSettings(dirs);
   const cfg: Config = {

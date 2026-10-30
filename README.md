@@ -45,8 +45,13 @@ Milestone 1 in progress:
 - The **shared folder** keeps every version of every file in `shared/.history/`, and agents are
   told when a teammate changes a file (and when someone edits a document that isn't theirs).
 
+- **Projects:** one daemon opens folders the way an editor does, and their goals run at the
+  same time. Open one from the app (it browses the daemon's machine), with `mh project`, or ask
+  the assistant to clone or create one; a folder with its own setup asks to be trusted first.
+  Agents stay in their project: reading anywhere else on the machine asks first, on every
+  harness, and Codex's sandbox keeps other projects and MetaHarness's data out of reach.
 - The web app follows a goal live (the graph shows each agent's step, messages in flight and
-  who waits on whom), and its **Goals** page opens, or deletes, past goals from any folder.
+  who waits on whom), and its **Goals** page opens, or deletes, past goals from any project.
 - The **Design** tab shows the code as the map's areas, which uses which, and where each agent
   is working, with snapshots as work lands and what changed between them (classes, functions,
   new dependencies); language packs read Python, TypeScript, JavaScript, GDScript and Godot
@@ -64,11 +69,13 @@ Code, Codex or Antigravity CLI, signed in.
 npm install                    # the MCP SDK; TypeScript, React and Vite for the web app
 npm run ui:build               # build the web app the daemon serves (ui/dist)
 node src/cli.ts doctor         # which harnesses are here, signed in, with which models; can each role run?
-node src/cli.ts daemon         # terminal 1 (add --fake for scripted agents, no model calls).
-                               # Restarted, it picks up the goals left running (--no-resume: don't)
+node src/cli.ts daemon         # terminal 1, from anywhere: one daemon serves every project (add --fake
+                               # for scripted agents, no model calls). Restarted, it picks up the goals
+                               # left running in every project (--no-resume: don't)
 node src/cli.ts test codex     # optional: check what works with a harness, on a cheap model
 
-node src/cli.ts run "Add per-user rate limiting to /api/upload" --workflow feature   # terminal 2
+node src/cli.ts project ~/code/my-project   # open a folder as a project (or Open folder in the app)
+node src/cli.ts run "Add per-user rate limiting to /api/upload" --workflow feature   # run in the project's folder
 node src/cli.ts tail           # follow everything live
 node src/cli.ts status         # who's doing what
 node src/cli.ts send implementer-1 "Did you add tests?"
@@ -78,8 +85,8 @@ node src/cli.ts ui             # the web app: goals, what needs you, the team's 
 node src/cli.ts clean <goal> --force   # remove worktrees or branches kept for unsaved work
 ```
 
-Run the daemon from the repository the agents should work on: it reads roles from that
-repository's `.metaharness/` folder. Codex reports tokens but not cost; to see cost, add
+Each project reads roles from its own `.metaharness/` folder, on top of your personal
+`~/.metaharness/`. Codex reports tokens but not cost; to see cost, add
 `.metaharness/prices.json` mapping each model to its USD price per million tokens:
 `{"<model>": {"input": …, "cachedInput": …, "output": …}}`.
 

@@ -87,7 +87,7 @@ cp -r .metaharness/roles .metaharness/workflows .metaharness/methodology.md .met
 
 Then make each role use a harness and model you have. The easiest way is the web app's
 **Roles** page (section 5 shows how to open it): pick a role, choose its harness and model
-(**List … models** asks the harness what it offers), and save it to this repository or to your
+(**List … models** asks the harness what it offers), and save it to the project you're in or to your
 personal folder. `mh doctor` lists the models too. Roles are plain files, so you can also edit
 `~/.metaharness/roles/*.md` by hand. A role file looks like this:
 
@@ -133,22 +133,34 @@ Keep the names if you can, since the workflows refer to them.
 
 ## 5. Your first goal
 
-Start the daemon **from the repository you want the agents to work on**. They work in that
-checkout, on whatever branch is checked out, so a clean working tree is easiest:
+Start the daemon, from anywhere. One daemon serves every project:
 
 ```sh
-cd ~/code/my-project
 mh daemon
 ```
 
-In a second terminal, open the web app:
+Then open the folder you want the agents to work on as a **project**, the way you'd open a
+folder in an editor. They work in that checkout, on whatever branch is checked out, so a clean
+working tree is easiest. From a second terminal:
 
 ```sh
-mh ui
+cd ~/code/my-project
+mh project           # opens this folder (the top of its git repository) and the app on it
 ```
 
+Or run `mh ui` and pick **Open folder…** on the **Projects** page: it browses the daemon's
+machine, so it works the same when the daemon runs on another computer. **New project** there
+makes a folder with a git repository in it; to clone one, ask the assistant (**Ask**), which
+proposes the clone for you to apply. A folder with its own `.metaharness` setup (roles, MCP
+servers, harness profiles, which can run programs) shows what it would run and asks you to
+trust it, once.
+
+Several projects can be open, and their goals run at the same time; the first button in the
+side bar shows the project you're in and switches between them. Each project's goals, rooms
+and setup are its own, and its agents work in it and nowhere else (section 7).
+
 `mh ui` opens the app in your browser and signs you in with the daemon's token, which lives in
-`~/.metaharness/token`. It opens on **Home**: describe what you want under **Start a goal**,
+`~/.metaharness/token`. In a project, it opens on **Home**: describe what you want under **Start a goal**,
 as you would to a colleague. Leave the lead as `architect`, and leave the workflow on "let the
 lead choose" or pick one:
 
@@ -158,8 +170,9 @@ lead choose" or pick one:
 | `feature-explore` | It isn't: explore two or three approaches, let a designer settle one, then build |
 | `implementation` | A design exists: split it, build the pieces (in parallel when they're independent), review, merge |
 
-You can also start a goal from the terminal: `mh run "Add per-user rate limiting to
-/api/upload" --workflow feature`.
+You can also start a goal from the terminal, in the project's folder: `mh run "Add per-user
+rate limiting to /api/upload" --workflow feature`. It opens the folder as a project first if
+it isn't one yet.
 
 What happens next:
 
@@ -195,9 +208,10 @@ You review the result in your checkout like any other change, and push it yourse
   luna by default, with Claude and Antigravity backups. Under its title you can pick another
   model (from any harness that runs here) and effort for this conversation; the new model reads
   what was said so far; **Make default** saves the pick to its role, so it starts on it after
-  a restart too. It reads only, unless you switch it to **Write**: then it may edit files
-  and run any command in the repository, for a task you give it. A new conversation starts in
-  read only again.
+  a restart too. It works for every project: a conversation starts in the project you're in,
+  and it can look at the others. It reads only, unless you switch it to **Write**: then it may
+  edit files and run any command in the project, for a task you give it. A new conversation
+  starts in read only again.
 - **Goal:** the request, status, time, cost and branch in one line at the top, with the lead's
   final note under **Outcome ▾** once it's done. Below that:
   - **Needs you** (center, highlighted): what an agent is waiting on.
@@ -405,7 +419,7 @@ Long texts show their first lines with **Show more**. Drag the edge between two 
 columns, the graph's panel, the file list, the setup lists, the assistant) to resize it; the
 width is kept in this browser, and a double-click puts it back.
 
-**Old goals:** the **Goals** page lists every goal, from any folder, with its cost and what it
+**Old goals:** the **Goals** page lists the project's goals, or every goal from every project, with its cost and what it
 keeps on disk. Open one to read its story, files and costs again, open its shared folder in
 your file manager, or delete it (one or several at once): its shared files and their history,
 agents' folders and its log go, and so do worktrees and branches whose work is merged. A goal
@@ -504,8 +518,13 @@ Home, or a room's header): what to talk about, and the makers.
 
 ## 7. What agents can and can't do
 
-- **Approvals.** Commands that only read (`git log`, `grep`, `cat`, and so on) run without asking.
-  So do edits inside the agent's own folder, and anything its role's `allow` list covers. Who
+- **Their project, not the machine.** Agents read, search and change files in their project
+  (or their worktree of it), the goal's shared folder and the temporary folder. Reading anywhere
+  else (another project, your home folder, MetaHarness's own data) asks first, whichever harness
+  they run on, and a built-in rule (`stay-in-project`) tells them so. On Codex, its sandbox also
+  keeps the commands it runs by itself out of other projects and `~/.metaharness`.
+- **Approvals.** Commands that only read (`git log`, `grep`, `cat`, and so on) run without asking,
+  as long as what they read is in the project. So do edits inside the agent's own folder, and anything its role's `allow` list covers. Who
   decides the rest is a setting (**Settings** page, or a role's `approvals:`):
   - **Gatekeeper** (the default): a cheap model allows what stays inside the project and is part
     of the task, refuses what's plainly harmful, and sends you the rest with its reason. It's a
@@ -560,7 +579,7 @@ Home, or a room's header): what to talk about, and the makers.
 ## 8. Tailoring it
 
 Roles, workflows, rules, skills, the agent guidelines and MCP servers each have a page under **Setup** in the
-web app. Each item shows whether it lives in this repository or in your personal folder, and
+web app. Each item shows whether it lives in the project (its `.metaharness` folder) or in your personal folder, and
 you choose where to save it. What you save applies to agents started from then on, without
 restarting the daemon. The pages write the same files described below.
 
@@ -734,7 +753,8 @@ restarting the daemon. The pages write the same files described below.
 ## 9. Restarts
 
 Stopping the daemon (Ctrl-C) doesn't lose the goal: everything is in an event log
-(`~/.metaharness/mh.db`). Start it again from the same repository:
+(`~/.metaharness/mh.db`). Start it again, from anywhere: the goals left running come back, each
+in its project.
 
 - Agents that were mid-turn resume their sessions, told what happened.
 - Finished or idle agents resume when someone messages them.
@@ -748,14 +768,16 @@ Finished goals stay in the app's goal list, rebuilt from the log.
 |---|---|
 | `mh doctor` says a harness isn't installed, but it is | Its folder isn't on the daemon's PATH (OpenCode installs to `~/.opencode/bin`). Start the daemon from a shell where `which <bin>` works |
 | A role "can't run here" | Its harness isn't signed in, or the model isn't offered: fix `harness:`/`model:` or add a `fallback:` |
-| "No roles are defined yet" | Section 4: roles go in `~/.metaharness/roles/` or the repository's `.metaharness/roles/` |
+| "No roles are defined yet" | Section 4: roles go in `~/.metaharness/roles/` or the project's `.metaharness/roles/` |
+| "Open a project first" | Open the folder: `mh project` in it, or **Open folder…** on the Projects page |
+| An agent keeps asking to read files outside the project | It's reaching for something elsewhere on the machine. Say no and tell it where to look, or copy what it needs into the project |
 | The web app says it isn't built | `npm run ui:build` in the MetaHarness folder |
 | The web app asks for a token | Open it with `mh ui`, or paste the contents of `~/.metaharness/token` |
 | Lots of approvals for harmless commands | Use the gatekeeper (Settings), or add them to the role's `allow:` list |
 | Costs show "—" for Codex or Antigravity | Give the model's prices on the Harnesses page |
 | An agent seems stuck | Its stream in the app shows its last command. Message it, mark it urgent, or pause and resume it |
 | An agent crashed (red) | Its spawner was told and decides: usually it respawns it. If the lead crashed, it's in your Inbox: Respawn on its page, or Start over if resuming crashes again |
-| A rule's note is noisy or wrong for this repository | Turn it off on the Rules page, or save an edited copy into the repository |
+| A rule's note is noisy or wrong for this project | Turn it off on the Rules page, or save an edited copy into the project |
 | A harness misbehaves | `mh test <harness>` says which part works and which doesn't |
 
 ## Reference
@@ -764,6 +786,7 @@ Finished goals stay in the app's goal list, rebuilt from the log.
 |---|---|
 | `MH_HOME` | Where goals, the event log and the token live (default `~/.metaharness`) |
 | `MH_PORT` | The daemon's port (default 7777) |
+| `~/.metaharness/projects.json` | The projects you opened, and which you trusted |
 | `~/.metaharness/goals/<goal>/` | `shared/` (and `.history/`), `worktrees/`, `design/` (the Design view's snapshots, and `reports/`), each agent's harness config |
 | `.git/metaharness/authors-<goal>` | Which agent made each commit, written by MetaHarness's git hooks (removed with the goal) |
 | `mh help` | Every command |

@@ -143,7 +143,7 @@ export class Hub {
 
       case 'spawn': {
         const role = str(pick(a, 'role', 'agent', 'type', 'kind', 'as'));
-        if (!role) return `spawn needs a role. Roles you can spawn: ${d.rolesFor(rec).roles.map(r => r.name).join(', ')}.`;
+        if (!role) return `spawn needs a role. Roles you can spawn: ${d.rolesFor(rec, d.cfg(rec)).roles.map(r => r.name).join(', ')}.`;
         const brief = str(pick(a, 'brief', 'task', 'prompt', 'text', 'message', 'instructions', 'description'))
           ?? '(No brief was given. Ask whoever spawned you what they need.)';
         const name = str(pick(a, 'name', 'id'));
@@ -195,13 +195,14 @@ export class Hub {
 
       case 'workflow': {
         const want = str(pick(a, 'name', 'workflow', 'text'));
-        const names = [...d.config.workflows.keys()];
-        const list = () => [...d.config.workflows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
+        const flows = d.cfg(rec).workflows;
+        const names = [...flows.keys()];
+        const list = () => [...flows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
         if (!names.length) return 'There are no workflows yet (.metaharness/workflows/<name>.md).';
         if (!want) return `Workflows:\n${list()}\n\nRead one with workflow(name).`;
         const r = resolveName(want, names);
         if (!r.match) return `There's no workflow called "${want}". Workflows:\n${list()}`;
-        const w = d.config.workflows.get(r.match)!;
+        const w = flows.get(r.match)!;
         d.workflowRead(rec, w.name);
         const roles = w.roles.length ? `\n\nRoles it uses: ${w.roles.join(', ')}.` : '';
         return `${r.guessed ? `(Took "${want}" to mean ${w.name}.)\n` : ''}# Workflow: ${w.name}\n\n${w.body}${roles}`;
@@ -214,7 +215,7 @@ export class Hub {
         if (!want) return skillList(mine);
         const r = resolveName(want, mine.map(s => s.name));
         if (!r.match) {
-          const other = d.config.skills.get(want);
+          const other = d.cfg(rec).skills.get(want);
           const why = !other ? `There's no skill called "${want}".` : other.off ? `The skill ${want} is turned off.` : `Your role (${rec.role.name} on ${rec.harness}) doesn't carry the skill ${want}.`;
           return `${why} ${skillList(mine)}`;
         }
@@ -259,7 +260,7 @@ export class Hub {
       const you = a.name === rec.name ? '  ← you' : '';
       lines.push(`- ${a.name} (${a.role.name} · ${a.harness} · ${a.model}), spawned by ${by}, ${a.state}${what}${you}`);
     }
-    const { roles, workflows } = this.d.rolesFor(rec);
+    const { roles, workflows } = this.d.rolesFor(rec, this.d.cfg(rec));
     lines.push('', workflows.length ? `Roles you can spawn (the ones ${workflows.join(' and ')} ${workflows.length > 1 ? 'use' : 'uses'}, and quick helpers):` : 'Roles you can spawn:');
     for (const r of roles) lines.push(`- ${r.name}${r.helper ? ' (quick helper)' : ''}: ${r.goodAt || '—'}`);
     return lines.join('\n');

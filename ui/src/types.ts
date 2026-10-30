@@ -133,6 +133,8 @@ export interface GoalSummary {
   live: boolean;
   createdAt: string;
   dir: string;
+  /** The project it worked in (design §22). */
+  project: string;
   lead: string;
   cost: number | null;
   agents: number;
@@ -270,6 +272,51 @@ export interface ConfigView {
   /** Saved sets of makers for rooms (casts/<name>.md). */
   casts: Cast[];
   responsibilities: ResponsibilityPreset[];
+  /** The project this setup is for; null: your personal setup alone. */
+  project: { id: string; dir: string; name: string } | null;
+}
+
+/** A folder opened in MetaHarness, or one past goals worked in (design §22). */
+export interface ProjectSummary {
+  id: string;
+  dir: string;
+  name: string;
+  /** You opened it (else only past goals worked there). */
+  opened: boolean;
+  openedAt: string | null;
+  trusted: boolean;
+  exists: boolean;
+  git: boolean;
+  goals: number;
+  rooms: number;
+  running: number;
+  needs: number;
+  lastAt: string | null;
+}
+
+/** A folder on the daemon's machine, for Open folder. */
+export interface FolderView {
+  path: string;
+  parent: string | null;
+  home: string;
+  dirs: { name: string; path: string; git: boolean; setup: boolean; project: boolean }[];
+}
+
+/** What a folder's own setup would run, asked about before it's opened the first time. */
+export interface FolderSetup {
+  roles: string[];
+  workflows: string[];
+  rules: string[];
+  mcp: { name: string; command: string }[];
+  harnesses: string[];
+}
+
+export interface OpenResult {
+  project?: ProjectSummary;
+  needsTrust?: boolean;
+  dir?: string;
+  setup?: FolderSetup;
+  nested?: { inside?: string; contains: string[] };
 }
 
 /** What a maker puts on the board. */

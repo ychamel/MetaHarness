@@ -109,7 +109,7 @@ export function Rules({ config, selected, onSelect, onSave }: SetupProps) {
                     checked={current.on}
                     onChange={toggle}
                     label={current.on ? 'Agents get this rule' : 'Off: agents don’t get it'}
-                    hint={`Saved in ${switchScope === 'repo' ? 'this repository’s' : 'your personal'} settings.json${current.fileOff ? '. Its file also says off: true.' : '.'}`}
+                    hint={`Saved in ${switchScope === 'repo' ? 'this project’s' : 'your personal'} settings.json${current.fileOff ? '. Its file also says off: true.' : '.'}`}
                   />
                 </Section>
               )}

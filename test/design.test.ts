@@ -370,7 +370,7 @@ test('pinned notes reach each agent once, when it first works in the area; kept,
   const file = d.keepNote(goal, id);
   assert.equal(file, join(cfg, 'rules', 'note-src-api.md'));
   assert.match(readFileSync(file, 'utf8'), /^---\nwhen: path\ndescription: the human's note on src\/api\npaths: src\/api, src\/api\/\*\*\n---\nHandlers don't touch the database directly/);
-  assert.ok(d.config.rules.has('note-src-api'), 'agents started from now on get it as a rule');
+  assert.ok(d.project().config.rules.has('note-src-api'), 'agents started from now on get it as a rule');
   d.unpinNote(goal, id);
   assert.equal(d.goals.get(goal)!.notes.size, 0);
   await d.close();
@@ -478,7 +478,7 @@ test('design scopes: the whole goal (with unmerged branches as a picture), a com
   d.landed(d.goals.get(goal)!);
   await d.designIdle();
   const reports = readdirSync(join(d.home, 'goals', goal, 'design', 'reports'));
-  const list = d.design.list(goal);
+  const list = d.project().design.list(goal);
   assert.ok(reports.includes(`${list[0].sha}..${list[1].sha}.json`));
   // Commits name the areas they touched, for the Git tab.
   assert.deepEqual(d.gitView(goal).areas!.map(a => a.path), ['src/api', 'src/store', '']);

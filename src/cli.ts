@@ -11,14 +11,20 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 const HELP = `mh: run a team of AI agents from different providers on one goal
 
-  mh ui                              Open the web app (the daemon serves it), signed in with the token
+  mh ui                              Open the web app (the daemon serves it), signed in with the token,
+                                     on this folder's project if it is one
+  mh project [<folder>]              Open a folder (default: this one) as a project and show it in the app.
+                                     A folder with its own .metaharness setup asks you to trust it first
+  mh projects                        The projects: folders you opened, and those past goals worked in
   mh doctor                          Which harnesses are here, signed in, with which models; can each role run?
   mh test <harness> [--model <m>]    Check what works with a harness here: a short run on a cheap model
-  mh daemon [--fake] [--no-resume]   Start the daemon (--fake: scripted agents, no model calls). It picks
-                                     up goals left running here, unless --no-resume
-  mh run "<request>" [--lead <role>] [--workflow <name>]
-                                     Start a goal; the lead role defaults to architect. Without
-                                     --workflow, the lead picks one of .metaharness/workflows/
+  mh daemon [--fake] [--no-resume]   Start the daemon, one for every project (--fake: scripted agents, no
+                                     model calls). It picks up goals left running, unless --no-resume
+  mh run "<request>" [--lead <role>] [--workflow <name>] [--trust]
+                                     Start a goal in this folder's project (the git repository it's in,
+                                     opened as a project if it isn't one yet); the lead role defaults to
+                                     architect. Without --workflow, the lead picks one of
+                                     .metaharness/workflows/
   mh status [<goal>]                 Show agents and what they're doing
   mh tail [<goal>]                   Follow everything that happens, live
   mh send <to> <message> [--urgent] [--goal <id>]
@@ -44,9 +50,55 @@ const HELP = `mh: run a team of AI agents from different providers on one goal
 
 Environment: MH_HOME (default ~/.metaharness), MH_PORT (default 7777)`;
 
-/** Personal config, then the repository's, as the daemon reads them. */
+/** Personal config, then this folder's, as a goal here reads them. */
 function configDirs(): string[] {
   return [HOME, join(process.cwd(), '.metaharness')];
+}
+
+/** The folder a project here starts from: the top of the git repository this folder is in, else the folder. */
+async function projectFolder(path = process.cwd()): Promise<string> {
+  const { execFileSync } = await import('node:child_process');
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: path, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || path;
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Opens a folder as a project in the daemon. A folder with its own setup is shown first and
+ * opened once you say yes (or with --trust); returns the project's id.
+ */
+async function openProject(path: string | undefined, trust: boolean): Promise<{ id: string; dir: string }> {
+  const { resolve } = await import('node:path');
+  const dir = path ? resolve(path) : await projectFolder();
+  let r = await command({ cmd: 'project.open', dir, trust });
+  if (r.needsTrust) {
+    const s = r.setup;
+    console.log(`${r.dir} has its own MetaHarness setup, which agents there would use:`);
+    for (const [what, list] of [['roles', s.roles], ['workflows', s.workflows], ['rules', s.rules], ['harness profiles', s.harnesses]] as const) if (list.length) console.log(`  ${what}: ${list.join(', ')}`);
+    for (const m of s.mcp) console.log(`  MCP server ${m.name}: runs ${m.command}`);
+    if (!process.stdin.isTTY) die('Trust it with --trust if you know where it comes from.');
+    const { createInterface } = await import('node:readline/promises');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const yes = /^y(es)?$/i.test((await rl.question('Trust this folder and open it? [y/N] ')).trim());
+    rl.close();
+    if (!yes) die('Not opened.');
+    r = await command({ cmd: 'project.open', dir, trust: true });
+  }
+  if (r.nested?.inside) console.log(`Note: this folder is inside the project ${r.nested.inside}; that project's agents can read it.`);
+  if (r.nested?.contains?.length) console.log(`Note: the projects ${r.nested.contains.join(', ')} are inside this folder; this project's agents can read them.`);
+  return { id: r.project.id, dir: r.project.dir };
+}
+
+/** Opens the web app, signed in, at a place in it. */
+async function openApp(hash = ''): Promise<void> {
+  // The token rides in the address once; the app keeps it for the tab and drops it from the URL.
+  const url = `${BASE}/?token=${token()}${hash}`;
+  console.log(`MetaHarness: ${url}`);
+  const { spawn } = await import('node:child_process');
+  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+  spawn(opener, [url], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
 }
 
 function die(msg: string): never {
@@ -62,7 +114,7 @@ function parse(argv: string[]) {
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--') && !['fake', 'urgent', 'no-resume', 'force', 'worktree'].includes(key)) {
+      if (next !== undefined && !next.startsWith('--') && !['fake', 'urgent', 'no-resume', 'force', 'worktree', 'trust'].includes(key)) {
         opt[key] = next;
         i++;
       } else opt[key] = true;
@@ -179,9 +231,10 @@ async function main(): Promise<void> {
       const { loadProfiles, findBin } = await import('./harnesses.ts');
       const { startServer } = await import('./server.ts');
       const fake = opt.fake === true;
-      // One adapter per profile MetaHarness can drive and that is installed here.
+      // One adapter per profile MetaHarness can drive and that is installed here (built-in and personal
+      // profiles: the daemon serves every project).
       const adapters: Record<string, import('./adapters/types.ts').HarnessAdapter> = { fake: new FakeAdapter(demoScripts, {}, demoTurns) };
-      for (const p of loadProfiles(configDirs()).values()) {
+      for (const p of loadProfiles([HOME]).values()) {
         const bin = p.transport && findBin(p.bin);
         if (!bin) continue;
         if (p.transport === 'claude-stream') adapters[p.id] = new ClaudeAdapter({ id: p.id, bin, env: p.env });
@@ -189,11 +242,15 @@ async function main(): Promise<void> {
         else if (p.transport === 'agy-stream') adapters[p.id] = new AgyAdapter({ id: p.id, bin, isolate: join(HOME, 'homes', p.id) });
         else if (p.transport === 'acp') adapters[p.id] = new AcpAdapter({ id: p.id, bin, args: p.args ?? [], env: p.env, openCommand: p.openCommand });
       }
-      const d = new Daemon({ home: HOME, repo: process.cwd(), adapters, harnessOverride: fake ? 'fake' : undefined });
+      // Agents don't need to know where MetaHarness keeps its data (design §22).
+      delete process.env.MH_HOME;
+      delete process.env.MH_PORT;
+      const d = new Daemon({ home: HOME, adapters, harnessOverride: fake ? 'fake' : undefined });
       await startServer(d, PORT, token(true)).catch((e: Error) => die(`Couldn't listen on ${BASE}: ${e.message}`));
       if (!fake) d.startLimitChecks();
       console.log(`MetaHarness daemon on ${BASE}${fake ? ', running scripted agents' : ''}. Data in ${HOME}.`);
-      console.log(`Roles: ${[...d.config.roles.keys()].join(', ') || 'none (add .metaharness/roles/<name>.md)'}`);
+      const projects = d.listProjects().filter(p => p.opened);
+      console.log(projects.length ? `Projects: ${projects.map(p => p.dir).join(', ')}` : 'No projects yet: mh project <folder>, or Open folder in the app.');
       const { guardProblem } = await import('./guard.ts');
       const guard = guardProblem();
       if (guard) console.log(`Warning: ${guard}. Git 2.28 or newer keeps agents from deleting branches.`);
@@ -232,19 +289,31 @@ async function main(): Promise<void> {
     case 'run': {
       const request = pos.join(' ').trim();
       if (!request) die('Say what the goal is: mh run "<request>"');
-      const r = await command({ cmd: 'goal.start', request, lead: s('lead'), workflow: s('workflow') ?? s('playbook') });
-      console.log(`Started goal ${r.goal}. Follow it with: mh tail ${r.goal}`);
+      const project = await openProject(undefined, opt.trust === true);
+      const r = await command({ cmd: 'goal.start', request, project: project.id, lead: s('lead'), workflow: s('workflow') ?? s('playbook') });
+      console.log(`Started goal ${r.goal} in ${project.dir}. Follow it with: mh tail ${r.goal}`);
       if (r.notice) console.log(`Note: ${r.notice}`);
       return;
     }
     case 'ui': {
-      // The token rides in the address once; the app keeps it for the tab and drops it from the URL.
-      const url = `${BASE}/?token=${token()}`;
-      await api('/goals');
-      console.log(`MetaHarness: ${url}`);
-      const { spawn } = await import('node:child_process');
-      const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-      spawn(opener, [url], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+      // On this folder's project, when it's one already; else wherever the app was.
+      const here = await projectFolder();
+      const { projects } = await command({ cmd: 'project.list' });
+      const p = (projects as { id: string; dir: string; opened: boolean }[]).find(x => x.opened && x.dir === here);
+      return openApp(p ? `#page=home&project=${p.id}` : '');
+    }
+    case 'project': {
+      const p = await openProject(pos[0], opt.trust === true);
+      console.log(`Opened ${p.dir}.`);
+      return openApp(`#page=home&project=${p.id}`);
+    }
+    case 'projects': {
+      const { projects } = await command({ cmd: 'project.list' });
+      if (!projects.length) return void console.log('No projects yet. Open one with: mh project <folder>');
+      for (const p of projects) {
+        const what = [p.goals && `${p.goals} goal${p.goals > 1 ? 's' : ''}`, p.rooms && `${p.rooms} room${p.rooms > 1 ? 's' : ''}`, p.running && `${p.running} running`, p.needs && `${p.needs} waiting on you`].filter(Boolean).join(', ');
+        console.log(`${p.id}  ${p.dir}${p.opened ? '' : '  (past goals only)'}${p.exists ? '' : '  (gone)'}${what ? `  · ${what}` : ''}`);
+      }
       return;
     }
     case 'status':

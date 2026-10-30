@@ -90,6 +90,13 @@ export interface SessionSpec {
   sharedDir: string;
   /** Git directories a commit in cwd writes to (the shared .git and the worktree's own). Empty without a worktree. */
   gitDirs: string[];
+  /**
+   * For a harness whose sandbox can limit reads (design §22): folders it may read besides cwd
+   * (its project, its goal's folder in MetaHarness's home), and folders it must not (other
+   * projects, the rest of that home). More specific folders win.
+   */
+  readRoots?: string[];
+  denyRead?: string[];
   /** Where a real harness reaches our tools over MCP. Empty until the MCP layer exists. */
   mcpUrl: string;
   /** Where the agent's hooks reach the daemon (POST a HookRequest). Empty without a server. */

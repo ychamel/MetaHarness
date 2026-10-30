@@ -1,6 +1,7 @@
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { extname, join, normalize, relative, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventStore } from './store.ts';
 import { loadConfig, type Config } from './config.ts';
@@ -16,17 +17,18 @@ import { elideHeredocs, unwrapShell } from './shellview.ts';
 import { Assistant, assistantDecision } from './assistant.ts';
 import type { ApprovalMode } from './settings.ts';
 import { MCP_SERVER_NAME } from './mcp.ts';
-import { readOnlyCommand } from './readonly.ts';
+import { pathsOutside, readOnlyCommand } from './readonly.ts';
 import { goalOver, INTERRUPTED, replayGoal, type AgentReplay, type GoalReplay } from './recover.ts';
 import { HISTORY, SharedFolder } from './shared.ts';
 import { cleanGoal, describeClean, type CleanResult } from './clean.ts';
 import { authorsDir, deniedCommandPrefixes, guardEnv, installGuard, readAuthors, refusedGitCommand, removeAuthors } from './guard.ts';
-import { DesignTracker, MAP_FILE, compareDesigns, designReport, type DesignReport, type SnapshotInfo } from './design.ts';
-import { Outliner, packFor, type FileDocs, type Highlights } from './languages.ts';
-import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, scopesOf } from './configedit.ts';
+import { MAP_FILE, compareDesigns, designReport, type DesignReport, type SnapshotInfo } from './design.ts';
+import { packFor, type FileDocs, type Highlights } from './languages.ts';
+import { configView, deleteItem, saveGuide, saveMcp, saveRole, saveRule, saveWorkflow, type ScopeDir } from './configedit.ts';
 import { loadProfiles } from './harnesses.ts';
 import { settle } from './procs.ts';
 import { foldEfforts, splitEffort, type EffortVariant } from './effort.ts';
+import { browse, folderSetup, forget, loadRegistry, nesting, Project, projectId, realDir, remember, within } from './projects.ts';
 import { matchesPaths, onCommit, onDone, onToolCall, rulesPrompt, RuleState, toolPaths, type Rule, type RuleAgent, type RuleNote, type ToolInfo } from './rules.ts';
 import { claimedSkills, skillsFor, skillsPrompt, withSkills, type Skill } from './skills.ts';
 import {
@@ -161,7 +163,9 @@ export interface GoalRec {
   kind?: 'room';
   room?: RoomState;
   request: string;
-  /** Where the agents work: the daemon's repository, or another directory (harness tests use a scratch one). */
+  /** The project it belongs to (design §22): its folder, config and design snapshots. */
+  project: Project;
+  /** Where the agents work: the project's folder. */
   dir: string;
   lead: string;
   createdAt: string;
@@ -221,10 +225,15 @@ export interface HumanInboxItem {
 export interface DaemonOptions {
   /** Where goals and the event log live (default ~/.metaharness). */
   home: string;
-  /** The repository the agents work on. */
-  repo: string;
+  /** A folder to open as a project at the start; goals and rooms that name no project work there. */
+  repo?: string;
   dbPath?: string;
-  /** Config directories, later ones override earlier ones. Default: home, then repo/.metaharness. */
+  /** The personal config directories, for every project. Default: home. */
+  personalDirs?: string[];
+  /**
+   * The `repo` project's config directories, later ones overriding earlier ones (default: the
+   * personal ones, then repo/.metaharness). Given without personalDirs, all but the last are personal.
+   */
   configDirs?: string[];
   adapters?: Record<string, HarnessAdapter>;
   /** Run every role on this harness instead of its own (e.g. "fake" for scripted agents). */
@@ -377,15 +386,18 @@ const MEDIA_TYPES: Record<string, string> = {
 
 export class Daemon {
   readonly home: string;
-  readonly repo: string;
   readonly store: EventStore;
   readonly hub: Hub;
   readonly goals = new Map<string, GoalRec>();
   readonly humanInbox: HumanInboxItem[] = [];
   readonly quickTimeoutMs: number;
+  /** The personal config alone: what isn't any project's (the assistant, limit checks, setup with no project open). */
   config: Config;
-  /** Where the config comes from, later ones overriding earlier ones: personal, then the repository's. */
-  readonly configDirs: string[];
+  readonly personalDirs: string[];
+  /** Projects in use, by id (design §22). A project is loaded when it's opened, a goal starts in it, or a goal of its is shown. */
+  readonly projects = new Map<string, Project>();
+  /** The project the daemon was started with, if any: goals that name none work there. */
+  defaultProject?: Project;
   /** Model lists asked of each harness's CLI, for the role editor. */
   private modelLists = new Map<string, { at: number; choices: ModelChoices }>();
   /** Base URL of the running server, e.g. http://127.0.0.1:7777. Real harnesses reach /mcp/<token> under it. */
@@ -410,8 +422,6 @@ export class Daemon {
   private releaseMs: number;
   private closeGraceMs: number;
   private landedQuietMs: number;
-  /** Design snapshots for the Design view (src/design.ts). */
-  design: DesignTracker;
   /** Snapshots being taken, so close() waits for them. */
   private designing = new Set<Promise<unknown>>();
   /** The app's assistant: answers the human's questions, reads only. */
@@ -419,11 +429,11 @@ export class Daemon {
 
   constructor(o: DaemonOptions) {
     this.home = o.home;
-    this.repo = o.repo;
     mkdirSync(o.home, { recursive: true });
     this.store = new EventStore(o.dbPath ?? join(o.home, 'mh.db'));
-    this.configDirs = o.configDirs ?? [o.home, join(o.repo, '.metaharness')];
-    this.config = loadConfig(this.configDirs, { repo: this.repo });
+    this.personalDirs = o.personalDirs ?? (o.configDirs ? (o.configDirs.length > 1 ? o.configDirs.slice(0, -1) : o.configDirs) : [o.home]);
+    this.settingsOverride = o.settings;
+    this.config = this.loadPersonal();
     this.adapters = o.adapters ?? {};
     this.harnessOverride = o.harnessOverride;
     this.quickTimeoutMs = o.quickTimeoutMs ?? 120_000;
@@ -438,14 +448,15 @@ export class Daemon {
     this.releaseMs = o.releaseMs ?? 10 * 60_000;
     this.closeGraceMs = o.closeGraceMs ?? 3000;
     this.landedQuietMs = o.landedQuietMs ?? 60_000;
-    this.design = new DesignTracker(o.home, new Outliner(this.config.languages));
+    if (o.repo) this.defaultProject = this.loadProject(realDir(o.repo), o.configDirs);
     let assistantRoute = { harness: '', model: '' };
     let assistantSpent = 0;
     this.assistant = new Assistant({
       start: (brief, events) => {
         assistantSpent = 0;
         const role = this.assistantRole();
-        const place = { id: ASSISTANT_STREAM, dir: this.repo, sharedDir: join(this.home, 'assistant', 'shared') };
+        const place = { id: ASSISTANT_STREAM, dir: this.assistantDir(), sharedDir: join(this.home, 'assistant', 'shared') };
+        this.assistantIn = place.dir;
         return this.startSideSession(ASSISTANT, role, place, brief, events, 'Use the MetaHarness tools.', r => {
           assistantRoute = r;
           this.assistantLog('assistant.started', { role: role.name, ...r });
@@ -461,8 +472,6 @@ export class Daemon {
         if (cost !== undefined && cost !== assistantSpent) this.assistantLog('assistant.usage', { costUsd: (assistantSpent = cost) });
       },
     });
-    if (o.settings) Object.assign(this.config.settings, o.settings);
-    this.settingsOverride = o.settings;
   }
 
   private settingsOverride?: DaemonOptions['settings'];
@@ -481,17 +490,153 @@ export class Daemon {
     return [...this.goals.values()].filter(g => g.status === 'running').at(-1) ?? [...this.goals.values()].at(-1);
   }
 
+  /* ---------------- projects (design §22) ---------------- */
+
+  private loadPersonal(): Config {
+    const c = loadConfig(this.personalDirs, { repo: null });
+    if (this.settingsOverride) Object.assign(c.settings, this.settingsOverride);
+    return c;
+  }
+
+  /** The project for a folder (real path), loaded once: the personal config, then its own .metaharness. */
+  private loadProject(dir: string, configDirs?: string[]): Project {
+    const have = this.projects.get(projectId(dir));
+    if (have) return have;
+    const p = new Project(this.home, dir, configDirs ?? [...this.personalDirs, join(dir, '.metaharness')], this.settingsOverride);
+    this.projects.set(p.id, p);
+    return p;
+  }
+
+  /**
+   * A project by id, or by its folder (an absolute path or ~/…). Without one, the project the
+   * daemon was started with; there's no other fallback, so work never lands in a folder nobody chose.
+   */
+  project(ref?: string): Project {
+    if (!ref) {
+      if (this.defaultProject) return this.defaultProject;
+      throw new Error('Open a project first: name its folder (mh project <folder>, or Open folder in the app).');
+    }
+    const loaded = this.projects.get(ref);
+    if (loaded) return loaded;
+    if (isAbsolute(ref) || ref.startsWith('~')) return this.loadProject(realDir(ref));
+    const known = this.knownDirs().find(d => projectId(d) === ref);
+    if (known && existsSync(known)) return this.loadProject(known);
+    throw new Error(`There's no project ${ref}. Open its folder first.`);
+  }
+
+  /** Folders you opened, the daemon's own, and those past goals worked in. */
+  private knownDirs(): string[] {
+    const fromGoals = this.store.ofType('goal.started').map(e => String(e.data.dir ?? '')).filter(d => d && existsSync(d));
+    return [...new Set([...loadRegistry(this.home).map(e => e.dir), ...(this.defaultProject ? [this.defaultProject.dir] : []), ...fromGoals])];
+  }
+
+  /** You said its own setup may run, it has none, or the daemon was started with it. */
+  trusted(p: Project): boolean {
+    return p === this.defaultProject || !!loadRegistry(this.home).find(e => e.dir === p.dir)?.trusted || !folderSetup(p.dir);
+  }
+
+  /**
+   * Opens a folder as a project, like opening a folder in an editor. A folder with its own setup
+   * (.metaharness: roles, MCP servers) that you haven't trusted yet isn't opened: what it would
+   * run comes back for you to look at, and opening it again with `trust` says yes.
+   */
+  openProject(path: string, o: { trust?: boolean } = {}) {
+    const dir = realDir(path);
+    const entry = loadRegistry(this.home).find(e => e.dir === dir);
+    const setup = folderSetup(dir);
+    const nested = nesting(dir, this.knownDirs());
+    if (setup && !entry?.trusted && !o.trust && dir !== this.defaultProject?.dir) return { needsTrust: true, dir, setup, nested };
+    remember(this.home, dir, { trusted: entry?.trusted || o.trust || !setup });
+    const p = this.loadProject(dir);
+    return { project: this.listProjects().find(x => x.id === p.id)!, nested };
+  }
+
+  /** Takes a folder off the list of projects. Its goals stay, and it can be opened again. */
+  forgetProject(ref: string): string {
+    const dir = this.project(ref).dir;
+    if ([...this.goals.values()].some(g => g.project.dir === dir && g.status === 'running')) throw new Error('Goals are still running there: end them first.');
+    forget(this.home, dir);
+    if (this.defaultProject?.dir !== dir) this.projects.delete(projectId(dir));
+    return `Took ${dir} off the list. Its goals stay; open the folder again to come back to it.`;
+  }
+
+  /** Every project you can come back to: those you opened, most recent first, then folders past goals worked in. */
+  listProjects() {
+    const reg = loadRegistry(this.home);
+    const goals = this.listGoals();
+    return this.knownDirs().map(dir => {
+      const e = reg.find(x => x.dir === dir);
+      const mine = goals.filter(g => g.dir === dir);
+      return {
+        id: projectId(dir), dir, name: basename(dir) || dir, opened: !!e || dir === this.defaultProject?.dir, openedAt: e?.openedAt ?? null,
+        trusted: e?.trusted ?? !folderSetup(dir), exists: existsSync(dir), git: existsSync(join(dir, '.git')),
+        goals: mine.filter(g => g.kind !== 'room').length, rooms: mine.filter(g => g.kind === 'room').length,
+        running: mine.filter(g => g.status === 'running').length, needs: mine.reduce((n, g) => n + g.needs, 0),
+        lastAt: mine[0]?.createdAt ?? null,
+      };
+    });
+  }
+
+  /** The daemon's disk, a folder at a time, for the app's Open folder (the app may run on another machine). */
+  browseFolders(path?: string, hidden = false) {
+    const v = browse(path, { hidden });
+    const known = new Set(this.knownDirs());
+    return { ...v, dirs: v.dirs.map(d => ({ ...d, project: known.has(d.path) })) };
+  }
+
+  /** Makes a folder (and a git repository in it) and opens it. */
+  createProject(path: string, o: { git?: boolean } = {}) {
+    const abs = isAbsolute(path) ? path : path.startsWith('~/') ? join(homedir(), path.slice(2)) : '';
+    if (!abs) throw new Error('project.create needs the new folder as a full path (or ~/…).');
+    if (existsSync(abs) && readdirSync(abs).length) throw new Error(`${abs} already has files in it: open it instead.`);
+    mkdirSync(abs, { recursive: true });
+    if (o.git !== false) git.git(abs, 'init', '-q');
+    return this.openProject(abs, { trust: true });
+  }
+
+  /** Clones a repository into a new folder, then opens it like any folder (its own setup asks first). */
+  async cloneProject(url: string, path: string) {
+    const abs = isAbsolute(path) ? path : path.startsWith('~/') ? join(homedir(), path.slice(2)) : '';
+    if (!abs) throw new Error('project.clone needs the folder to clone into as a full path (or ~/…).');
+    if (existsSync(abs) && readdirSync(abs).length) throw new Error(`${abs} already has files in it.`);
+    mkdirSync(dirname(abs), { recursive: true });
+    await new Promise<void>((res, rej) => {
+      const p = spawn('git', ['clone', '--', url, abs], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+      let err = '';
+      p.stderr.on('data', c => (err += c));
+      p.on('error', rej);
+      p.on('close', code => (code === 0 ? res() : rej(new Error(`git clone failed: ${err.trim().split('\n').at(-1) ?? code}`))));
+    });
+    return this.openProject(abs);
+  }
+
+  /** The project the human asked the assistant from last, and the folder its current conversation started in. */
+  private assistantProject?: Project;
+  private assistantIn?: string;
+
+  /**
+   * Where a new assistant conversation starts: the project the human is in (write mode changes
+   * it), else a folder of its own. It reads the others through its tools.
+   */
+  private assistantDir(): string {
+    if (this.assistantProject && existsSync(this.assistantProject.dir)) return this.assistantProject.dir;
+    const dir = join(this.home, 'assistant', 'work');
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
   /* ---------------- goals and agents ---------------- */
 
   /**
-   * `workflow` is the guide the lead follows (none: it picks one). `leadDef` runs the lead from a
-   * role that isn't in the config, and `dir` works somewhere other than the repository (both for
-   * harness tests).
+   * `project` is where it works (an id or a folder; see project()). `workflow` is the guide the
+   * lead follows (none: it picks one). `leadDef` runs the lead from a role that isn't in the
+   * config, and `dir` works in a folder that isn't a project you opened (both for harness tests).
    */
-  startGoal(o: { request: string; lead?: string; workflow?: string; playbook?: string; leadDef?: Role; dir?: string; fromRoom?: string }): string {
+  startGoal(o: { request: string; project?: string; lead?: string; workflow?: string; playbook?: string; leadDef?: Role; dir?: string; fromRoom?: string }): string {
+    const project = this.workPlace(o);
     const workflow = o.workflow ?? o.playbook;
-    if (workflow && !resolveName(workflow, [...this.config.workflows.keys()]).match) {
-      const names = [...this.config.workflows.keys()];
+    if (workflow && !resolveName(workflow, [...project.config.workflows.keys()]).match) {
+      const names = [...project.config.workflows.keys()];
       throw new Error(`There's no workflow called "${workflow}". Workflows: ${names.join(', ') || 'none (add .metaharness/workflows/<name>.md)'}.`);
     }
     const id = randomUUID().slice(0, 8);
@@ -500,7 +645,7 @@ export class Daemon {
     let resolveLeadDone!: (note: string) => void;
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const g: GoalRec = {
-      id, request: o.request, dir: o.dir ?? this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
+      id, request: o.request, project, dir: project.dir, lead: '', createdAt: new Date().toISOString(), sharedDir,
       refs: new Map(), seenOn: new Map(), workflow, chained: [], conflicts: new Map(), notes: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
       status: 'running', agents: new Map(), counters: new Map(), gatekeeperCost: new Map(), leadDone, resolveLeadDone,
     };
@@ -534,6 +679,14 @@ export class Daemon {
     return id;
   }
 
+  /** The project a new goal or room works in, once its own setup is trusted. */
+  private workPlace(o: { project?: string; dir?: string }): Project {
+    const p = o.dir ? this.loadProject(realDir(o.dir)) : this.project(o.project);
+    if (!existsSync(p.dir)) throw new Error(`The project's folder ${p.dir} is gone.`);
+    if (!this.trusted(p)) throw new Error(`${p.dir} has its own MetaHarness setup (.metaharness), which can run commands. Open the folder and trust it first.`);
+    return p;
+  }
+
   /**
    * New commits show at once: the git hooks write their author to a file the daemon watches, and
    * that runs the same refresh the poll does. Only while polling is on (tests drive it by hand).
@@ -561,13 +714,13 @@ export class Daemon {
 
   /** Takes a design snapshot in the background; what changed since the last one is logged as design.changed. */
   private recordDesign(g: GoalRec, gg: git.GoalGit, sha: string, info: Omit<SnapshotInfo, 'sha' | 'at' | 'change'>): void {
-    if (this.config.settings.design === false) return;
-    const p = this.design
+    if (g.project.config.settings.design === false) return;
+    const p = g.project.design
       .record(g.id, gg, g.dir, { sha, ...info })
       .then(async r => {
         if (!r) return;
         // Reports for what this landing did and for the goal so far, for later goals and models.
-        const list = this.design.list(g.id);
+        const list = g.project.design.list(g.id);
         const prev = list.at(-2);
         try {
           if (prev) await this.scopeReport(g.id, gg, g.dir, { kind: 'landing', title: `Work landed${info.by?.length ? ` (${info.by.join(', ')})` : ''}`, from: prev.sha, to: sha, heads: [sha] });
@@ -605,11 +758,11 @@ export class Daemon {
     if (!g) return { ok: false, error: `There's no goal ${goalId}.` };
     // The human may start any role; an agent, the ones its workflows use.
     const spawner = g.agents.get(o.parent);
-    const scope = this.rolesFor(spawner);
+    const scope = this.rolesFor(spawner, g.project.config);
     const roleNames = scope.roles.map(r => r.name);
     const res = o.roleDef ? { match: o.roleDef.name, guessed: false, suggestions: [] } : resolveName(o.role, roleNames);
-    if (!o.roleDef && !this.teamRoles().length) return { ok: false, error: 'No roles are defined yet. Add one as .metaharness/roles/<name>.md.' };
-    if (!o.roleDef && scope.workflows.length && this.teamRoles().some(r => r.name === o.role && !roleNames.includes(r.name))) {
+    if (!o.roleDef && !this.teamRoles(g.project.config).length) return { ok: false, error: 'No roles are defined yet. Add one as .metaharness/roles/<name>.md.' };
+    if (!o.roleDef && scope.workflows.length && this.teamRoles(g.project.config).some(r => r.name === o.role && !roleNames.includes(r.name))) {
       const which = scope.workflows.length > 1 ? `the ${scope.workflows.join(' and ')} workflows use` : `the ${scope.workflows[0]} workflow uses`;
       return { ok: false, error: `${o.role} isn't one of the roles ${which}. Roles you can spawn: ${roleNames.join(', ')}.` };
     }
@@ -617,7 +770,7 @@ export class Daemon {
       const hint = res.suggestions.length ? ` Did you mean ${res.suggestions[0]}?` : '';
       return { ok: false, error: `There's no role called "${o.role}".${hint} Roles you can spawn: ${roleNames.join(', ')}.` };
     }
-    const role = o.roleDef ?? this.config.roles.get(res.match)!;
+    const role = o.roleDef ?? g.project.config.roles.get(res.match)!;
     const picked = this.pickRoute(role);
     if ('error' in picked) return { ok: false, error: picked.error };
     const { harness, model, effort } = picked.route;
@@ -705,9 +858,12 @@ export class Daemon {
           goal: rec.goal, agent: rec.name, role: rec.role, model: rec.model, effort: rec.effort, systemPrompt: rec.systemPrompt, brief,
           cwd: rec.cwd, sharedDir: g.sharedDir, mcpUrl: this.mcpBase ? `${this.mcpBase}/mcp/${rec.token}` : '',
           hookUrl: this.mcpBase ? `${this.mcpBase}/hook/${rec.token}` : '', agentDir: this.agentDir(rec),
-          mcpServers: rec.role.mcp.map(name => ({ name, def: this.config.mcp.get(name) })),
+          mcpServers: rec.role.mcp.map(name => ({ name, def: g.project.config.mcp.get(name) })),
           // Committing writes to the shared .git (and a worktree's own git directory).
           gitDirs: !g.git || rec.quick ? [] : rec.worktree ? [g.git.commonDir, rec.worktree.gitDir] : [g.git.commonDir],
+          // Other projects and MetaHarness's home are off limits; this project, the goal's folder and the git guard aren't.
+          readRoots: [g.dir, join(this.home, 'goals', g.id), this.guardDir],
+          denyRead: [...this.otherProjects(g), this.home],
           env: g.git ? guardEnv(this.guardDir, rec.worktree?.branch, g.git.repo, { goal: rec.goal, agent: rec.name }) : undefined,
           sharedCheckout: this.sharedCheckout(rec),
           deniedCommands: deniedCommandPrefixes(this.sharedCheckout(rec)),
@@ -787,7 +943,7 @@ export class Daemon {
     const inRoom = !!g.room && !rec.quick;
     const paths = inRoom ? this.roomPaths(g) : undefined;
     const parts = [
-      !inRoom ? (rec.role.helper ? this.config.helperMethodology : this.config.methodology)
+      !inRoom ? (rec.role.helper ? g.project.config.helperMethodology : g.project.config.methodology)
       : rec.isLead ? leadMethodology({ topic: g.request, paths: paths!, lenses: this.lensRoster(g) })
       : lensMethodology({ topic: g.request, lead: g.lead || 'lead', paths: paths!, makes: this.makesOfAgent(g, rec) }),
     ];
@@ -797,12 +953,12 @@ export class Daemon {
     if (rec.stance) parts.push(`## Your stance in this room\n\n${rec.stance}`);
     // The lead runs the goal's workflow; any role can have one of its own.
     for (const name of [rec.isLead ? workflow : undefined, rec.role.workflow]) {
-      const w = name ? this.config.workflows.get(resolveName(name, [...this.config.workflows.keys()]).match ?? '') : undefined;
+      const w = name ? g.project.config.workflows.get(resolveName(name, [...g.project.config.workflows.keys()]).match ?? '') : undefined;
       const roles = w?.roles.length ? `\n\nThe roles it uses, the ones you can spawn besides quick helpers: ${w.roles.join(', ')}.` : '';
       if (w) parts.push(`## Workflow: ${w.name}\n\nFollow this guide, adapting it to the task. When it says to continue with another workflow, read that one with the \`workflow\` tool.\n\n${w.body}${roles}`);
     }
-    if (rec.isLead && !workflow && !g.room && this.config.workflows.size) {
-      const list = [...this.config.workflows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
+    if (rec.isLead && !workflow && !g.room && g.project.config.workflows.size) {
+      const list = [...g.project.config.workflows.values()].map(w => `- ${w.name}: ${w.goodAt || '—'}`).join('\n');
       parts.push(`## Workflows\n\nGuides for running kinds of tasks. If one fits this goal, read it with the \`workflow\` tool and follow it.\n\n${list}`);
     }
     const rules = rulesPrompt(this.agentRules(rec), ruleAgent(rec), rec.cwd);
@@ -963,7 +1119,7 @@ export class Daemon {
         }
         this.checkContext(rec, startPct);
         // The harness's cost when it reports one, else the settings' prices for its tokens.
-        const prices = modelSettings(this.config.settings, rec.harness, rec.model).prices;
+        const prices = modelSettings(this.cfg(rec).settings, rec.harness, rec.model).prices;
         const split = u.costSplit ?? (prices ? priceSplit(session, prices) : undefined);
         let est: number | undefined;
         if (u.costUsd !== undefined) {
@@ -1017,25 +1173,71 @@ export class Daemon {
   /** A tool call the harness asks about: the policy decides, or else the human. */
   async decideTool(rec: AgentRec, t: ToolRequest): Promise<ApprovalDecision> {
     const verdict = this.policyVerdict(rec, t);
-    return verdict !== 'ask' ? { allow: verdict.allow, message: verdict.reason } : this.requestApproval(rec, t.tool, t.detail);
+    if (verdict !== 'ask') return { allow: verdict.allow, message: verdict.reason };
+    const outside = t.path && !this.inProject(rec, t.path) ? [t.path] : undefined;
+    return this.requestApproval(rec, t.tool, t.detail, outside);
+  }
+
+  /**
+   * Where an agent may read and work without asking (design §22): its project's folder, its own
+   * folder (a worktree), its goal's folder in MetaHarness's home (the shared folder, teammates'
+   * worktrees) and the temporary folder. Never another project, or the rest of the machine.
+   */
+  private agentRoots(rec: AgentRec): string[] {
+    const g = this.goals.get(rec.goal)!;
+    const real = (p: string) => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return normalize(p);
+      }
+    };
+    return [...new Set([g.dir, rec.cwd, join(this.home, 'goals', g.id), tmpdir()].flatMap(p => [normalize(p), real(p)]))];
+  }
+
+  /** Whether a path (relative to the agent's folder) is in one of its places. Symlinks count where they lead. */
+  inProject(rec: AgentRec, path: string): boolean {
+    const abs = isAbsolute(path) ? normalize(path) : join(rec.cwd, path);
+    let real = abs;
+    try {
+      real = realpathSync(abs);
+    } catch {
+      // Not there (yet): judged by its name.
+    }
+    const roots = this.agentRoots(rec);
+    if (!roots.some(r => within(abs, r)) || !roots.some(r => within(real, r))) return false;
+    // Another project stays off limits even inside one of those places (one in the temporary folder, or inside this one).
+    const g = this.goals.get(rec.goal)!;
+    return !this.otherProjects(g).some(o => within(abs, o) || within(real, o));
+  }
+
+  /** The folders of projects other than a goal's own, leaving out those it's inside. */
+  private otherProjects(g: GoalRec): string[] {
+    return this.knownDirs().filter(d => d !== g.dir && !within(g.dir, d));
   }
 
   /**
    * A permission request the rules didn't settle: the gatekeeper's verdict where the approval
    * mode has one, else (or when it says ASK) the human's, from the Inbox.
    */
-  async requestApproval(rec: AgentRec, tool: string, detail: string): Promise<ApprovalDecision> {
+  async requestApproval(rec: AgentRec, tool: string, detail: string, outside?: string[]): Promise<ApprovalDecision> {
     const refused = tool === 'Bash' ? refusedGitCommand(detail, { sharedCheckout: this.sharedCheckout(rec) }) : undefined;
     if (refused) {
       this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.refused', data: { tool, detail: detail.slice(0, 2000), why: refused } });
       return { allow: false, message: refused };
     }
-    // Commands that only read don't need the human (design §10), whichever harness asks.
+    // Commands that only read don't need the human (design §10), whichever harness asks, as long
+    // as what they read is in the project (design §22).
     if (tool === 'Bash' && rec.role.autoApprove !== 'none' && readOnlyCommand(detail).readOnly) {
-      this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.auto', data: { tool, detail: detail.slice(0, 2000), why: 'read-only' } });
-      return { allow: true };
+      const away = pathsOutside(detail, rec.cwd, p => this.inProject(rec, p), homedir());
+      if (!away.length) {
+        this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.auto', data: { tool, detail: detail.slice(0, 2000), why: 'read-only' } });
+        return { allow: true };
+      }
+      outside = away;
     }
     const g = this.goals.get(rec.goal)!;
+    const away = outside?.length ? ` It reaches outside the project (${g.dir}): ${outside.slice(0, 5).join(', ')}.` : '';
     // What the gatekeeper and the human read: the script without Codex's `bash -lc '…'` around it.
     const shown = tool === 'Bash' ? unwrapShell(detail) : detail;
     let note: string | undefined;
@@ -1043,13 +1245,14 @@ export class Daemon {
       const seen = tool === 'Bash' ? elideHeredocs(shown) : shown;
       const j = await this.gatekeeperFor(g).judge({
         agent: rec.name, role: rec.role.name, brief: rec.brief, tool, detail: seen, shared: g.sharedDir,
-        where: `${rec.cwd}${g.room && !rec.quick ? ' (a brainstorm room: it may run and test the code, and write in the shared folder, not change project files)' : rec.worktree ? ' (its own worktree)' : this.sharedCheckout(rec) ? " (the human's checkout, shared with teammates)" : ''}`,
+        where: `${rec.cwd}${g.room && !rec.quick ? ' (a brainstorm room: it may run and test the code, and write in the shared folder, not change project files)' : rec.worktree ? ' (its own worktree)' : this.sharedCheckout(rec) ? " (the human's checkout, shared with teammates)" : ''}. The project is ${g.dir}; agents work in it, not elsewhere on the machine.${away}`,
       });
       this.emit({ goal: rec.goal, agent: rec.name, type: 'approval.gatekeeper', data: { tool, detail: seen.slice(0, 2000), verdict: j.verdict, reason: j.reason, ...(j.remembered ? { remembered: true } : {}) } });
       if (j.verdict === 'allow') return { allow: true };
       if (j.verdict === 'deny') return { allow: false, message: `The gatekeeper refused this: ${j.reason} If it's really needed, ask the human (send, to: human) and say why.` };
       note = `Gatekeeper: ${j.reason}`;
     }
+    if (away) note = [note, away.trim()].filter(Boolean).join(' ');
     rec.pendingApprovals++;
     return new Promise(resolve => {
       this.toHuman(
@@ -1066,17 +1269,23 @@ export class Daemon {
 
   /** How this agent's approvals are decided: its role's setting, else the settings'. */
   approvalMode(rec: AgentRec): ApprovalMode {
-    return rec.role.approvals ?? this.config.settings.approvals;
+    return rec.role.approvals ?? this.cfg(rec).settings.approvals;
   }
 
   private usesGatekeeper(rec: AgentRec): boolean {
-    return this.approvalMode(rec) !== 'ask' && rec.role.name !== this.config.settings.gatekeeper && this.config.roles.has(this.config.settings.gatekeeper);
+    const c = this.cfg(rec);
+    return this.approvalMode(rec) !== 'ask' && rec.role.name !== c.settings.gatekeeper && c.roles.has(c.settings.gatekeeper);
   }
 
-  /** Roles a team can spawn: all but the gatekeeper, the assistant and the room lead. */
-  teamRoles(): Role[] {
-    const { gatekeeper, assistant, roomLead } = this.config.settings;
-    return [...this.config.roles.values()].filter(r => r.name !== gatekeeper && r.name !== assistant && r.name !== roomLead);
+  /** The config a goal's agents run with: its project's. */
+  cfg(of: { goal: string } | GoalRec): Config {
+    return ('project' in of ? of : this.goals.get(of.goal)!).project.config;
+  }
+
+  /** Roles a team can spawn (in a project's config): all but the gatekeeper, the assistant and the room lead. */
+  teamRoles(c: Config): Role[] {
+    const { gatekeeper, assistant, roomLead } = c.settings;
+    return [...c.roles.values()].filter(r => r.name !== gatekeeper && r.name !== assistant && r.name !== roomLead);
   }
 
   /**
@@ -1085,12 +1294,12 @@ export class Daemon {
    * and those the lead chained to; an agent whose role has a workflow of its own, that one's),
    * plus quick helpers. Every role when no workflow in play names any.
    */
-  rolesFor(rec?: AgentRec): { roles: Role[]; workflows: string[] } {
-    const all = this.teamRoles();
+  rolesFor(rec: AgentRec | undefined, c: Config): { roles: Role[]; workflows: string[] } {
+    const all = this.teamRoles(c);
     const g = rec && this.goals.get(rec.goal);
     if (!rec || !g) return { roles: all, workflows: [] };
     const names = rec.role.workflow && !rec.isLead ? [rec.role.workflow] : [g.workflow, ...g.chained].filter((w): w is string => !!w);
-    const flows = names.map(n => this.config.workflows.get(resolveName(n, [...this.config.workflows.keys()]).match ?? '')).filter((w): w is Workflow => !!w);
+    const flows = names.map(n => c.workflows.get(resolveName(n, [...c.workflows.keys()]).match ?? '')).filter((w): w is Workflow => !!w);
     if (!flows.length || flows.some(w => !w.roles.length)) return { roles: all, workflows: [] };
     const allowed = new Set(flows.flatMap(w => w.roles));
     return { roles: all.filter(r => r.helper || allowed.has(r.name)), workflows: flows.map(w => w.name) };
@@ -1123,7 +1332,7 @@ export class Daemon {
   /** The goal's gatekeeper: a session of the gatekeeper role, started on its first request. */
   private gatekeeperFor(g: GoalRec): Gatekeeper {
     if (g.gatekeeper) return g.gatekeeper;
-    const role = this.config.roles.get(this.config.settings.gatekeeper)!;
+    const role = g.project.config.roles.get(g.project.config.settings.gatekeeper)!;
     const log = (type: string, data: Record<string, unknown>) => this.emit({ goal: g.id, agent: GATEKEEPER, type, data });
     let route = { harness: role.harness, model: role.model };
     g.gatekeeper = new Gatekeeper(
@@ -1134,7 +1343,7 @@ export class Daemon {
             log('gatekeeper.started', { role: role.name, ...r });
           }),
         usage: (u, session) => {
-          const cost = this.sideCost(route, u);
+          const cost = this.sideCost(route, u, g.project.config);
           if (cost === undefined) return;
           g.gatekeeperCost.set(session, cost);
           log('gatekeeper.usage', { ...u, costUsd: cost, total: this.gatekeeperCost(g) });
@@ -1176,9 +1385,9 @@ export class Daemon {
   }
 
   /** A side session's spend so far: what its harness reports, else its tokens at the settings' prices. */
-  private sideCost(route: { harness: string; model: string }, u: Usage): number | undefined {
+  private sideCost(route: { harness: string; model: string }, u: Usage, c: Config = this.config): number | undefined {
     if (u.costUsd !== undefined) return u.costUsd;
-    const prices = modelSettings(this.config.settings, route.harness, route.model).prices;
+    const prices = modelSettings(c.settings, route.harness, route.model).prices;
     return prices ? splitTotal(priceSplit(tokensOf(u), prices)) : undefined;
   }
 
@@ -1188,9 +1397,10 @@ export class Daemon {
 
   /** The adapter a session runs on: a teammate's, or the gatekeeper's or assistant's role's first runnable route. */
   adapterFor(goal: string, agent: string): HarnessAdapter | undefined {
-    const side = agent === GATEKEEPER ? this.config.settings.gatekeeper : agent === ASSISTANT ? this.config.settings.assistant : undefined;
-    if (!side) return this.agent(goal, agent)?.adapter;
-    const role = agent === ASSISTANT ? this.assistantRole() : this.config.roles.get(side);
+    const c = agent === GATEKEEPER ? this.goals.get(goal)?.project.config : this.config;
+    const side = agent === GATEKEEPER ? c?.settings.gatekeeper : agent === ASSISTANT ? this.config.settings.assistant : undefined;
+    if (!side || !c) return this.agent(goal, agent)?.adapter;
+    const role = agent === ASSISTANT ? this.assistantRole() : c.roles.get(side);
     const r = role && this.pickRoute(role);
     return !r || 'error' in r ? undefined : this.adapters[r.route.harness];
   }
@@ -1610,15 +1820,14 @@ export class Daemon {
    * agents they spawned (the lead) in the app. Each idle spell is reminded once.
    */
   checkCaches(now = Date.now()): void {
-    const s = this.config.settings;
-    if (!s.cacheReminders) return;
     for (const g of this.goals.values()) {
-      if (g.status === 'ended') continue;
+      const s = g.project.config.settings;
+      if (g.status === 'ended' || !s.cacheReminders) continue;
       const due = new Map<string, { rec: AgentRec; inSec: number }[]>();
       for (const a of g.agents.values()) {
         if (a.quick || !a.lastCallAt || a.cacheReminded === a.lastCallAt || !['idle', 'done', 'waiting'].includes(a.state)) continue;
         if (a.contextTokens !== undefined && a.contextTokens < s.cacheRemindMinTokens) continue;
-        const left = a.lastCallAt + this.cacheLifetime(a) * 60_000 - now;
+        const left = a.lastCallAt + this.cacheLifetime(a, g.project.config) * 60_000 - now;
         if (left <= 0 || left > s.cacheRemindSec * 1000) continue;
         a.cacheReminded = a.lastCallAt;
         due.set(a.parent, [...(due.get(a.parent) ?? []), { rec: a, inSec: Math.round(left / 1000) }]);
@@ -1655,11 +1864,10 @@ export class Daemon {
    * another stallMinutes after the lead was told.
    */
   checkStalls(now = Date.now()): void {
-    const mins = this.config.settings.stallMinutes;
-    if (!mins) return;
-    const ms = mins * 60_000;
     for (const g of this.goals.values()) {
-      if (g.status === 'ended') continue;
+      const mins = g.project.config.settings.stallMinutes;
+      if (g.status === 'ended' || !mins) continue;
+      const ms = mins * 60_000;
       const going = [...g.agents.values()].filter(a => !a.quick && !FINISHED.includes(a.state) && (a.doneNote === undefined || a.session?.busy()));
       // Idle with no teammates of its own still going: it stopped, and its spawner was told.
       const live = going.filter(a => a.state !== 'idle' || going.some(c => c.parent === a.name));
@@ -1862,12 +2070,13 @@ export class Daemon {
 
   /** The rules as an agent gets them: those pointing at a skill only when it carries the skill. */
   private agentRules(rec: AgentRec): Rule[] {
-    return withSkills(this.config.rules.values(), this.skillsFor(rec));
+    return withSkills(this.cfg(rec).rules.values(), this.skillsFor(rec));
   }
 
   /** The skills an agent carries: those its role names, and those no role names; on, and for its harness. */
   skillsFor(rec: AgentRec): Skill[] {
-    return skillsFor(this.config.skills.values(), { harness: rec.harness, skills: rec.role.skills ?? [] }, claimedSkills(this.config.roles.values()));
+    const c = this.cfg(rec);
+    return skillsFor(c.skills.values(), { harness: rec.harness, skills: rec.role.skills ?? [] }, claimedSkills(c.roles.values()));
   }
 
   /** Path and new-file rules for one tool call. */
@@ -1896,7 +2105,7 @@ export class Daemon {
 
   /** In a turn, a rule's note joins it; between turns it waits for whatever reaches the agent next, so it never wakes anyone. */
   private ruleNote(rec: AgentRec, n: RuleNote): void {
-    const skill = this.config.rules.get(n.rule)?.skill;
+    const skill = this.cfg(rec).rules.get(n.rule)?.skill;
     this.emit({ goal: rec.goal, agent: rec.name, type: 'rule.fired', data: { rule: n.rule, when: n.when, paths: n.paths.slice(0, 20), ...(skill ? { skill } : {}) } });
     if (rec.session?.busy() && !FINISHED.includes(rec.state)) this.notice(rec, n.text);
     else rec.ruleNotes.push(n.text);
@@ -1960,9 +2169,10 @@ export class Daemon {
     if (!n) throw new Error(`There's no note ${id} on goal ${goalId}.`);
     const slug = (n.path || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'project';
     let name = `note-${slug}`;
-    const existing = new Set(this.config.rules.keys());
+    const project = this.goalProject(goalId);
+    const existing = new Set(project.config.rules.keys());
     for (let i = 2; existing.has(name); i++) name = `note-${slug}-${i}`;
-    const file = saveRule(scopesOf(this.configDirs), {
+    const file = saveRule(project.scopes, {
       name, scope, when: 'path', description: `the human's note on ${n.path || 'the whole project'}`, paths: n.path ? [n.path, `${n.path}/**`] : ['**'], body: n.text,
     });
     this.reloadConfig();
@@ -2312,7 +2522,7 @@ export class Daemon {
     return v;
   }
 
-  /** What may run without asking: reads, MetaHarness's own tools, edits in the agent's own directories, and commands its role allows. */
+  /** What may run without asking: reads in the project, MetaHarness's own tools, edits in the agent's own directories, and commands its role allows. */
   toolPolicy(rec: AgentRec, t: ToolRequest): { allow: boolean; reason?: string } | 'ask' {
     switch (t.kind) {
       case 'delegate':
@@ -2326,7 +2536,8 @@ export class Daemon {
       case 'schedule':
         return { allow: false, reason: 'To wait, use the MetaHarness wait tool (timeout in seconds, up to 600); a message ends it early.' };
       case 'read':
-        return { allow: true };
+        // Reading the project is what agents are there for; anywhere else on the machine, ask (design §22).
+        return !t.path || this.inProject(rec, t.path) ? { allow: true } : 'ask';
       case 'mcp':
         // Ours, and the servers the role names, are what the agent is there to use.
         return t.server === MCP_SERVER_NAME || (!!t.server && rec.role.mcp.includes(t.server)) ? { allow: true } : 'ask';
@@ -2586,7 +2797,7 @@ export class Daemon {
    * session, so no turn is spent on the switch.
    */
   private checkContext(rec: AgentRec, startPct?: number): void {
-    const at = this.config.settings.contextHandoffPct;
+    const at = this.cfg(rec).settings.contextHandoffPct;
     const pct = rec.contextPct;
     if (rec.refresh) {
       // The harness compacted it first.
@@ -2882,17 +3093,19 @@ export class Daemon {
    * `from` carries a past room's board (or, with `cards`, the cards branched off it), or a goal's
    * outcome, over.
    */
-  startRoom(o: { topic: string; lenses?: Lens[]; from?: string; cards?: string[] }): string {
-    const lenses = (o.lenses ?? DEFAULT_MAKERS.filter(r => this.teamRoles().some(x => x.name === r)).map(role => ({ role }))).map(p => this.checkLens(p));
-    const leadRole = this.config.roles.get(this.config.settings.roomLead);
-    if (!leadRole) throw new Error(`There's no role called ${this.config.settings.roomLead} to lead the room (Settings → Room lead).`);
+  startRoom(o: { topic: string; project?: string; lenses?: Lens[]; from?: string; cards?: string[] }): string {
+    const project = this.workPlace(o);
+    const c = project.config;
+    const lenses = (o.lenses ?? DEFAULT_MAKERS.filter(r => this.teamRoles(c).some(x => x.name === r)).map(role => ({ role }))).map(p => this.checkLens(p, c));
+    const leadRole = c.roles.get(c.settings.roomLead);
+    if (!leadRole) throw new Error(`There's no role called ${c.settings.roomLead} to lead the room (Settings → Room lead).`);
     const id = randomUUID().slice(0, 8);
     const sharedDir = join(this.home, 'goals', id, 'shared');
     let resolveLeadDone!: (note: string) => void;
     const leadDone = new Promise<string>(r => (resolveLeadDone = r));
     const room: RoomState = { topic: o.topic, lenses: [], canvas: { cards: [], links: [], frames: [], seq: 0 } };
     const g: GoalRec = {
-      id, kind: 'room', room, request: o.topic, dir: this.repo, lead: '', createdAt: new Date().toISOString(), sharedDir,
+      id, kind: 'room', room, request: o.topic, project, dir: project.dir, lead: '', createdAt: new Date().toISOString(), sharedDir,
       refs: new Map(), seenOn: new Map(), chained: [], conflicts: new Map(), notes: new Map(), shared: new SharedFolder(sharedDir), sharedTouches: [],
       status: 'running', agents: new Map(), counters: new Map(), gatekeeperCost: new Map(), leadDone, resolveLeadDone,
     };
@@ -2956,20 +3169,20 @@ export class Daemon {
   }
 
   /** A maker as declared: a role that exists, or a model on a harness that runs here; a model-only maker needs a responsibility. */
-  private checkLens(p: Lens): Lens {
+  private checkLens(p: Lens, c: Config): Lens {
     const lens: Lens = { ...p };
     for (const k of ['role', 'name', 'on', 'responsibility', 'stance'] as const) if (typeof lens[k] !== 'string' || !lens[k]!.trim()) delete lens[k];
     if (lens.off !== true) delete lens.off;
     if (lens.role) {
-      const res = resolveName(lens.role, this.teamRoles().map(r => r.name));
-      if (!res.match) throw new Error(`There's no role called "${lens.role}". Roles: ${this.teamRoles().map(r => r.name).join(', ')}.`);
+      const res = resolveName(lens.role, this.teamRoles(c).map(r => r.name));
+      if (!res.match) throw new Error(`There's no role called "${lens.role}". Roles: ${this.teamRoles(c).map(r => r.name).join(', ')}.`);
       lens.role = res.match;
     } else {
       if (!lens.on) throw new Error('A maker without a role needs a model (harness/model).');
       if (!lens.responsibility) throw new Error(`The ${lens.on} maker needs a responsibility: it's all it's told about its part.`);
     }
     if (lens.on) {
-      const harness = lens.role ? this.routeRole(this.config.roles.get(lens.role)!, lens.on).harness : modelRole(lens).harness;
+      const harness = lens.role ? this.routeRole(c.roles.get(lens.role)!, lens.on).harness : modelRole(lens).harness;
       if (!this.adapters[this.harnessOverride ?? harness]) throw new Error(`MetaHarness can't run ${harness} here.`);
     }
     return lens;
@@ -3029,17 +3242,17 @@ export class Daemon {
 
   /** The makers, with each one's responsibility as it will be told and what it makes. */
   private emitLenses(g: GoalRec): void {
-    this.emit({ goal: g.id, type: 'room.lenses', data: { lenses: g.room!.lenses.map(p => ({ ...p, responsibility: responsibilityOf(p), makes: makesOf(p), ...this.makerCan(p) })) } });
+    this.emit({ goal: g.id, type: 'room.lenses', data: { lenses: g.room!.lenses.map(p => ({ ...p, responsibility: responsibilityOf(p), makes: makesOf(p), ...this.makerCan(p, g.project.config) })) } });
   }
 
   /** The makers as the lead reads them. */
   private lensRoster(g: GoalRec): string[] {
-    return lensLines(g.room!.lenses, n => g.agents.has(n), p => this.makerCan(p));
+    return lensLines(g.room!.lenses, n => g.agents.has(n), p => this.makerCan(p, g.project.config));
   }
 
   /** What a maker's harness can do: the first route of its role that runs here. */
-  private makerCan(p: Lens): MakerCan {
-    const role = this.lensRole(p);
+  private makerCan(p: Lens, c: Config): MakerCan {
+    const role = this.lensRole(p, c);
     const route = role && this.routes(role).find(r => this.adapters[this.harnessOverride ?? r.harness]);
     const m = route && this.adapters[this.harnessOverride ?? route.harness]?.manifest;
     return { ...(m?.web ? { web: true } : {}), ...(m?.images ? { images: true } : {}) };
@@ -3060,7 +3273,7 @@ export class Daemon {
   roomAddLens(goalId: string, p: Lens): string {
     const g = this.goals.get(goalId)!;
     const st = g.room!;
-    const lens = this.checkLens(p);
+    const lens = this.checkLens(p, g.project.config);
     const name = lensName(lens, [...st.lenses.map(c => c.name!), ...g.agents.keys()]);
     st.lenses.push({ ...lens, name });
     this.emitLenses(g);
@@ -3083,9 +3296,9 @@ export class Daemon {
   }
 
   /** A maker's role: its own (on its own model, if it has one), or one made from its model. */
-  private lensRole(lens: Lens): Role | undefined {
+  private lensRole(lens: Lens, c: Config): Role | undefined {
     if (!lens.role) return modelRole(lens);
-    const role = this.config.roles.get(lens.role);
+    const role = c.roles.get(lens.role);
     return role && lens.on ? this.routeRole(role, lens.on) : role;
   }
 
@@ -3174,7 +3387,7 @@ export class Daemon {
       this.deliver(g.id, from, existing.name, ask, false, false, true);
       return `Sent ${existing.name} (${existing.harness} · ${existing.model}) the ask. ${after}`;
     }
-    const role = this.lensRole(lens);
+    const role = this.lensRole(lens, g.project.config);
     if (!role) return `${lens.name}'s role, ${lens.role}, isn't in the configuration any more.`;
     const r = this.spawnAgent(g.id, { role: role.name, roleDef: role, brief: ask, parent: g.lead, name: lens.name, stance: lens.stance, responsibility: responsibilityOf(lens), askedBy });
     if (!r.ok) {
@@ -3370,7 +3583,7 @@ export class Daemon {
       'Makers:',
       ...g.room.lenses.map(l => {
         const a = g.agents.get(l.name!);
-        const line = lensLines([l], () => !!a, p => this.makerCan(p))[0];
+        const line = lensLines([l], () => !!a, p => this.makerCan(p, g.project.config))[0];
         return `${line}${a ? `, ${a.state}${a.status ? `: ${a.status.slice(0, 120)}` : ''}` : ''}${l.name === rec.name ? '  ← you' : ''}`;
       }),
       ...(g.room.lenses.length ? [] : ['(none)']),
@@ -3433,13 +3646,14 @@ export class Daemon {
   /**
    * Rebuilds the goals still running when the last daemon stopped, from the event log, and
    * resumes their agents' native sessions. Agents cut off mid-turn continue at once, told what
-   * happened; the rest resume when a message reaches them. Goals in another directory, or with
-   * agents on a harness this daemon can't run, are left alone. Call once the server is up.
+   * happened; the rest resume when a message reaches them. Every project's goals come back, each
+   * in its own; goals whose folder is gone, or with agents on a harness this daemon can't run,
+   * are left alone. Call once the server is up.
    */
   recover(): { goal: string; request: string; resumed: string[]; later: string[]; skipped?: string }[] {
     const out: ReturnType<Daemon['recover']> = [];
     for (const start of this.store.ofType('goal.started')) {
-      if (this.goals.has(start.goal) || start.data.dir !== this.repo) continue;
+      if (this.goals.has(start.goal)) continue;
       // A room is one sitting: after a restart it's over (start a new room from it).
       if (start.data.kind === 'room') {
         this.endLeftRoom(start.goal);
@@ -3452,7 +3666,14 @@ export class Daemon {
         out.push({ goal: r.id, request: r.request, resumed: [], later: [], skipped: `this daemon can't run ${missing.join(', ')}` });
         continue;
       }
-      out.push({ goal: r.id, request: r.request, ...this.restoreGoal(r) });
+      let project: Project;
+      try {
+        project = this.loadProject(realDir(r.dir));
+      } catch {
+        out.push({ goal: r.id, request: r.request, resumed: [], later: [], skipped: `its folder, ${r.dir}, is gone` });
+        continue;
+      }
+      out.push({ goal: r.id, request: r.request, ...this.restoreGoal(r, project) });
     }
     this.restoreAccounts();
     if (this.goals.size) this.startPolling();
@@ -3471,11 +3692,11 @@ export class Daemon {
     }
   }
 
-  private restoreGoal(r: GoalReplay): { resumed: string[]; later: string[] } {
+  private restoreGoal(r: GoalReplay, project: Project): { resumed: string[]; later: string[] } {
     let resolveLeadDone!: (note: string) => void;
     const leadDone = new Promise<string>(res => (resolveLeadDone = res));
     const g: GoalRec = {
-      id: r.id, request: r.request, dir: r.dir, lead: r.lead, createdAt: r.createdAt, sharedDir: r.sharedDir,
+      id: r.id, request: r.request, project, dir: project.dir, lead: r.lead, createdAt: r.createdAt, sharedDir: r.sharedDir,
       refs: r.refs, seenOn: r.seenOn, workflow: r.workflow, status: 'running',
       chained: [...new Set(this.store.ofType('workflow.read').filter(e => e.goal === r.id).map(e => String(e.data.workflow)))], agents: new Map(), counters: r.counters,
       conflicts: r.conflicts, notes: r.notes, shared: new SharedFolder(r.sharedDir), sharedTouches: [], leadDone, resolveLeadDone,
@@ -3517,7 +3738,7 @@ export class Daemon {
   }
 
   private restoreAgent(g: GoalRec, a: AgentReplay): AgentRec {
-    const role: Role = this.config.roles.get(a.role) ?? {
+    const role: Role = g.project.config.roles.get(a.role) ?? {
       name: a.role, harness: a.harness, model: a.model, fallback: [], goodAt: '', instructions: '', helper: a.quick,
       allow: [], autoApprove: 'read-only', mcp: [], worktree: false, file: '(no longer in the config)',
     };
@@ -3774,8 +3995,10 @@ export class Daemon {
    * harness can report (so a client hides a field it can't fill rather than showing a zero). A
    * goal that isn't loaded here, such as one that finished before a restart, is rebuilt from the log.
    */
-  snapshot(goalId?: string) {
+  snapshot(goalId?: string, projectRef?: string) {
     const loaded = [...this.goals.values()].filter(g => !goalId || g.id === goalId);
+    // The roles and workflows a client offers: the goal's project's, else the one asked about.
+    const c = (goalId && loaded[0]?.project.config) || (projectRef ? this.project(projectRef).config : (this.defaultProject?.config ?? this.config));
     const goals = loaded.map(g => this.goalView(g));
     let inbox = this.humanInbox.filter(i => !goalId || i.goal === goalId);
     if (goalId && !loaded.length) {
@@ -3790,8 +4013,8 @@ export class Daemon {
       goals,
       inbox,
       // What a client offers when starting a goal or spawning an agent.
-      roles: [...this.config.roles.values()].map(r => ({ name: r.name, harness: r.harness, model: r.model, goodAt: r.goodAt, helper: r.helper, worktree: r.worktree })),
-      workflows: [...this.config.workflows.values()].map(w => ({ name: w.name, goodAt: w.goodAt })),
+      roles: [...c.roles.values()].map(r => ({ name: r.name, harness: r.harness, model: r.model, goodAt: r.goodAt, helper: r.helper, worktree: r.worktree })),
+      workflows: [...c.workflows.values()].map(w => ({ name: w.name, goodAt: w.goodAt })),
       ...this.accountsView(),
       harnesses,
     };
@@ -3809,7 +4032,7 @@ export class Daemon {
 
   private goalView(g: GoalRec) {
     const agents = [...g.agents.values()];
-    const costs = [...agents.map(a => this.priced(a).cost), g.gatekeeperCost.size ? this.gatekeeperCost(g) : undefined].filter((c): c is number => c !== undefined);
+    const costs = [...agents.map(a => this.priced(a, g.project.config).cost), g.gatekeeperCost.size ? this.gatekeeperCost(g) : undefined].filter((c): c is number => c !== undefined);
     return {
       id: g.id,
       kind: g.kind ?? 'goal',
@@ -3819,6 +4042,7 @@ export class Daemon {
       lead: g.lead,
       createdAt: g.createdAt,
       dir: g.dir,
+      project: g.project.id,
       sharedDir: g.sharedDir,
       branch: g.git?.branch ?? null,
       workflow: g.workflow ?? null,
@@ -3840,7 +4064,7 @@ export class Daemon {
         branch: a.worktree?.branch ?? null,
         worktree: a.worktree?.path ?? null,
         cwd: a.cwd,
-        cost: this.priced(a).cost ?? null,
+        cost: this.priced(a, g.project.config).cost ?? null,
         contextPct: a.contextPct ?? null,
         unread: a.inbox.length,
         awaitingApproval: a.pendingApprovals,
@@ -3848,7 +4072,7 @@ export class Daemon {
         limitedUntil: a.limitedUntil ?? null,
         doneNote: a.doneNote ?? null,
         waitingOn: this.waitingOn(g, a),
-        ...this.spendView(a),
+        ...this.spendView(a, g.project.config),
       })),
       gatekeeperCost: g.gatekeeperCost.size ? this.gatekeeperCost(g) : null,
     };
@@ -3871,9 +4095,9 @@ export class Daemon {
   }
 
   /** What an agent spent, by kind of token, and how long its prompt cache stays warm. */
-  private spendView(a: Spender & { lastCallAt?: number; cacheMinutes?: number }) {
-    const minutes = this.cacheLifetime(a);
-    const p = this.priced(a);
+  private spendView(a: Spender & { lastCallAt?: number; cacheMinutes?: number }, c: Config) {
+    const minutes = this.cacheLifetime(a, c);
+    const p = this.priced(a, c);
     return {
       tokens: a.tokens ?? null,
       costSplit: p.costSplit ?? null,
@@ -3888,24 +4112,30 @@ export class Daemon {
    * An agent's cost: the harness's own figure when it reports one, else its tokens at the
    * settings' current prices (so a price set later counts for work already done).
    */
-  private priced(a: Spender): { cost?: number; costSplit?: CostSplit; costSource?: 'harness' | 'prices' } {
+  private priced(a: Spender, c: Config): { cost?: number; costSplit?: CostSplit; costSource?: 'harness' | 'prices' } {
     if (a.costSource === 'harness') return a;
-    const prices = modelSettings(this.config.settings, a.harness, a.model).prices;
+    const prices = modelSettings(c.settings, a.harness, a.model).prices;
     if (!prices || !a.tokens) return a;
     const costSplit = priceSplit(a.tokens, prices);
     return { cost: splitTotal(costSplit), costSplit, costSource: 'prices' };
   }
 
   /** The settings' cache lifetime for the model, else what the harness reported, else the default. */
-  cacheLifetime(a: { harness: string; model: string; cacheMinutes?: number }): number {
-    return modelSettings(this.config.settings, a.harness, a.model).cacheMinutes ?? a.cacheMinutes ?? this.config.settings.defaultCacheMinutes;
+  cacheLifetime(a: { harness: string; model: string; cacheMinutes?: number }, c: Config): number {
+    return modelSettings(c.settings, a.harness, a.model).cacheMinutes ?? a.cacheMinutes ?? c.settings.defaultCacheMinutes;
+  }
+
+  /** The config of a folder's project when it's loaded, else the personal one (for goals shown from the log). */
+  private dirConfig(dir: string): Config {
+    return this.projects.get(projectId(dir))?.config ?? this.config;
   }
 
   /** A goal not loaded here, as the log left it. */
   private replayView(r: GoalReplay) {
+    const c = this.dirConfig(r.dir);
     const agents = [...r.agents.values()];
     // Rooms before the lead and its canvas (2026-10-26) had a coordinator, with its own spend.
-    const costs = [...agents.map(a => this.priced(a).cost), r.gatekeeperCost || undefined, r.coordinatorCost || undefined].filter((c): c is number => c !== undefined);
+    const costs = [...agents.map(a => this.priced(a, c).cost), r.gatekeeperCost || undefined, r.coordinatorCost || undefined].filter((c): c is number => c !== undefined);
     const lead = r.agents.get(r.lead);
     return {
       id: r.id,
@@ -3916,6 +4146,7 @@ export class Daemon {
       lead: r.lead,
       createdAt: r.createdAt,
       dir: r.dir,
+      project: projectId(r.dir),
       sharedDir: r.sharedDir,
       branch: r.branch ?? null,
       workflow: r.workflow ?? null,
@@ -3926,9 +4157,9 @@ export class Daemon {
         name: a.name, role: a.role, harness: a.harness, model: a.model, effort: a.effort ?? null, parent: a.parent, pausing: false,
         state: a.doneNote !== undefined && INTERRUPTED.includes(a.state) ? 'done' : a.state,
         status: a.status, brief: a.brief, quick: a.quick, branch: a.worktree?.branch ?? null, worktree: a.worktree?.path ?? null,
-        cwd: a.cwd, cost: this.priced(a).cost ?? null, contextPct: a.contextPct ?? null, unread: a.undelivered.length, awaitingApproval: 0, waitingOn: null,
+        cwd: a.cwd, cost: this.priced(a, c).cost ?? null, contextPct: a.contextPct ?? null, unread: a.undelivered.length, awaitingApproval: 0, waitingOn: null,
         nativeSession: a.nativeSession ?? null, limitedUntil: null, doneNote: a.doneNote ?? null,
-        ...this.spendView(a),
+        ...this.spendView(a, c),
       })),
       gatekeeperCost: r.gatekeeperCost || null,
     };
@@ -3938,7 +4169,7 @@ export class Daemon {
   listGoals() {
     // What the Goals list shows of each: its outcome (the lead's note), who's at work, what waits for the human.
     const summary = (v: ReturnType<Daemon['goalView']>) => ({
-      id: v.id, kind: v.kind, request: v.request, status: v.status, live: v.live, createdAt: v.createdAt, dir: v.dir, lead: v.lead, cost: v.cost,
+      id: v.id, kind: v.kind, request: v.request, status: v.status, live: v.live, createdAt: v.createdAt, dir: v.dir, project: v.project, lead: v.lead, cost: v.cost,
       agents: v.agents.length, working: v.agents.filter(a => ['starting', 'working', 'waiting', 'limited'].includes(a.state)).length,
       branch: v.branch, workflow: v.workflow, result: v.agents.find(a => a.name === v.lead)?.doneNote ?? null,
       inbox: this.humanInbox.filter(i => i.goal === v.id).length,
@@ -3984,7 +4215,7 @@ export class Daemon {
       case 'goal.start': {
         const request = s('request');
         if (!request) throw new Error('goal.start needs a request.');
-        const goal = this.startGoal({ request, lead: s('lead'), workflow: s('workflow') ?? s('playbook'), fromRoom: s('fromRoom') });
+        const goal = this.startGoal({ request, project: s('project'), lead: s('lead'), workflow: s('workflow') ?? s('playbook'), fromRoom: s('fromRoom') });
         return { goal, notice: this.goalNotice(this.goals.get(goal)!) ?? null };
       }
       case 'room.start': {
@@ -3993,7 +4224,7 @@ export class Daemon {
         // No makers given: the built-in ones.
         const lenses = Array.isArray(b.lenses) ? (b.lenses as Lens[]).filter(p => p && (p.role || p.on)) : undefined;
         const cards = Array.isArray(b.cards) ? b.cards.map(String) : undefined;
-        const room = this.startRoom({ topic, lenses, from: s('from'), cards });
+        const room = this.startRoom({ topic, project: s('project'), lenses, from: s('from'), cards });
         return { goal: room, room, notice: this.goalNotice(this.goals.get(room)!) ?? null };
       }
       case 'room.post': {
@@ -4044,19 +4275,20 @@ export class Daemon {
         const name = s('name')?.trim().replace(/[^\w.-]+/g, '-');
         const participants = Array.isArray(b.participants) ? (b.participants as Lens[]).filter(p => p?.role || p?.on).map(({ role, name, on, responsibility, stance }) => ({ role, name, on, responsibility, stance })) : [];
         if (!name || !participants.length) throw new Error('cast.save needs a name and participants.');
-        const scope = scopesOf(this.configDirs).find(x => x.scope === (s('scope') ?? 'repo')) ?? scopesOf(this.configDirs).at(-1)!;
+        const { scopes } = this.setupOf(b);
+        const scope = scopes.find(x => x.scope === (s('scope') ?? 'repo')) ?? scopes.at(-1)!;
         const file = join(scope.dir, 'casts', `${name}.md`);
         mkdirSync(join(scope.dir, 'casts'), { recursive: true });
         writeFileSync(file, castText({ goodAt: s('goodAt'), participants }));
         this.reloadConfig();
-        return { result: `Saved the cast ${name}.`, file, config: this.configView() };
+        return { result: `Saved the cast ${name}.`, file, config: this.configView(b) };
       }
       case 'cast.delete': {
-        const c = this.config.casts.get(s('name') ?? '');
+        const c = this.setupOf(b).config.casts.get(s('name') ?? '');
         if (!c) throw new Error(`There's no cast called ${s('name')}.`);
         rmSync(c.file, { force: true });
         this.reloadConfig();
-        return { result: `Deleted the cast ${c.name}.`, config: this.configView() };
+        return { result: `Deleted the cast ${c.name}.`, config: this.configView(b) };
       }
       case 'agent.message': {
         const to = s('to'), text = s('text');
@@ -4150,7 +4382,29 @@ export class Daemon {
         return { ...(await probeHarness(this, harness, s('model') ?? '')) };
       }
       case 'config.get':
-        return this.configView();
+        return this.configView(b);
+      case 'project.open': {
+        const dir = s('dir') ?? s('project');
+        if (!dir) throw new Error('project.open needs "dir": the folder to open.');
+        return this.openProject(dir, { trust: b.trust === true });
+      }
+      case 'project.create': {
+        const dir = s('dir');
+        if (!dir) throw new Error('project.create needs "dir": the new folder.');
+        return this.createProject(dir, { git: b.git !== false });
+      }
+      case 'project.clone': {
+        const url = s('url'), dir = s('dir');
+        if (!url || !dir) throw new Error('project.clone needs "url" and "dir" (the new folder).');
+        return this.cloneProject(url, dir);
+      }
+      case 'project.forget': {
+        const ref = s('project');
+        if (!ref) throw new Error('project.forget needs "project".');
+        return { result: this.forgetProject(ref) };
+      }
+      case 'project.list':
+        return { projects: this.listProjects() };
       case 'role.save':
       case 'role.delete':
       case 'workflow.save':
@@ -4159,7 +4413,7 @@ export class Daemon {
       case 'rule.delete':
       case 'guide.save':
       case 'mcp.save': {
-        const scopes = scopesOf(this.configDirs);
+        const { scopes } = this.setupOf(b);
         const file =
           b.cmd === 'role.save' ? saveRole(scopes, b)
           : b.cmd === 'workflow.save' ? saveWorkflow(scopes, b)
@@ -4169,39 +4423,41 @@ export class Daemon {
           : deleteItem(scopes, b.cmd === 'role.delete' ? 'role' : b.cmd === 'rule.delete' ? 'rule' : 'workflow', b);
         this.reloadConfig();
         const what = String(b.cmd).endsWith('.delete') ? 'Deleted' : 'Saved';
-        return { result: `${what} ${file}. Agents started from now on use it.`, file, config: this.configView() };
+        return { result: `${what} ${file}. Agents started from now on use it.`, file, config: this.configView(b) };
       }
       case 'settings.save': {
-        const scope = scopesOf(this.configDirs).find(x => x.scope === b.scope);
-        if (!scope) throw new Error(`There's no ${String(b.scope)} config folder here.`);
+        const scope = this.setupOf(b).scopes.find(x => x.scope === b.scope);
+        if (!scope) throw new Error(`There's no ${String(b.scope)} config folder here${b.scope === 'repo' ? ': open a project first' : ''}.`);
         if (!b.patch || typeof b.patch !== 'object') throw new Error('settings.save needs "patch": the keys to change.');
         const file = writeSettingsFile(scope.dir, b.patch as Record<string, unknown>);
         this.reloadConfig();
-        return { result: `Saved ${file}.`, file, config: this.configView() };
+        return { result: `Saved ${file}.`, file, config: this.configView(b) };
       }
       case 'role.builtin': {
         // A built-in role (the gatekeeper, the assistant, the room lead), written out so it can be edited like any other.
-        const name = s('role') === 'assistant' ? this.config.settings.assistant : s('role') === 'roomLead' ? this.config.settings.roomLead : this.config.settings.gatekeeper;
-        const r = this.config.roles.get(name)!;
-        const file = saveRole(scopesOf(this.configDirs), {
+        const { scopes, config } = this.setupOf(b);
+        const name = s('role') === 'assistant' ? config.settings.assistant : s('role') === 'roomLead' ? config.settings.roomLead : config.settings.gatekeeper;
+        const r = config.roles.get(name)!;
+        const file = saveRole(scopes, {
           scope: b.scope, name: r.name, harness: r.harness, model: r.model, ...(r.effort ? { effort: r.effort } : {}), fallback: r.fallback, goodAt: r.goodAt, instructions: r.instructions, helper: true,
         });
         this.reloadConfig();
-        return { result: `Saved ${file}.`, file, config: this.configView() };
+        return { result: `Saved ${file}.`, file, config: this.configView(b) };
       }
       case 'role.update': {
         // Some of a role's fields; the rest stay as its file has them.
         const name = s('name');
-        const cur = this.configView().roles.filter(r => r.name === name).at(-1);
+        const cur = this.configView(b).roles.filter(r => r.name === name).at(-1);
         if (!cur) throw new Error(`There's no role file called ${name}. Built-in roles are written out with role.builtin first.`);
         const changes = (b.changes && typeof b.changes === 'object' ? b.changes : {}) as Record<string, unknown>;
-        const file = saveRole(scopesOf(this.configDirs), { ...cur, ...changes, name: cur.name, scope: cur.scope, previous: { name: cur.name, scope: cur.scope } });
+        const file = saveRole(this.setupOf(b).scopes, { ...cur, ...changes, name: cur.name, scope: cur.scope, previous: { name: cur.name, scope: cur.scope } });
         this.reloadConfig();
-        return { result: `Saved ${file}. Agents started from now on use it.`, file, config: this.configView() };
+        return { result: `Saved ${file}. Agents started from now on use it.`, file, config: this.configView(b) };
       }
       case 'assistant.ask': {
         const text = s('text');
         if (!text) throw new Error('assistant.ask needs "text".');
+        if (s('project')) this.assistantProject = this.project(s('project'));
         this.assistant.ask(text, s('context'));
         return { conv: this.assistant.conv };
       }
@@ -4214,7 +4470,7 @@ export class Daemon {
         const from = this.assistantFrom?.conv === this.assistant.conv ? this.assistantFrom.seq : (this.store.since(ASSISTANT_STREAM).at(-1)?.seq ?? 0);
         return {
           conv: this.assistant.conv, since: from, busy: this.assistant.busy(), role: role?.name ?? null, route: r && !('error' in r) ? r.route : null, error: r && 'error' in r ? r.error : null,
-          choice: this.assistant.choice, dir: this.repo,
+          choice: this.assistant.choice, dir: (this.assistant.busy() || this.assistantFrom?.conv === this.assistant.conv ? this.assistantIn : undefined) ?? this.assistantDir(),
         };
       }
       case 'assistant.set': {
@@ -4228,23 +4484,24 @@ export class Daemon {
         // The model and effort picked in the panel become its role's own, so they outlast a restart.
         const { harness, model, effort } = this.assistant.choice;
         if (!model && !effort) throw new Error("The assistant already runs on its role's model and effort.");
+        // The assistant works for every project, so its role lives in your personal folder.
+        const personal = { personal: true };
         const name = this.config.settings.assistant;
-        const cur = this.configView().roles.filter(r => r.name === name).at(-1);
-        // The built-in role is written out first, to your personal folder (else the repository's).
-        if (!cur || cur.scope === 'built-in') await this.command({ cmd: 'role.builtin', role: 'assistant', scope: scopesOf(this.configDirs)[0].scope });
-        const role = this.configView().roles.filter(x => x.name === name).at(-1)!;
+        const cur = this.configView(personal).roles.filter(r => r.name === name).at(-1);
+        if (!cur || cur.scope === 'built-in') await this.command({ cmd: 'role.builtin', role: 'assistant', scope: this.personalScopes()[0].scope, ...personal });
+        const role = this.configView(personal).roles.filter(x => x.name === name).at(-1)!;
         // Backups named by model alone meant the old harness; the new model is no backup of itself.
         const fallback = role.fallback.map(f => (splitEffort(f).model.includes('/') ? f : `${role.harness}/${f}`)).filter(f => splitEffort(f).model !== `${harness}/${model}`);
-        const r = await this.command({ cmd: 'role.update', name, changes: { ...(model ? { harness, model, fallback } : {}), ...(effort ? { effort } : {}) } });
+        const r = await this.command({ cmd: 'role.update', name, changes: { ...(model ? { harness, model, fallback } : {}), ...(effort ? { effort } : {}) }, ...personal });
         // Its route is the same as before, so the session carries on.
         this.assistant.adopt();
         this.assistantLog('assistant.default_saved', { harness: harness ?? null, model: model ?? null, effort: effort ?? null, file: r.file ?? null });
-        return { result: r.result, file: r.file, config: this.configView(), choice: this.assistant.choice };
+        return { result: r.result, file: r.file, config: this.configView(personal), choice: this.assistant.choice };
       }
       case 'assistant.options': {
         // What the panel offers: the role's own route, and every harness that runs here with its models and efforts.
         const role = this.config.roles.get(this.config.settings.assistant)!;
-        const views = this.configView().harnesses.filter(h => h.runnable);
+        const views = this.configView({ personal: true }).harnesses.filter(h => h.runnable);
         const harnesses = await Promise.all(
           views.map(async h => {
             const m = await this.harnessModels(h.id);
@@ -4266,13 +4523,14 @@ export class Daemon {
           this.assistantLog('assistant.proposal_done', { id: p.id, status: p.status });
           return { result: 'Dismissed.' };
         }
-        const r = await this.command(p.command);
+        // A proposal that names no project applies to the one the human is in.
+        const r = await this.command(typeof b.project === 'string' && !('project' in p.command) ? { ...p.command, project: b.project } : p.command);
         p.status = 'applied';
         this.assistantLog('assistant.proposal_done', { id: p.id, status: p.status, result: r.result ?? null });
         return r;
       }
       case 'harness.check': {
-        const p = loadProfiles(this.configDirs).get(s('harness') ?? '');
+        const p = loadProfiles(this.setupOf(b).scopes.map(x => x.dir)).get(s('harness') ?? '');
         if (!p) throw new Error(`There's no harness profile called ${s('harness')}.`);
         const { inspect } = await import('./harnesses.ts');
         return { report: await inspect(p) };
@@ -4283,7 +4541,7 @@ export class Daemon {
         return { ...(await this.harnessModels(harness, b.refresh === true)) };
       }
       default:
-        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, goal.delete, goal.sizes, goal.open_folder, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.set, assistant.make_default, assistant.options, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, rule.save, rule.delete, guide.save, mcp.save.`);
+        throw new Error(`Unknown command "${String(b.cmd)}". Commands: goal.start, goal.pause, goal.resume, goal.end, goal.clean, goal.delete, goal.sizes, goal.open_folder, agent.message, agent.spawn, agent.pause, agent.resume, agent.stop, agent.open_native, inbox.resolve, harness.test, harness.check, harness.models, limits.check, config.get, project.open, project.create, project.clone, project.forget, project.list, settings.save, role.builtin, role.update, assistant.ask, assistant.reset, assistant.state, assistant.set, assistant.make_default, assistant.options, assistant.apply, assistant.dismiss, role.save, role.delete, workflow.save, workflow.delete, rule.save, rule.delete, guide.save, mcp.save.`);
     }
   }
 
@@ -4291,15 +4549,31 @@ export class Daemon {
 
   /** Reads the config files again: what's saved applies to agents started from now on. */
   reloadConfig(): void {
-    this.config = loadConfig(this.configDirs, { repo: this.repo });
-    if (this.settingsOverride) Object.assign(this.config.settings, this.settingsOverride);
-    this.design = new DesignTracker(this.home, new Outliner(this.config.languages));
+    this.config = this.loadPersonal();
+    // The personal folder is under every project's.
+    for (const p of this.projects.values()) p.reload();
     this.highlighted.clear();
   }
 
+  /** Your personal config folder as a scope, for what isn't any project's. */
+  personalScopes(): ScopeDir[] {
+    return [{ scope: 'personal', dir: this.personalDirs[0] }];
+  }
+
+  /**
+   * Where setup is read and saved: a project's folders (personal, then its own), the personal
+   * folder alone with `personal`, or, naming no project, the daemon's own project if it has one.
+   */
+  private setupOf(b: { project?: unknown; personal?: unknown } = {}): { scopes: ScopeDir[]; config: Config; project?: Project } {
+    if (b.personal === true) return { scopes: this.personalScopes(), config: this.config };
+    const p = typeof b.project === 'string' && b.project ? this.project(b.project) : this.defaultProject;
+    return p ? { scopes: p.scopes, config: p.config, project: p } : { scopes: this.personalScopes(), config: this.config };
+  }
+
   /** Roles, workflows, guidelines and MCP servers with the folder each comes from, plus the harnesses a role can name. */
-  configView() {
-    const profiles = loadProfiles(this.configDirs);
+  configView(b: { project?: unknown; personal?: unknown } = {}) {
+    const { scopes, config, project } = this.setupOf(b);
+    const profiles = loadProfiles(scopes.map(x => x.dir));
     // The scripted harness is for tests and demos, never a role's own choice.
     const ids = new Set([...profiles.keys(), ...Object.keys(this.adapters).filter(id => id !== 'fake')]);
     const harnesses = [...ids].map(id => ({
@@ -4314,12 +4588,15 @@ export class Daemon {
       login: profiles.get(id)?.login ?? null,
     }));
     const settings = {
-      effective: this.config.settings,
-      files: scopesOf(this.configDirs).map(s => ({ scope: s.scope, dir: s.dir, values: readSettingsFile(s.dir) })),
+      effective: config.settings,
+      files: scopes.map(s => ({ scope: s.scope, dir: s.dir, values: readSettingsFile(s.dir) })),
     };
-    const casts = [...this.config.casts.values()].map(c => ({ name: c.name, goodAt: c.goodAt, participants: c.participants }));
+    const casts = [...config.casts.values()].map(c => ({ name: c.name, goodAt: c.goodAt, participants: c.participants }));
     const responsibilities = RESPONSIBILITIES.map(r => ({ name: r.name, text: r.text, roles: r.roles, makes: r.makes }));
-    return { ...configView(scopesOf(this.configDirs)), harnesses, settings, casts, responsibilities, override: this.harnessOverride ?? null };
+    return {
+      ...configView(scopes), harnesses, settings, casts, responsibilities, override: this.harnessOverride ?? null,
+      project: project ? { id: project.id, dir: project.dir, name: project.name } : null,
+    };
   }
 
   /** The models a harness offers: those its profile knows, plus what its CLI lists (asked once every ten minutes). */
@@ -4328,7 +4605,7 @@ export class Daemon {
    * per effort (Antigravity's) are folded into one; `variants` maps each such name to its parts.
    */
   async harnessModels(id: string, refresh = false): Promise<ModelChoices> {
-    const p = loadProfiles(this.configDirs).get(id);
+    const p = loadProfiles(this.personalDirs).get(id);
     if (!p) return { harness: id, models: [], efforts: {}, variants: {}, error: `There's no harness profile called ${id}.` };
     const cached = this.modelLists.get(id);
     if (cached && !refresh && Date.now() - cached.at < 600_000) return cached.choices;
@@ -4364,6 +4641,16 @@ export class Daemon {
   /* ---------------- git and design views (design §14) ---------------- */
 
   /** A goal's git state: live, or from its log for a goal this daemon didn't start. */
+  /** A goal's project: the loaded goal's, else the one its folder (from the log) belongs to. */
+  goalProject(goalId: string): Project {
+    const g = this.goals.get(goalId);
+    if (g) return g.project;
+    const start = this.store.ofType('goal.started').find(e => e.goal === goalId);
+    if (!start) throw new Error(`There's no goal ${goalId}.`);
+    const dir = String(start.data.dir ?? '');
+    return this.projects.get(projectId(dir)) ?? this.loadProject(realDir(dir));
+  }
+
   goalGit(goalId: string): git.GoalGit | undefined {
     return this.goals.get(goalId)?.git ?? this.pastGoalGit(goalId);
   }
@@ -4400,8 +4687,8 @@ export class Daemon {
     });
     const conflicts = [...(this.goals.get(goalId)?.conflicts.entries() ?? [])].map(([d, c]) => ({ dir: d, ...c }));
     // The latest snapshot's areas, so each commit can say which parts of the design it touched.
-    const last = this.design.list(goalId).at(-1);
-    const areas = last ? this.design.cached(goalId, last.sha)?.map.areas.map(a => ({ path: a.path, title: a.title })) : undefined;
+    const last = this.goalProject(goalId).design.list(goalId).at(-1);
+    const areas = last ? this.goalProject(goalId).design.cached(goalId, last.sha)?.map.areas.map(a => ({ path: a.path, title: a.title })) : undefined;
     return {
       git: { repo: gg.repo, branch: gg.branch, base: gg.base, tip, commits: git.countCommits(gg, gg.base, tip), uncommitted: git.statusShort(dir).length },
       branches, conflicts, mapFile: MAP_FILE, areas: areas ?? [],
@@ -4436,14 +4723,14 @@ export class Daemon {
   async designView(goalId: string, rev?: string) {
     const gg = this.goalGit(goalId);
     if (!gg) return { snapshot: null, list: [], note: 'No git repository for this goal, so no design to show.' };
-    const list = this.design.list(goalId);
+    const list = this.goalProject(goalId).design.list(goalId);
     const tip = git.resolveCommit(gg, gg.branch) ?? gg.base;
     const sha = !rev ? (list.at(-1)?.sha ?? tip) : rev === 'now' ? tip : /^[\w./@^~-]+$/.test(rev) && !rev.startsWith('-') ? git.resolveCommit(gg, rev) : undefined;
     if (!sha) throw new Error(`There's no commit or branch "${rev}".`);
     const dir = this.goals.get(goalId)?.dir ?? gg.repo;
     return {
-      snapshot: await this.design.get(goalId, gg, dir, sha), list, tip,
-      languages: [...this.config.languages.values()].map(p => ({ name: p.name, extensions: p.extensions, engine: p.grammar ? 'tree-sitter' : 'patterns', builtIn: p.builtIn })),
+      snapshot: await this.goalProject(goalId).design.get(goalId, gg, dir, sha), list, tip,
+      languages: [...this.goalProject(goalId).config.languages.values()].map(p => ({ name: p.name, extensions: p.extensions, engine: p.grammar ? 'tree-sitter' : 'patterns', builtIn: p.builtIn })),
     };
   }
 
@@ -4456,7 +4743,7 @@ export class Daemon {
       if (!s) throw new Error(`There's no commit or branch "${r}".`);
       return s;
     };
-    const [a, b] = await Promise.all([this.design.get(goalId, gg, dir, sha(from)), this.design.get(goalId, gg, dir, sha(to))]);
+    const [a, b] = await Promise.all([this.goalProject(goalId).design.get(goalId, gg, dir, sha(from)), this.goalProject(goalId).design.get(goalId, gg, dir, sha(to))]);
     return compareDesigns(a, b);
   }
 
@@ -4470,7 +4757,7 @@ export class Daemon {
     const gg = this.goalGit(goalId);
     if (!gg) return { snapshot: null, list: [], note: 'No git repository for this goal, so no design to show.' };
     const dir = this.goals.get(goalId)?.dir ?? gg.repo;
-    const list = this.design.list(goalId);
+    const list = this.goalProject(goalId).design.list(goalId);
     const tip = git.resolveCommit(gg, gg.branch) ?? gg.base;
     const rev = (r: string) => {
       const s = /^[\w./@^~-]+$/.test(r) && !r.startsWith('-') ? git.resolveTreeish(gg, r) : undefined;
@@ -4524,7 +4811,7 @@ export class Daemon {
     const dir = this.goals.get(goalId)?.dir ?? gg.repo;
     const sha = !rev ? (git.resolveCommit(gg, gg.branch) ?? gg.base) : /^[\w./@^~-]+$/.test(rev) && !rev.startsWith('-') ? git.resolveTreeish(gg, rev) : undefined;
     if (!sha) throw new Error(`There's no commit or branch "${rev}".`);
-    return { sha, graph: await this.design.code(goalId, gg, dir, sha) };
+    return { sha, graph: await this.goalProject(goalId).design.code(goalId, gg, dir, sha) };
   }
 
   /** A file's text at a commit or tree, for the Systems lens to show a function's code. */
@@ -4540,8 +4827,8 @@ export class Daemon {
     const key = `${sha}\n${path}`;
     let highlights = this.highlighted.get(key);
     if (!highlights) {
-      const pack = packFor(this.design.outliner.packs.values(), path);
-      highlights = pack ? this.design.outliner.highlight(pack, text).catch(() => undefined) : Promise.resolve(undefined);
+      const pack = packFor(this.goalProject(goalId).design.outliner.packs.values(), path);
+      highlights = pack ? this.goalProject(goalId).design.outliner.highlight(pack, text).catch(() => undefined) : Promise.resolve(undefined);
       this.highlighted.set(key, highlights);
       if (this.highlighted.size > 200) this.highlighted.delete(this.highlighted.keys().next().value!);
     }
@@ -4563,8 +4850,8 @@ export class Daemon {
     let docs = this.documented.get(key);
     if (!docs) {
       const text = git.showFile(gg, sha, path);
-      const pack = packFor(this.design.outliner.packs.values(), path);
-      docs = text !== undefined && pack ? this.design.outliner.docs(pack, text).catch(() => undefined) : Promise.resolve(undefined);
+      const pack = packFor(this.goalProject(goalId).design.outliner.packs.values(), path);
+      docs = text !== undefined && pack ? this.goalProject(goalId).design.outliner.docs(pack, text).catch(() => undefined) : Promise.resolve(undefined);
       this.documented.set(key, docs);
       if (this.documented.size > 500) this.documented.delete(this.documented.keys().next().value!);
     }
@@ -4576,7 +4863,7 @@ export class Daemon {
 
   /** Builds a scope's report (src/design.ts) and keeps it beside the snapshots. */
   private async scopeReport(goalId: string, gg: git.GoalGit, dir: string, scope: { kind: string; title: string; from: string; to: string; heads: string[] }) {
-    const [before, after] = await Promise.all([this.design.get(goalId, gg, dir, scope.from), this.design.get(goalId, gg, dir, scope.to)]);
+    const [before, after] = await Promise.all([this.goalProject(goalId).design.get(goalId, gg, dir, scope.from), this.goalProject(goalId).design.get(goalId, gg, dir, scope.to)]);
     const change = compareDesigns(before, after);
     const authors = new Map<string, string>();
     const mergeSizes = new Map<string, { added: number; removed: number; files: number }>();
@@ -4591,7 +4878,7 @@ export class Daemon {
       log: scope.heads.length ? git.scopeLog(gg, scope.heads, scope.from) : [], net: git.numstat(gg, scope.from, scope.to), authors, mergeSizes,
     });
     try {
-      this.design.saveReport(report);
+      this.goalProject(goalId).design.saveReport(report);
     } catch {
       // A report that can't be kept is still shown.
     }

@@ -53,7 +53,12 @@ async function handle(d: Daemon, token: string, req: IncomingMessage, res: Serve
   if (!ok) return json(res, 401, { error: 'Missing or wrong token. The CLI reads it from the token file in MH_HOME.' });
   try {
     if (req.method === 'GET' && url.pathname === '/state') {
-      return json(res, 200, d.snapshot(url.searchParams.get('goal') ?? undefined));
+      return json(res, 200, d.snapshot(url.searchParams.get('goal') ?? undefined, url.searchParams.get('project') ?? undefined));
+    }
+    // Projects (design §22): those you can come back to, and the daemon's folders to open one from.
+    if (req.method === 'GET' && url.pathname === '/projects') return json(res, 200, { projects: d.listProjects() });
+    if (req.method === 'GET' && url.pathname === '/browse') {
+      return json(res, 200, d.browseFolders(url.searchParams.get('path') ?? undefined, url.searchParams.get('hidden') === '1'));
     }
     if (req.method === 'GET' && url.pathname === '/events') return events(d, url, req, res);
     if (req.method === 'GET' && url.pathname === '/goals') return json(res, 200, { goals: d.listGoals() });
@@ -142,7 +147,7 @@ function events(d: Daemon, url: URL, req: IncomingMessage, res: ServerResponse):
   });
 }
 
-const API_PATHS = new Set(['/state', '/events', '/goals', '/agent', '/file', '/media', '/git', '/diff', '/design', '/design/scope', '/design/compare', '/design/code', '/design/source', '/design/docs', '/commands']);
+const API_PATHS = new Set(['/state', '/projects', '/browse', '/events', '/goals', '/agent', '/file', '/media', '/git', '/diff', '/design', '/design/scope', '/design/compare', '/design/code', '/design/source', '/design/docs', '/commands']);
 
 /** The built web app (ui/dist). */
 export const UI_DIR = join(import.meta.dirname, '..', 'ui', 'dist');

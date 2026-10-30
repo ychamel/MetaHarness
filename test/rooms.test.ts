@@ -276,7 +276,7 @@ test('nobody changes project files in a room; the human asks makers directly and
 
   // Reading, reports and images are fine; the project's files are not.
   const lead = d.agent(room, 'lead')!;
-  const inRepo = join(d.repo, 'x.txt');
+  const inRepo = join(d.project().dir, 'x.txt');
   assert.match(String((d.toolPolicy(lead, { kind: 'edit', tool: 'Write', detail: inRepo, path: inRepo }) as { reason: string }).reason), /nobody changes the project's files here/);
   const report = join(g.sharedDir, 'reports', 'lead-1.md');
   assert.deepEqual(d.toolPolicy(lead, { kind: 'edit', tool: 'Write', detail: report, path: report }), { allow: true });

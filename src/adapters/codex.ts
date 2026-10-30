@@ -183,6 +183,22 @@ export class CodexAdapter implements HarnessAdapter {
   }
 }
 
+/** The permission profile MetaHarness gives Codex threads (Codex 0.16x `[permissions.<id>]`). */
+const PROFILE = 'metaharness';
+
+/**
+ * The profile's folders: everything readable but the folders denied, then the agent's own places
+ * (its project and goal folder to read; its folder, the shared folder, git directories and the
+ * temporary folders to write), which win over a denied folder they're in.
+ */
+export function sandboxFilesystem(spec: Pick<SessionSpec, 'cwd' | 'sharedDir' | 'gitDirs' | 'readRoots' | 'denyRead'>): Record<string, string> {
+  const fs: Record<string, string> = { ':root': 'read', ':slash_tmp': 'write', ':tmpdir': 'write' };
+  for (const d of spec.denyRead ?? []) fs[d] = 'deny';
+  for (const d of spec.readRoots ?? []) fs[d] = 'read';
+  for (const d of [spec.cwd, spec.sharedDir, ...spec.gitDirs]) fs[d] = 'write';
+  return fs;
+}
+
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
 /** How long an app-server with no threads stays up, for the next agent. */
@@ -319,7 +335,8 @@ class CodexSession implements Session {
       // In the human's shared checkout, every command that isn't plainly safe comes to
       // MetaHarness's policy first; elsewhere the sandbox is enough.
       approvalPolicy: this.spec.sharedCheckout ? 'untrusted' : 'on-request',
-      sandbox: 'workspace-write',
+      // The sandbox parameter would override the permission profile below, so it goes in config.
+      ...(this.spec.denyRead?.length ? {} : { sandbox: 'workspace-write' as const }),
       developerInstructions: this.spec.systemPrompt,
       config: {
         ...this.isolation,
@@ -330,6 +347,10 @@ class CodexSession implements Session {
         // Committing from a worktree writes outside it, into the shared .git. Codex keeps the
         // worktree's own git directory read-only unless it's named here too.
         'sandbox_workspace_write.writable_roots': [this.spec.sharedDir, ...this.spec.gitDirs],
+        // Its commands read the machine but not other projects or MetaHarness's home (design §22),
+        // through a permission profile (checked with Codex 0.164). One without profiles keeps
+        // sandbox_mode: workspace-write, as before.
+        ...(this.spec.denyRead?.length ? { sandbox_mode: 'workspace-write', default_permissions: PROFILE, [`permissions.${PROFILE}.filesystem`]: sandboxFilesystem(this.spec) } : {}),
         // One app-server runs every agent, so each thread's commands get the git guard here.
         ...(this.spec.env ? { 'shell_environment_policy.set': this.spec.env } : {}),
       },

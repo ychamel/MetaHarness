@@ -82,7 +82,7 @@ test('the assistant answers from its read-only tools, and changes the setup only
   assert.equal(d.spawnAgent(goal, { role: 'assistant', brief: 'b', parent: 'architect' }).ok, false);
   assert.equal(assistantDecision({ kind: 'shell', tool: 'Bash', detail: 'git log --oneline | head' }).allow, true);
   assert.equal(assistantDecision({ kind: 'shell', tool: 'Bash', detail: 'rm -rf src' }).allow, false);
-  assert.equal(assistantDecision({ kind: 'edit', tool: 'Edit', detail: 'a.ts', path: join(d.repo, 'a.ts') }).allow, false);
+  assert.equal(assistantDecision({ kind: 'edit', tool: 'Edit', detail: 'a.ts', path: join(d.project().dir, 'a.ts') }).allow, false);
   await d.close();
   server.close();
 });
@@ -127,7 +127,7 @@ test('the panel switches the assistant to another model and effort, keeping the 
   await d.command({ cmd: 'assistant.set', harness: 'fake', model: 'm2', effort: 'high' });
 
   // Write mode: it hears so once, and its harness's tools may change things.
-  const edit = { kind: 'edit', tool: 'Edit', detail: 'a.ts', path: join(d.repo, 'a.ts') } as const;
+  const edit = { kind: 'edit', tool: 'Edit', detail: 'a.ts', path: join(d.project().dir, 'a.ts') } as const;
   assert.equal(d.outsiderDecision(ASSISTANT, edit).allow, false);
   await d.command({ cmd: 'assistant.set', write: true });
   assert.equal(d.outsiderDecision(ASSISTANT, edit).allow, true);

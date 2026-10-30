@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 /**
  * Is a shell command read-only? Used to approve such commands without asking the human, for
  * every harness (they all route approvals through the daemon). Errs towards "no": anything it
@@ -286,4 +288,91 @@ function gitReadOnly(args: string[]): Verdict {
     default:
       return no(`git ${sub} isn't known to be read-only`);
   }
+}
+
+/** Arguments that are patterns or programs, not files: grep's pattern, sed's and awk's scripts, jq's filter. */
+function patternArgs(cmd: string, args: string[]): Set<number> {
+  const skip = new Set<number>();
+  const firstPositional = (from = 0) => args.findIndex((a, i) => i >= from && !a.startsWith('-'));
+  if (['echo', 'printf'].includes(cmd)) args.forEach((_, i) => skip.add(i));
+  else if (['grep', 'egrep', 'fgrep', 'rg', 'ag', 'sed'].includes(cmd)) {
+    const e = args.flatMap((a, i) => (a === '-e' || a === '--regexp' || a === '--expression' ? [i + 1] : []));
+    if (e.length) e.forEach(i => skip.add(i));
+    else if (!args.some(a => a === '-f' || a === '--file')) skip.add(firstPositional());
+  } else if (['awk', 'gawk', 'mawk', 'jq'].includes(cmd) && !args.includes('-f')) skip.add(firstPositional());
+  else if (cmd === 'git') {
+    const g = args.indexOf('grep');
+    if (g >= 0) skip.add(firstPositional(g + 1));
+  } else if (cmd === 'find') {
+    // Paths come first; the expression after them holds patterns.
+    const expr = args.findIndex(a => a.startsWith('-') || a === '(' || a === '!');
+    if (expr >= 0) for (let i = expr; i < args.length; i++) skip.add(i);
+  }
+  return skip;
+}
+
+/** `~`, `$HOME` and relative paths made absolute; undefined when it can't tell (another variable, ~user). */
+function absolute(word: string, cwd: string, home: string): string | undefined {
+  let w = word.replace(/^\$\{?HOME\}?(?=\/|$)/, home);
+  if (w === '~' || w.startsWith('~/')) w = home + w.slice(1);
+  if (w.startsWith('~') || w.includes('$') || w.includes('`')) return undefined;
+  return resolve(cwd, w);
+}
+
+/**
+ * What a read-only command reads outside the places it may (design §22): the paths it names that
+ * resolve elsewhere, following its `cd`s. Errs towards naming one: a path it can't resolve (a
+ * variable, ~user) counts. Patterns and scripts (grep's, sed's, jq's) aren't paths.
+ */
+export function pathsOutside(command: string, cwd: string, inside: (path: string) => boolean, home: string, depth = 0): string[] {
+  if (depth > 3) return [command];
+  const toks = lex(command, () => YES);
+  if (typeof toks === 'string') return [];
+  const segments: string[][] = [[]];
+  for (const t of toks) {
+    if ('op' in t) segments.push([]);
+    else segments.at(-1)!.push(t.word);
+  }
+  const out: string[] = [];
+  let here = cwd;
+  for (const seg of segments) {
+    let w = seg.filter(x => !['do', 'then', 'else', 'done', 'fi', '!', '{', '}', 'if', 'elif', 'while', 'until'].includes(x));
+    while (w.length && /^[A-Za-z_]\w*=/.test(w[0])) w = w.slice(1);
+    if (!w.length) continue;
+    const cmd = w[0].slice(w[0].lastIndexOf('/') + 1);
+    const args = w.slice(1);
+    if (cmd === 'cd' || cmd === 'pushd') {
+      const to = args.find(a => !a.startsWith('-'));
+      const p = to === undefined ? home : absolute(to, here, home);
+      if (!p) out.push(to ?? '~');
+      else {
+        here = p;
+        if (!inside(p)) out.push(to ?? '~');
+      }
+      continue;
+    }
+    if (!inside(here)) {
+      out.push(here);
+      continue;
+    }
+    if (['bash', 'sh', 'zsh'].includes(cmd)) {
+      const c = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a));
+      if (c >= 0 && args[c + 1] !== undefined) out.push(...pathsOutside(args[c + 1], here, inside, home, depth + 1));
+      continue;
+    }
+    const skip = patternArgs(cmd, args);
+    args.forEach((a, i) => {
+      if (skip.has(i)) return;
+      let word = a;
+      if (word.startsWith('-')) {
+        const eq = word.indexOf('=');
+        if (eq < 0) return;
+        word = word.slice(eq + 1);
+      }
+      if (!(word.startsWith('/') || word.startsWith('~') || word.startsWith('$') || word.includes('/') || word === '..')) return;
+      const p = absolute(word, here, home);
+      if (!p || !inside(p)) out.push(a);
+    });
+  }
+  return [...new Set(out)];
 }

@@ -26,9 +26,9 @@ export function Home({ goals, rooms, loaded, config, onOpen, onOpenRoom, onNewRo
   const [query, setQuery] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [elsewhere, setElsewhere] = useState(false);
-  const repo = config?.scopes.find(s => s.scope === 'repo')?.dir.replace(/[/\\]\.metaharness$/, '');
+  const repo = config?.project?.dir;
   const running = goals.filter(g => g.status === 'running');
-  // The log is shared by every repository the daemon has run in: past goals are this one's, unless asked.
+  // Goals come filtered to the project; the checkbox below is for the rest of the log.
   const here = (g: GoalSummary) => !repo || g.dir === repo;
   const others = goals.filter(g => g.status !== 'running' && !here(g)).length;
   const past = goals.filter(g => g.status !== 'running' && (elsewhere || here(g)) && (!query || `${g.request} ${g.result ?? ''} ${g.dir}`.toLowerCase().includes(query.toLowerCase())));
@@ -158,7 +158,7 @@ export function Home({ goals, rooms, loaded, config, onOpen, onOpenRoom, onNewRo
               )}
             </div>
           ))}
-          {!past.length && <div className="empty">{!loaded ? 'Loading…' : query ? 'No goal matches.' : `Finished goals${repo ? ' in this repository' : ''} and what came of them show up here.`}</div>}
+          {!past.length && <div className="empty">{!loaded ? 'Loading…' : query ? 'No goal matches.' : `Finished goals${repo ? ' in this project' : ''} and what came of them show up here.`}</div>}
           {!showAll && !query && past.length > shown.length && (
             <button className="btn ghost" onClick={() => setShowAll(true)}>
               Show all {past.length}

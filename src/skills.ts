@@ -42,9 +42,10 @@ const NAME = /^[\w.:-]+$/;
  * repository's: those other harnesses keep (.claude/skills, .agents/skills), and MetaHarness's
  * own .metaharness/skills last.
  */
-export function skillLayers(configDirs: string[], repo?: string, builtIn = true): SkillLayer[] {
+export function skillLayers(configDirs: string[], repo?: string | null, builtIn = true): SkillLayer[] {
   const layers: SkillLayer[] = builtIn ? [{ source: 'built-in', dir: join(BUILTIN_DIR, 'skills') }] : [];
-  const personal = repo ? configDirs.filter(d => d !== join(repo, '.metaharness')) : configDirs.slice(0, -1);
+  // null: no project, so every folder is personal.
+  const personal = repo === null ? configDirs : repo ? configDirs.filter(d => d !== join(repo, '.metaharness')) : configDirs.slice(0, -1);
   const own = configDirs.filter(d => !personal.includes(d));
   for (const d of personal) layers.push({ source: 'personal', dir: join(d, 'skills') });
   if (repo) layers.push({ source: '.claude', dir: join(repo, '.claude', 'skills') }, { source: '.agents', dir: join(repo, '.agents', 'skills') });

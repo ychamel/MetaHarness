@@ -1,4 +1,4 @@
-import type { AgentDetail, CodeGraph, ConfigView, DesignChange, DesignScopeView, DesignView, DiffView, FileDocs, GitView, GoalSummary, Highlights, MhEvent, ScopeSel, SharedFileView, Snapshot } from './types.ts';
+import type { AgentDetail, CodeGraph, ConfigView, FolderView, ProjectSummary, DesignChange, DesignScopeView, DesignView, DiffView, FileDocs, GitView, GoalSummary, Highlights, MhEvent, ScopeSel, SharedFileView, Snapshot } from './types.ts';
 
 /**
  * The daemon's API (design §13). `mh ui` opens the app with ?token=…; it's kept in this
@@ -59,7 +59,9 @@ export const api = {
   agent: (goal: string, name: string) => call<AgentDetail>(`/agent?goal=${encodeURIComponent(goal)}&name=${encodeURIComponent(name)}`),
   file: (goal: string, path: string, version?: number) =>
     call<SharedFileView>(`/file?goal=${encodeURIComponent(goal)}&path=${encodeURIComponent(path)}${version != null ? `&version=${version}` : ''}`),
-  config: () => call<ConfigView>('/commands', { method: 'POST', body: JSON.stringify({ cmd: 'config.get' }) }),
+  config: (project?: string) => call<ConfigView>('/commands', { method: 'POST', body: JSON.stringify({ cmd: 'config.get', ...(project ? { project } : {}) }) }),
+  projects: () => call<{ projects: ProjectSummary[] }>('/projects').then(r => r.projects),
+  browse: (path?: string, hidden = false) => call<FolderView>(`/browse?${new URLSearchParams({ ...(path ? { path } : {}), ...(hidden ? { hidden: '1' } : {}) })}`),
   git: (goal: string) => call<GitView>(`/git?goal=${encodeURIComponent(goal)}`),
   /** One commit (sha), a range (from, to), the whole goal, or an agent's uncommitted work. */
   diff: (goal: string, q: { sha?: string; from?: string; to?: string; agent?: string; whole?: boolean; paths?: string[] }) => {

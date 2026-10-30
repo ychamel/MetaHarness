@@ -49,7 +49,7 @@ export function assistantDecision(t: ToolRequest, write = false): { allow: boole
   return { allow: false, message: 'The assistant only reads. To suggest a change, use the MetaHarness propose tool; the human can also turn on write mode in the panel.' };
 }
 
-const WRITE_ON = '[The human turned on write mode: you may now edit files and run any command in this folder to do what they ask. Say what you changed.]';
+const WRITE_ON = "[The human turned on write mode: you may now edit files and run any command in the project you're in to do what they ask. Say what you changed.]";
 const WRITE_OFF = '[The human turned write mode off: you only read again.]';
 /** How much of the conversation a new session hears when the model changes mid-way. */
 const CARRY_MAX = 30_000;

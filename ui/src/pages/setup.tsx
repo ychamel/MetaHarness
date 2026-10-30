@@ -78,7 +78,7 @@ export function ListItem({ on, title, scope, sub, extra, onClick }: { on: boolea
   );
 }
 
-/** Where to save: this repository's .metaharness, or the personal one that every project reads. */
+/** Where to save: this project's .metaharness, or the personal one that every project reads. */
 export function ScopePicker({ config, value, onChange }: { config?: ConfigView; value: Scope; onChange: (s: Scope) => void }) {
   const scopes = config?.scopes ?? [];
   if (scopes.length < 2) return <span className="muted small">{scopes[0]?.dir}</span>;
@@ -86,7 +86,7 @@ export function ScopePicker({ config, value, onChange }: { config?: ConfigView; 
     <div className="segmented" role="radiogroup" aria-label="Save to">
       {scopes.map(s => (
         <button key={s.scope} role="radio" aria-checked={value === s.scope} className={value === s.scope ? 'on' : ''} onClick={() => onChange(s.scope)} title={s.dir}>
-          {s.scope === 'repo' ? 'This repository' : 'Personal (every project)'}
+          {s.scope === 'repo' ? 'This project' : 'Personal (every project)'}
         </button>
       ))}
     </div>

@@ -54,7 +54,7 @@ test('config: saving a role writes its file, keeps unknown keys and comments, an
   assert.match(text, /color: blue\n/);
   assert.doesNotMatch(text, /helper:/);
   assert.match(text, /---\nThink harder\.\n$/);
-  const r = d.config.roles.get('architect')!;
+  const r = d.project().config.roles.get('architect')!;
   assert.equal(r.model, 'opus-2');
   assert.deepEqual(r.allow, ['Bash(npm test*)', 'Bash(git log*)']);
   assert.equal(r.worktree, true);
@@ -67,12 +67,12 @@ test('config: renaming or moving a role removes the old file; names and clashes 
   assert.ok(!existsSync(join(repo, 'roles', 'architect.md')));
   assert.ok(existsSync(join(personal, 'roles', 'lead.md')));
   // The personal architect shows through again.
-  assert.equal(d.config.roles.get('architect')!.model, 'sonnet');
+  assert.equal(d.project().config.roles.get('architect')!.model, 'sonnet');
   await assert.rejects(d.command({ cmd: 'role.save', scope: 'personal', name: 'architect', harness: 'fake' }), /already a role called architect/);
   await assert.rejects(d.command({ cmd: 'role.save', scope: 'repo', name: '../x', harness: 'fake' }), /name uses letters/);
   await assert.rejects(d.command({ cmd: 'role.save', scope: 'repo', name: 'x' }), /needs a harness/);
   await d.command({ cmd: 'role.delete', scope: 'personal', name: 'lead' });
-  assert.ok(!d.config.roles.has('lead'));
+  assert.ok(!d.project().config.roles.has('lead'));
 });
 
 test('config: workflows move from playbooks/ on save; guidelines and MCP servers save and reset', async () => {
@@ -80,19 +80,19 @@ test('config: workflows move from playbooks/ on save; guidelines and MCP servers
   await d.command({ cmd: 'workflow.save', scope: 'repo', name: 'old', previous: { name: 'old', scope: 'repo' }, goodAt: 'old things', body: '1. Do it.' });
   assert.ok(!existsSync(join(repo, 'playbooks', 'old.md')));
   assert.equal(readFileSync(join(repo, 'workflows', 'old.md'), 'utf8'), '---\ngood_at: old things\n---\n1. Do it.\n');
-  assert.equal(d.config.workflows.get('old')!.goodAt, 'old things');
+  assert.equal(d.project().config.workflows.get('old')!.goodAt, 'old things');
 
   await d.command({ cmd: 'guide.save', scope: 'personal', which: 'methodology', text: 'Be kind.' });
-  assert.equal(d.config.methodology, 'Be kind.');
+  assert.equal(d.project().config.methodology, 'Be kind.');
   const v = (await d.command({ cmd: 'config.get' })) as any;
   assert.equal(v.methodology.from, 'personal');
   await d.command({ cmd: 'guide.save', scope: 'personal', which: 'methodology', text: '' });
   assert.ok(!existsSync(join(personal, 'methodology.md')));
-  assert.match(d.config.methodology, /team of AI agents/);
+  assert.match(d.project().config.methodology, /team of AI agents/);
 
   writeFileSync(join(repo, 'mcp.json'), JSON.stringify({ note: 'mine', mcpServers: { a: { command: 'a' } } }));
   await d.command({ cmd: 'mcp.save', scope: 'repo', name: 'blender', def: { command: 'uvx', args: ['blender-mcp'] } });
-  assert.deepEqual(d.config.mcp.get('blender'), { command: 'uvx', args: ['blender-mcp'] });
+  assert.deepEqual(d.project().config.mcp.get('blender'), { command: 'uvx', args: ['blender-mcp'] });
   await d.command({ cmd: 'mcp.save', scope: 'repo', name: 'a', def: null });
   const doc = JSON.parse(readFileSync(join(repo, 'mcp.json'), 'utf8'));
   assert.equal(doc.note, 'mine');
@@ -122,12 +122,12 @@ test('settings: each folder keeps its own settings.json; the repository wins, ke
   const repo = mkdtempSync(join(tmpdir(), 'mh-repo-'));
   writeFileSync(join(repo, 'prices.json'), JSON.stringify({ 'gpt-old': { input: 1, cachedInput: 0.1, output: 4 } }));
   const d = new Daemon({ home: mkdtempSync(join(tmpdir(), 'mh-home-')), repo: makeRepo(), dbPath: ':memory:', configDirs: [personal, repo], adapters: { fake: new FakeAdapter(demoScripts) }, pollMs: 0 });
-  assert.equal(d.config.settings.approvals, 'gatekeeper', 'the default');
-  assert.deepEqual(d.config.settings.models['gpt-old'].prices, { input: 1, output: 4, cacheRead: 0.1 }, 'the old prices.json still counts');
+  assert.equal(d.project().config.settings.approvals, 'gatekeeper', 'the default');
+  assert.deepEqual(d.project().config.settings.models['gpt-old'].prices, { input: 1, output: 4, cacheRead: 0.1 }, 'the old prices.json still counts');
 
   await d.command({ cmd: 'settings.save', scope: 'personal', patch: { approvals: 'ask', cacheRemindSec: 90, models: { 'codex/sol': { prices: { input: 1.25, output: 10 }, cacheMinutes: 10 } } } });
   await d.command({ cmd: 'settings.save', scope: 'repo', patch: { approvals: 'harness', models: { 'codex/sol': { cacheMinutes: 30 } } } });
-  const s = d.config.settings;
+  const s = d.project().config.settings;
   assert.equal(s.approvals, 'harness');
   assert.equal(s.cacheRemindSec, 90);
   assert.deepEqual(s.models['codex/sol'], { prices: { input: 1.25, output: 10 }, cacheMinutes: 30 });
@@ -136,7 +136,7 @@ test('settings: each folder keeps its own settings.json; the repository wins, ke
 
   // null removes a key, and a model with nothing left.
   await d.command({ cmd: 'settings.save', scope: 'repo', patch: { approvals: null, models: { 'codex/sol': null } } });
-  assert.equal(d.config.settings.approvals, 'ask');
+  assert.equal(d.project().config.settings.approvals, 'ask');
   assert.deepEqual(JSON.parse(readFileSync(join(repo, 'settings.json'), 'utf8')), {});
   await d.close();
 });

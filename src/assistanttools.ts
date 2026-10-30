@@ -21,8 +21,8 @@ const text = (v: unknown): TextResult => {
 };
 const opt = z.string().optional();
 
-/** Commands a proposal may run once applied: setup only, never goals or agents. */
-const PROPOSABLE = ['role.update', 'settings.save', 'workflow.save', 'rule.save', 'guide.save', 'mcp.save'];
+/** Commands a proposal may run once applied: setup and opening projects, never goals or agents. */
+const PROPOSABLE = ['role.update', 'settings.save', 'workflow.save', 'rule.save', 'guide.save', 'mcp.save', 'project.open', 'project.create', 'project.clone'];
 
 export const GUIDE_PATH = join(import.meta.dirname, '..', 'GUIDE.md');
 
@@ -45,8 +45,12 @@ export function buildAssistantServer(d: Daemon): McpServer {
     return g;
   };
 
-  tool('goals', 'Every goal, newest first: id, request, status, cost, team size, where it ran, and its outcome.', {}, () =>
-    d.listGoals().map(g => ({ id: g.id, request: g.request.slice(0, 300), status: g.status, createdAt: g.createdAt, dir: g.dir, cost: g.cost, agents: g.agents, waitingOnHuman: g.needs, outcome: g.result?.slice(0, 600) ?? null })),
+  tool('projects', 'The projects (folders opened in MetaHarness, and folders past goals worked in): id, folder, whether you opened it, its goals and rooms, how many run, and what waits for the human.', {}, () => d.listProjects());
+
+  tool('folders', "The folders in a folder on MetaHarness's machine (default: the home folder), to find a project to open or a place for a new one. Each says whether it's a git repository, has its own MetaHarness setup, or is already a project.", { path: opt }, a => d.browseFolders(a.path));
+
+  tool('goals', 'Every goal, newest first: id, request, status, cost, team size, the project (folder) it ran in, and its outcome.', { project: opt }, a =>
+    d.listGoals().filter(g => !a.project || g.project === a.project || g.dir === a.project).map(g => ({ id: g.id, request: g.request.slice(0, 300), status: g.status, createdAt: g.createdAt, project: g.project, dir: g.dir, cost: g.cost, agents: g.agents, waitingOnHuman: g.needs, outcome: g.result?.slice(0, 600) ?? null })),
   );
 
   tool('goal', "One goal: its request, outcome, and team (each agent's role, harness, model, state, cost, tokens and result), and what waits for the human. Default: the latest goal.", { goal: opt }, a => {
@@ -118,12 +122,13 @@ export function buildAssistantServer(d: Daemon): McpServer {
     };
   });
 
-  tool('config', 'The setup: roles (harness, model, backups, approvals), workflows, rules (notes agents get at moments: start, path, new-file, commit, done), skills (guides with files agents read through their skill tool; the skills: line of a role names those it carries, and a skill no role names goes to every role), settings (approvals, prices, cache), the harnesses on this machine and what they can do, and accounts near their limits.', {}, () => {
-    const c = d.configView();
+  tool('config', 'A project\'s setup (name it with project: its id or folder; without one, your personal setup alone): roles (harness, model, backups, approvals), workflows, rules (notes agents get at moments: start, path, new-file, commit, done), skills (guides with files agents read through their skill tool; the skills: line of a role names those it carries, and a skill no role names goes to every role), settings (approvals, prices, cache), the harnesses on this machine and what they can do, and accounts near their limits.', { project: opt }, a => {
+    const c = d.configView(a.project ? { project: a.project } : { personal: true });
     return {
+      project: c.project,
       folders: c.scopes,
       roles: c.roles.map(r => ({ name: r.name, savedIn: r.scope, harness: r.harness, model: r.model, effort: r.effort || 'harness default', fallback: r.fallback, goodAt: r.goodAt, helper: r.helper, approvals: r.approvals || 'as in settings', allow: r.allow })),
-      builtInRoles: [d.config.settings.gatekeeper, d.config.settings.assistant].filter(n => !c.roles.some(r => r.name === n)),
+      builtInRoles: [c.settings.effective.gatekeeper, c.settings.effective.assistant].filter(n => !c.roles.some(r => r.name === n)),
       workflows: c.workflows.map(w => ({ name: w.name, savedIn: w.scope, goodAt: w.goodAt, roles: w.roles.length ? w.roles : 'every role' })),
       rules: c.rules.map(r => ({ name: r.name, savedIn: r.scope, on: r.on, when: r.when, roles: r.roles, paths: r.paths, description: r.description, body: r.body })),
       skills: c.skills.map(k => ({ name: k.name, folder: k.dir, from: k.source, on: k.on, carriedBy: k.carriedBy.length ? k.carriedBy : 'every role', pointedBy: k.pointedBy, harness: k.harness, description: k.description })),
@@ -148,7 +153,11 @@ export function buildAssistantServer(d: Daemon): McpServer {
       'settings.save: { scope: "personal" | "repo", patch: { approvals?, models?: { "harness/model": { prices?: { input, output, cacheRead?, cacheWrite? }, cacheMinutes? } } } } (prices in dollars per million tokens). ' +
       'workflow.save: { scope, name, goodAt, body }. ' +
       'rule.save: { scope, name, when: start|path|new-file|commit|done, description, body, roles?: [..], paths?: [..], sections?, include?, requires?, missing?, changes?: [..], unlessChanged?, edited?, skill? (a skill the note points at; then body may be empty) }; ' +
-      'to turn a rule or skill off or on without a file, settings.save with patch: { rules: { "<name>": false|true } } or { skills: { … } }. Always give a one-line summary of the change and why.',
+      'to turn a rule or skill off or on without a file, settings.save with patch: { rules: { "<name>": false|true } } or { skills: { … } }. ' +
+      'A "repo" scope is a project\'s own folder: add project (its id or folder) to the args; "personal" applies to every project. ' +
+      'project.open: { dir } opens a folder on this machine as a project. project.create: { dir, git? } makes a new folder (with a git repository unless git: false) and opens it. ' +
+      'project.clone: { url, dir } clones a repository into a new folder and opens it (ask the human where it should go if they didn\'t say; the folders tool shows what\'s there). ' +
+      'Always give a one-line summary of the change and why.',
     { summary: z.string(), command: z.string(), args: z.record(z.string(), z.unknown()).optional() },
     a => {
       if (!PROPOSABLE.includes(a.command)) return `I can't propose ${a.command}. Proposable: ${PROPOSABLE.join(', ')}.`;

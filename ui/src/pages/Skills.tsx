@@ -11,9 +11,9 @@ import { ListItem, Section } from './setup.tsx';
 const SOURCE: Record<SkillSource, string> = {
   'built-in': 'built-in',
   personal: 'personal',
-  repo: 'repository',
-  '.claude': 'repository · .claude',
-  '.agents': 'repository · .agents',
+  repo: 'project',
+  '.claude': 'project · .claude',
+  '.agents': 'project · .agents',
 };
 
 /** A skill's key in the address, apart from servers' scope/name. */
@@ -54,7 +54,7 @@ export function SkillDetail({ skill, scopes, onSave }: { skill: SkillDef; scopes
             checked={skill.on}
             onChange={on => void onSave({ cmd: 'settings.save', scope: switchScope, patch: { skills: { [skill.name]: on } } })}
             label={skill.on ? 'Agents can read this skill' : 'Off: agents don’t see it'}
-            hint={`Saved in ${switchScope === 'repo' ? 'this repository’s' : 'your personal'} settings.json.`}
+            hint={`Saved in ${switchScope === 'repo' ? 'this project’s' : 'your personal'} settings.json.`}
           />
         </Section>
         <Section title="What it's for">

@@ -1458,3 +1458,17 @@ input.cast-name { width: 160px; font-size: 12.5px; }
   .room-wrap > .splitter { display: none; }
   .room-chat { border-right: 0; border-bottom: 1px solid var(--line); }
 }
+
+/* Projects (design §22): the start screen and Open folder. */
+.project-card { cursor: pointer; }
+.project-card.current { border-color: var(--accent); }
+.folder-path { display: flex; gap: 8px; }
+.folder-path input { flex: 1; min-width: 0; }
+.crumbs { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
+.folder-list { border: 1px solid var(--line); border-radius: 10px; max-height: 46vh; overflow: auto; }
+.folder-row { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 13.5px; }
+.folder-row:last-child { border-bottom: 0; }
+.folder-row:hover, .folder-row:focus-visible { background: var(--panel-2); outline: none; }
+.folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dialog .row.between { justify-content: flex-start; align-items: center; flex-wrap: wrap; }
+.dialog .row.between input.new-folder { width: 160px; flex: none; }

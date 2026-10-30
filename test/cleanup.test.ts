@@ -353,6 +353,6 @@ test('deleting goals: their folder and events go; unsaved work holds a goal back
 
   assert.deepEqual(d.deleteGoals([dirty], true).deleted, [dirty]);
   assert.ok(!existsSync(join(d.home, 'goals', dirty)));
-  assert.equal(git(d.repo, 'branch', '--list', `mh/${dirty}/*`), '', 'its branch went too');
+  assert.equal(git(d.project().dir, 'branch', '--list', `mh/${dirty}/*`), '', 'its branch went too');
   await d.close();
 });

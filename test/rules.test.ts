@@ -262,7 +262,7 @@ test('rules from the app: switch one off, customize a built-in, delete the copy'
   let v = (await d.command({ cmd: 'settings.save', scope: 'repo', patch: { rules: { map: false } } })) as any;
   assert.equal(rule(v, 'map').on, false);
   assert.equal(rule(v, 'map').switchedBy, 'repo');
-  assert.equal(d.config.rules.get('map')!.off, true, 'applies to agents started from now on');
+  assert.equal(d.project().config.rules.get('map')!.off, true, 'applies to agents started from now on');
   v = (await d.command({ cmd: 'settings.save', scope: 'repo', patch: { rules: { map: null } } })) as any;
   assert.equal(rule(v, 'map').on, true, 'null goes back to the default');
 
@@ -272,7 +272,7 @@ test('rules from the app: switch one off, customize a built-in, delete the copy'
   assert.equal(copy.scope, 'repo');
   assert.equal(copy.overrides, 'built-in');
   assert.match(readFileSync(copy.file, 'utf8'), /^---\nwhen: new-file\ndescription: before building[\s\S]*roles: team\npaths: \*\*, !\*\*\/\*test\*\/\*\*[\s\S]*---\nAsk the architect first\.\n$/);
-  assert.equal(d.config.rules.get('no-duplicates')!.body, 'Ask the architect first.');
+  assert.equal(d.project().config.rules.get('no-duplicates')!.body, 'Ask the architect first.');
   v = (await d.command({ cmd: 'rule.delete', name: 'no-duplicates', scope: 'repo' })) as any;
   assert.equal(rule(v, 'no-duplicates').scope, 'built-in', 'the built-in one is back');
 });

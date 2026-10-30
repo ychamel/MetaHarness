@@ -10,6 +10,8 @@ interface Props {
   kind: 'goal' | 'room';
   loaded: boolean;
   config?: ConfigView;
+  /** The project you're in: its goals are "here". */
+  projectDir?: string;
   onKind: (k: 'goal' | 'room') => void;
   onNew: () => void;
   onOpen: (goal: string, tab?: 'story' | 'files') => void;
@@ -25,16 +27,16 @@ type Sort = 'newest' | 'oldest' | 'largest' | 'cost';
  * Every goal MetaHarness has, in any folder: open one, open its files, see what it keeps on
  * disk, and delete the ones you're done with (one or many at once).
  */
-export function Goals({ goals, kind, loaded, config, onKind, onNew, onOpen, onCommand, onChanged }: Props) {
+export function Goals({ goals, kind, loaded, config, projectDir, onKind, onNew, onOpen, onCommand, onChanged }: Props) {
   const noun = kind === 'room' ? 'room' : 'goal';
   const confirm = useConfirm();
   const [sizes, setSizes] = useState<Record<string, Size>>({});
   const [query, setQuery] = useState('');
-  const [where, setWhere] = useState<Where>('all');
+  const [where, setWhere] = useState<Where>(projectDir ? 'here' : 'all');
   const [sort, setSort] = useState<Sort>('newest');
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  const repo = config?.scopes.find(s => s.scope === 'repo')?.dir.replace(/[/\\]\.metaharness$/, '');
+  const repo = projectDir;
   const here = (g: GoalSummary) => !repo || g.dir === repo;
 
   const loadSizes = useCallback(async () => {
@@ -57,7 +59,7 @@ export function Goals({ goals, kind, loaded, config, onKind, onNew, onOpen, onCo
       cost: (a, b) => (b.cost ?? 0) - (a.cost ?? 0),
     };
     return [...list].sort(by[sort]);
-    // here() reads repo, which comes with config.
+    // here() reads repo, the project's folder.
   }, [goals, query, where, sort, sizes, repo]);
   const orphans = Object.values(sizes).filter(s => !s.known);
   const total = Object.values(sizes).reduce((n, s) => n + s.bytes, 0);
@@ -137,8 +139,8 @@ export function Goals({ goals, kind, loaded, config, onKind, onNew, onOpen, onCo
         <input type="search" className="search" placeholder="Search requests, outcomes, folders" value={query} onChange={e => setQuery(e.target.value)} />
         <select value={where} onChange={e => setWhere(e.target.value as Where)} aria-label="Folder">
           <option value="all">Every folder</option>
-          <option value="here">This repository</option>
-          <option value="elsewhere">Other folders</option>
+          <option value="here">This project</option>
+          <option value="elsewhere">Other projects</option>
         </select>
         <select value={sort} onChange={e => setSort(e.target.value as Sort)} aria-label="Sort">
           <option value="newest">Newest first</option>

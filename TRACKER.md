@@ -543,6 +543,25 @@ Findings from the run:
   was refused (it then drew pixel art with Python). On the user's call, that subagent is now
   let through as an image request, with its report back to its parent session; retested live,
   it generated the image, saved it to `room/media/` and put the card on the board in ~2 minutes.
+- [x] **Projects: one daemon, many folders** (DESIGN.md §22, brainstorm → "go" on 2026-10-30).
+  The daemon no longer starts in a folder: it opens projects like an editor, holds them all,
+  and runs their goals at once, sharing subscriptions and limits. A `Project` (folder, config
+  over the personal one, design snapshots) belongs to each goal and room; nothing falls back to
+  the daemon's folder. `~/.metaharness/projects.json` keeps the folders opened and trusted; a
+  folder with its own `.metaharness` setup shows what it would run and asks once. The app gets
+  a Projects page (cards, Open folder over the daemon's disk, New project), a project switcher,
+  and every command carries the project; the CLI gets `mh project`, `mh projects`, and `mh run`
+  opens the git top it's run in. The assistant is the machine's: it proposes `project.open`,
+  `project.create`, `project.clone`, and starts in the project it's asked from. Agents stay in
+  their project: reads outside ask (they all passed before), read-only commands are
+  auto-approved only when `pathsOutside` finds nothing, agents lose `MH_HOME`, a
+  `stay-in-project` default rule, and Codex threads get a permission profile denying other
+  projects and `~/.metaharness`. Checked with tests (155), in headless Chrome against a scripted
+  daemon (start screen, folder browser, open, goal in the project, trust prompt, setup per
+  project), and live on 2026-10-30: Codex luna (the profile blocks a read of another project;
+  writes and network as before; the `sandbox` parameter overrides a profile, so it's left out),
+  Claude haiku (a `cat` and a Read outside both come to the Inbox). Not yet: Antigravity live,
+  Windows paths, a phone client.
 - [ ] The assistant stepping into goals (messaging the lead, pausing): later
 - [ ] Your own runs with the UI (live harnesses); fix what they turn up
 - [ ] Build order 3 (Milestone 3): shared-folder history browser, replay, search
@@ -566,10 +585,11 @@ Findings from the run:
 ## Resuming work
 
 ```sh
-npm install && npm test        # 147 tests, about half a minute, no model calls
+npm install && npm test        # 155 tests, about half a minute, no model calls
 node src/cli.ts doctor         # what's installed and signed in here
 node src/cli.ts daemon --fake  # try it without spending anything
 ```
 
-Real runs: start `node src/cli.ts daemon` from the repository the agents should work on, then
-`mh run`, `mh tail`, `mh status`, `mh approve`. The data lives in `~/.metaharness`.
+Real runs: start `node src/cli.ts daemon` (from anywhere), open the folder the agents should work
+on (`mh project` in it, or Open folder in the app), then `mh run`, `mh tail`, `mh status`, `mh approve`.
+The data lives in `~/.metaharness`.

@@ -43,7 +43,8 @@ const label = (r: { harness: string; model: string; effort?: string | null }) =>
  * it suggests shows here with an Apply button. Its model and effort can change mid-conversation:
  * the new one hears what was said. "New conversation" starts it fresh, back in read only.
  */
-export function AssistantPanel({ open, context, onClose, onApplied }: { open: boolean; context?: string; onClose: () => void; onApplied: () => void }) {
+/** `project`: the one you're in; a proposal that names none applies there. */
+export function AssistantPanel({ open, context, project, onClose, onApplied }: { open: boolean; context?: string; project?: string; onClose: () => void; onApplied: () => void }) {
   const [state, setState] = useState<State>();
   const [events, setEvents] = useState<MhEvent[]>([]);
   const [text, setText] = useState('');
@@ -91,7 +92,7 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
     if (!q.trim()) return;
     setText('');
     try {
-      await api.command({ cmd: 'assistant.ask', text: q.trim(), context });
+      await api.command({ cmd: 'assistant.ask', text: q.trim(), context, ...(project ? { project } : {}) });
     } catch (e) {
       setFailed((e as Error).message);
     }
@@ -125,7 +126,9 @@ export function AssistantPanel({ open, context, onClose, onApplied }: { open: bo
   };
   const decide = async (id: string, cmd: 'assistant.apply' | 'assistant.dismiss') => {
     try {
-      await api.command({ cmd, id });
+      const r = await api.command<{ needsTrust?: boolean; dir?: string }>({ cmd, id, ...(project ? { project } : {}) });
+      // A folder with its own setup is opened from Projects, where you see what it would run first.
+      if (r.needsTrust) setFailed(`${r.dir} has its own MetaHarness setup. Open it from Projects → Open folder, where you can look at it and trust it.`);
       if (cmd === 'assistant.apply') onApplied();
     } catch (e) {
       setFailed((e as Error).message);

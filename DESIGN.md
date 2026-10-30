@@ -87,8 +87,8 @@ reach that agent.
 
 ## 4. Configuration: roles, methodology, workflows
 
-Stored in `.metaharness/` in the repo, with a personal set in `~/.metaharness/` that applies
-everywhere.
+Stored in `.metaharness/` in each project (§22), with a personal set in `~/.metaharness/` that
+applies everywhere.
 
 ```markdown
 <!-- .metaharness/roles/architect.md -->
@@ -499,7 +499,9 @@ do, the CLI can do too, and vice versa.
 |---|---|
 | `GET /state?goal=<id>` | A snapshot: goals with their agents (state, status, brief, cost, context, unread, worktree, done note), the Inbox, accounts, and each harness's capability manifest, so a client hides fields a harness can't fill. A goal not loaded in the running daemon (finished before a restart) is rebuilt from the log (`live: false`). Goal status: `running` · `done` (the lead finished) · `ended` · `stopped` (never finished, not running here) |
 | `GET /events?goal=<id>&since=<seq>` | Server-sent events: replays events after `since`, then streams new ones live. Every event has an increasing `seq`, so a client that reconnects picks up exactly where it left off (`Last-Event-ID` works too) |
-| `GET /goals` | Every goal in the log, newest first: status, cost, agent count, whether it's live here |
+| `GET /goals` | Every goal in the log, newest first: status, cost, agent count, its project, whether it's live here |
+| `GET /projects` | The projects (§22): those opened, most recent first, then folders past goals worked in; each with its goals, rooms, how many run, what waits for you, and whether it's trusted |
+| `GET /browse?path&hidden` | The daemon's folders, one at a time, for Open folder: each says whether it's a git repository, has its own `.metaharness`, or is a project |
 | `GET /agent?goal=<id>&name=<agent>` | One agent in full: its system prompt, brief, folder, worktree and copied dependencies, native session, the command to open it by hand, its harness's manifest |
 | `POST /commands` | Every action a client can take |
 
@@ -543,7 +545,8 @@ Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended
 
 | Command | Arguments |
 |---|---|
-| `goal.start` | request, workflow?, lead? |
+| `goal.start` | request, project, workflow?, lead? |
+| `project.open` · `project.create` · `project.clone` · `project.forget` · `project.list` | dir, trust? (a folder with its own setup answers `needsTrust` with what it would run) · dir, git? · url, dir · project · — |
 | `goal.pause` · `goal.resume` · `goal.end` | goal (end stops everyone, then cleans up as usual) |
 | `goal.clean` | goal?, force? |
 | `agent.message` | to (agent \| role \| `lead` \| `all`), text, urgent? |
@@ -555,6 +558,10 @@ Agent states: `starting` · `working` · `waiting` · `idle` · `done` · `ended
 | `harness.test` | harness, model? |
 | `note.pin` · `note.remove` · `note.keep` | goal, path (an area: a folder or file, '' for the whole project), text · id · id, scope? (keep writes a path rule) |
 | `goal.set_lead` | (not built: a human as lead changes how the team works; to be designed) |
+
+Setup commands (`config.get`, `role.save`, `settings.save` and the rest) and `room.start` take
+`project` too: they read and write that project's folders (personal, then its own). Without
+one, they mean the personal folder alone.
 
 Read-only views, fetched when shown and never logged: `GET /git?goal` (branches, ahead and
 behind, uncommitted files, open conflicts, the latest snapshot's areas), `GET /diff?goal&sha |
@@ -1326,7 +1333,7 @@ Claude Code, and the team. Compare result quality, cost, time, and how often you
 1. Can you act as the lead (spawning and briefing agents from the UI), or is the lead always an agent? Probably both.
 2. Should the shared folder be committed with the code at the end (design docs, reports), or stay outside the repo?
 3. How long should finished agents stay resumable for follow-up questions before being released?
-4. Is one goal at a time enough at first, or are parallel goals needed early?
+4. ~~Is one goal at a time enough at first?~~ Goals run in parallel, across projects too (§22).
 5. How many warm helper sessions should each role keep, and does an idle harness process cost
    anything beyond memory?
 
@@ -1436,6 +1443,79 @@ frames lay out their own cards). A card opens in a panel beside the board (image
 sliders, source, concept, what it was made from and mixed into, Remix). The header holds the
 endings. Rooms keep their own make-room setting, apart from goals', and start with the team and
 agent columns put away.
+
+---
+
+## 22. Projects: one daemon, many folders
+
+MetaHarness began tied to a folder: `mh daemon` started in a repository and its agents worked
+there. Now it opens folders the way an editor does. One daemon per machine holds every
+**project** (a folder you opened), and their goals run at the same time, sharing what is the
+machine's: the subscriptions and their limits, the event log, the Inbox, the assistant.
+
+**What a project is.** A folder, real path, id a hash of it (`src/projects.ts`). Its config is
+the personal folder, then its own `.metaharness/`; its design snapshots read with its own
+language packs. A goal or room belongs to one project (`goal.started` records its folder), and
+everything about it comes from there: roles, workflows, rules, skills, settings, the
+gatekeeper's role. With no project open, setup means the personal folder alone. Nothing falls
+back to where the daemon was started: a goal names its project, or it doesn't start (tests and
+`new Daemon({ repo })` still get a default project, chosen explicitly).
+
+**Opening one.** From the app's **Projects** page (Open folder browses the daemon's disk, so it
+works when the daemon runs on another machine; New project makes a folder with a git
+repository), from a terminal (`mh project`, or `mh run`, which opens the top of the git
+repository it's run in), or through the assistant, which proposes `project.open`,
+`project.create` or `project.clone` for the human to apply. The list (`~/.metaharness/projects.json`)
+keeps the folders opened, most recent first, and which were trusted.
+
+**Trust.** A folder whose `.metaharness` would run something (roles, rules, workflows, MCP
+servers, harness profiles) is shown, once, before it opens: what it holds and the commands its
+MCP servers run. Opening it again with `trust` says yes. A folder without one opens at once.
+Like an editor's workspace trust: one question, not a checker.
+
+**Nesting.** A folder inside another project, or holding some, is allowed; the app says so when
+it opens. An outer project's agents are kept out of the inner one (below).
+
+**Keeping agents in their project.** The rule is about mistakes, not attackers: agents shouldn't
+read or work on the rest of the machine when the task is the repository. Three layers, every
+harness through the first:
+
+1. **What MetaHarness decides.** An agent's places are its project's folder, its own folder (a
+   worktree), its goal's folder in MetaHarness's home (shared folder, teammates' worktrees) and
+   the temporary folder; another project stays out even inside one of those. A read tool call
+   naming a path elsewhere asks (gatekeeper, then the human, told it reaches outside the
+   project), where before every read passed. A read-only command is approved by itself only
+   when every path it names resolves inside (`pathsOutside` in `src/readonly.ts`: following
+   `cd`, expanding `~` and `$HOME`, leaving grep's, sed's and jq's patterns alone, counting a
+   path it can't resolve). Edits already asked outside the agent's folders. Agents no longer
+   inherit `MH_HOME`.
+2. **The harness's own sandbox, where it can say so.** Codex threads get a permission profile
+   (Codex 0.16x `default_permissions`, `[permissions.<id>].filesystem`): the machine readable,
+   other projects and `~/.metaharness` denied, then the project, the goal's folder and the git
+   guard readable and the agent's folder, the shared folder, git directories and temp folders
+   writable, the more specific winning. The thread's `sandbox` parameter would override it, so
+   it's left out and `sandbox_mode: workspace-write` goes in config for a Codex without
+   profiles. Checked live on 2026-10-30 (Codex 0.164, luna): a command reading another project
+   got `Permission denied`; writes, temp files and no network as under workspace-write. Claude
+   Code and Antigravity ask MetaHarness about reads outside their folder (its permission prompt
+   tool, agy's PreToolUse hook), so layer 1 covers them; checked live on Claude Code (haiku):
+   both a `cat` and a Read tool call outside came to the Inbox.
+3. **A default rule**, `stay-in-project` (start): work here, ask before reaching outside.
+
+An operating-system sandbox around each harness (bubblewrap, a container per project) would
+make a hard wall, for privacy rather than mistakes; it's not built.
+
+**The assistant** works for every project. A conversation starts in the project the human asks
+from (write mode changes that one), else a folder of its own, and reads the others through its
+tools (`projects`, `folders`, `goals` by project, `config` by project).
+
+**Harnesses** are the machine's: adapters come from the built-in and personal profiles when the
+daemon starts. A project's own harness profiles show in its setup but don't add a harness.
+
+**Clients.** The browser app, the CLI, and later a phone app (a PWA first) and maybe a desktop
+shell are all clients of the one daemon; nothing about a project lives in them. The web app
+keeps the project in the address (`project=<id>`) and remembers the last one; every command it
+sends says which. A goal from another project opens in it.
 
 ---
 

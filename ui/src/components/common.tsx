@@ -322,9 +322,9 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
   );
 }
 
-/** Where a role or workflow is saved: this repository, or your own folder for every project. */
+/** Where a role or workflow is saved: the project's .metaharness, or your own folder for every project. */
 export function ScopeBadge({ scope }: { scope: string }) {
-  return <span className={`scope ${scope}`}>{scope === 'repo' ? 'repository' : scope === 'personal' ? 'personal' : scope}</span>;
+  return <span className={`scope ${scope}`}>{scope === 'repo' ? 'project' : scope === 'personal' ? 'personal' : scope}</span>;
 }
 
 /** A list of short strings edited as chips: type and press Enter, × to remove. */

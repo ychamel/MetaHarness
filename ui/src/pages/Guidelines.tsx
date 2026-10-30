@@ -11,7 +11,7 @@ export function Guidelines({ config, onSave }: { config?: ConfigView; onSave: (b
       <div className="page-head">
         <div>
           <h1>Guidelines</h1>
-          <div className="muted intro">How every agent should work with the rest of the team. It opens each agent’s prompt, before its role’s own instructions. A repository’s guidelines replace your personal ones there.</div>
+          <div className="muted intro">How every agent should work with the rest of the team. It opens each agent’s prompt, before its role’s own instructions. A project’s guidelines replace your personal ones there.</div>
         </div>
       </div>
       <div className="guides">
@@ -67,7 +67,7 @@ function GuideEditor({ which, title, sub, guide, config, onSave }: { which: stri
             <button
               className="btn ghost"
               onClick={async () => {
-                if (await confirm({ title: 'Go back to the built-in text?', body: <>This removes <span className="mono">{guide.from === 'repo' ? 'the repository’s' : 'your personal'}</span> file; {Object.keys(guide.files).length > 1 ? 'the other folder’s file applies then' : 'the built-in guidelines apply then'}.</>, confirm: 'Remove the file', danger: true }))
+                if (await confirm({ title: 'Go back to the built-in text?', body: <>This removes <span className="mono">{guide.from === 'repo' ? 'the project’s' : 'your personal'}</span> file; {Object.keys(guide.files).length > 1 ? 'the other folder’s file applies then' : 'the built-in guidelines apply then'}.</>, confirm: 'Remove the file', danger: true }))
                   await save('', guide.from as Scope);
               }}
             >
