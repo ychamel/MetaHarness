@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { endTree, spawnTree } from './procs.ts';
+import { endTree, launch, spawnTree } from './procs.ts';
 import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, delimiter, join } from 'node:path';
+import { basename, delimiter, extname, join } from 'node:path';
 import { parseFrontMatter } from './config.ts';
 import { claudeMcpNames } from './mcpservers.ts';
 import { CLAUDE_EFFORTS } from './effort.ts';
@@ -64,11 +64,17 @@ export const asModelList = (r: string[] | ModelList): ModelList => (Array.isArra
 /** Runs a CLI with nothing on its stdin (some, like `agy -p`, wait for it to close). */
 export function run(bin: string, args: string[], env: NodeJS.ProcessEnv, timeout = 20_000, cwd?: string): Promise<{ code: number; out: string; stdout: string }> {
   return new Promise(resolve => {
-    const child = execFile(bin, args, { env, timeout, cwd, maxBuffer: 4 << 20 }, (err, stdout, stderr) => {
-      const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? Number((err as { code: number }).code) : 1) : 0;
-      resolve({ code, out: `${stdout}${stderr}`.trim(), stdout });
-    });
-    child.stdin?.end();
+    const l = launch(bin, args);
+    try {
+      const child = execFile(l.bin, l.args, { env, timeout, cwd, maxBuffer: 4 << 20, windowsVerbatimArguments: l.verbatim }, (err, stdout, stderr) => {
+        const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? Number((err as { code: number }).code) : 1) : 0;
+        resolve({ code, out: `${stdout}${stderr}`.trim(), stdout });
+      });
+      child.stdin?.end();
+    } catch (e) {
+      // A file the system won't start at all (EINVAL, EACCES) throws here rather than failing the run.
+      resolve({ code: 1, out: (e as Error).message, stdout: '' });
+    }
   });
 }
 
@@ -293,9 +299,14 @@ export function loadProfiles(dirs: string[]): Map<string, HarnessProfile> {
   return out;
 }
 
-/** Where a binary is on PATH, if it's there. */
-export function findBin(bin: string, path = process.env.PATH ?? ''): string | undefined {
-  const candidates = bin.includes('/') ? [bin] : path.split(delimiter).filter(Boolean).map(dir => join(dir, bin));
+/**
+ * Where a binary is on PATH, if it's there. On Windows a command is `name` plus one of PATHEXT
+ * (claude.exe, codex.cmd), and a file with no extension (a shell script for Git Bash) can't run.
+ */
+export function findBin(bin: string, path = process.env.PATH ?? '', windows = process.platform === 'win32'): string | undefined {
+  const names = windows ? [...(extname(bin) ? [bin] : []), ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map(e => bin + e.toLowerCase())] : [bin];
+  const dirs = /[\\/]/.test(bin) ? [''] : path.split(delimiter).filter(Boolean);
+  const candidates = dirs.flatMap(dir => names.map(n => (dir ? join(dir, n) : n)));
   for (const c of candidates) {
     try {
       accessSync(c, constants.X_OK);
