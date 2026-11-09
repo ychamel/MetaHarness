@@ -1,7 +1,7 @@
-import { execFile } from 'node:child_process';
-import { endTree, spawnTree } from './procs.ts';
+import { execFile, execFileSync } from 'node:child_process';
+import { endTree, launch, spawnTree } from './procs.ts';
 import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, delimiter, join } from 'node:path';
+import { basename, delimiter, extname, join } from 'node:path';
 import { parseFrontMatter } from './config.ts';
 import { claudeMcpNames } from './mcpservers.ts';
 import { CLAUDE_EFFORTS } from './effort.ts';
@@ -64,11 +64,17 @@ export const asModelList = (r: string[] | ModelList): ModelList => (Array.isArra
 /** Runs a CLI with nothing on its stdin (some, like `agy -p`, wait for it to close). */
 export function run(bin: string, args: string[], env: NodeJS.ProcessEnv, timeout = 20_000, cwd?: string): Promise<{ code: number; out: string; stdout: string }> {
   return new Promise(resolve => {
-    const child = execFile(bin, args, { env, timeout, cwd, maxBuffer: 4 << 20 }, (err, stdout, stderr) => {
-      const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? Number((err as { code: number }).code) : 1) : 0;
-      resolve({ code, out: `${stdout}${stderr}`.trim(), stdout });
-    });
-    child.stdin?.end();
+    const l = launch(bin, args);
+    try {
+      const child = execFile(l.bin, l.args, { env, timeout, cwd, maxBuffer: 4 << 20, windowsVerbatimArguments: l.verbatim }, (err, stdout, stderr) => {
+        const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? Number((err as { code: number }).code) : 1) : 0;
+        resolve({ code, out: `${stdout}${stderr}`.trim(), stdout });
+      });
+      child.stdin?.end();
+    } catch (e) {
+      // A file the system won't start at all (EINVAL, EACCES) throws here rather than failing the run.
+      resolve({ code: 1, out: (e as Error).message, stdout: '' });
+    }
   });
 }
 
@@ -293,17 +299,44 @@ export function loadProfiles(dirs: string[]): Map<string, HarnessProfile> {
   return out;
 }
 
-/** Where a binary is on PATH, if it's there. */
-export function findBin(bin: string, path = process.env.PATH ?? ''): string | undefined {
-  const candidates = bin.includes('/') ? [bin] : path.split(delimiter).filter(Boolean).map(dir => join(dir, bin));
-  for (const c of candidates) {
-    try {
-      accessSync(c, constants.X_OK);
-      return c;
-    } catch {
-      /* not here */
+/**
+ * Where a binary is on PATH, if it's there. On Windows a command is `name` plus one of PATHEXT
+ * (claude.exe, codex.cmd), and a file with no extension (a shell script for Git Bash) can't run.
+ */
+/**
+ * Where `bin` runs from. On Windows a process's PATH is a copy taken when its terminal started, so
+ * a CLI installed since (its installer adds its folder to the user's PATH) isn't on it; a miss there
+ * also looks in the PATH the registry holds now (`savedPath`).
+ */
+export function findBin(bin: string, path = process.env.PATH ?? '', windows = process.platform === 'win32', savedPath: () => string = windows ? windowsSavedPath : () => ''): string | undefined {
+  const names = windows ? [...(extname(bin) ? [bin] : []), ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map(e => bin + e.toLowerCase())] : [bin];
+  const look = (dirs: string[]) => {
+    for (const c of dirs.flatMap(dir => names.map(n => (dir ? join(dir, n) : n)))) {
+      try {
+        accessSync(c, constants.X_OK);
+        return c;
+      } catch {
+        /* not here */
+      }
     }
-  }
+  };
+  if (/[\\/]/.test(bin)) return look(['']);
+  const dirs = path.split(delimiter).filter(Boolean);
+  return look(dirs) ?? look(savedPath().split(delimiter).filter(d => d && !dirs.includes(d)));
+}
+
+/** The user's and the machine's PATH as the registry holds them now, %VARIABLES% expanded. */
+export function windowsSavedPath(): string {
+  const read = (key: string) => {
+    try {
+      const out = execFileSync('reg', ['query', key, '/v', 'Path'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+      const m = /^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.*)$/im.exec(out);
+      return m ? m[1].trim().replace(/%([^%]+)%/g, (s, v: string) => process.env[v] ?? s) : '';
+    } catch {
+      return '';
+    }
+  };
+  return [read('HKCU\\Environment'), read('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment')].filter(Boolean).join(delimiter);
 }
 
 export interface HarnessReport {

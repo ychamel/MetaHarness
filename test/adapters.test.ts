@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claudeArgs, claudeUsage, claudeWindow, parseReset, rateLimitInfo } from '../src/adapters/claude.ts';
 import { codexRateLimit, isolationConfig } from '../src/adapters/codex.ts';
-import { BUILTIN_PROFILES, findBin, inspect, profileFromFile } from '../src/harnesses.ts';
+import { BUILTIN_PROFILES, findBin, inspect, profileFromFile, run } from '../src/harnesses.ts';
 import type { SessionSpec } from '../src/adapters/types.ts';
 
 const spec: SessionSpec = {
@@ -129,4 +129,32 @@ test('a user profile can put a known transport on another binary and provider', 
   assert.equal(unknown.transport, undefined, "a transport MetaHarness doesn't have isn't guessed at");
   assert.equal(unknown.bin, 'claude', 'what the file leaves out comes from the built-in profile');
   assert.equal(findBin('definitely-not-a-real-binary-xyz'), undefined);
+});
+
+test('on Windows a binary is found by its PATHEXT extension, not as a bare script', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mh-bin-'));
+  writeFileSync(join(dir, 'tool.exe'), '');
+  writeFileSync(join(dir, 'shim'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'shim.cmd'), '@echo off\n');
+  assert.equal(findBin('tool', dir, true), join(dir, 'tool.exe'));
+  assert.equal(findBin('shim', dir, true), join(dir, 'shim.cmd'), 'the .cmd, not the sh script beside it');
+  assert.equal(findBin('tool.exe', dir, true), join(dir, 'tool.exe'));
+});
+
+test("on Windows a CLI installed after the terminal started is found on the registry's PATH", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mh-bin-'));
+  writeFileSync(join(dir, 'agy.exe'), '');
+  assert.equal(findBin('agy', '', true, () => dir), join(dir, 'agy.exe'));
+  assert.equal(findBin('agy', '', false, () => dir), undefined, 'not elsewhere');
+  assert.equal(findBin('missing', '', true, () => dir), undefined);
+});
+
+test('a .cmd shim runs through cmd.exe with its arguments intact', { skip: process.platform !== 'win32' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mh bin '));
+  const shim = join(dir, 'echoargs.cmd');
+  writeFileSync(shim, `@"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" %*\r\n`);
+  const args = ['first', 'two words', 'a&b|c', '100%', 'say "hi"', 'back\\slash\\'];
+  const r = await run(shim, args, process.env);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(JSON.parse(r.stdout), args);
 });

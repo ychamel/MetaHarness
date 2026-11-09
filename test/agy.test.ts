@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgyAdapter, agyArgs, agyHome, agyToolRequest, quotaInfo, quotaPool, writeAgentConfig } from '../src/adapters/agy.ts';
@@ -179,7 +179,13 @@ test("agy's own HOME: the user's files and agy's state, none of their agy custom
   }
   const env = agyHome(join(tmp, 'mh'), user);
   const home = env.HOME;
-  const linked = (p: string) => lstatSync(join(home, p)).isSymbolicLink() && readlinkSync(join(home, p)) === join(user, p);
+  // A symlink, or on Windows without the right to make one a junction (folder) or hard link (file).
+  const linked = (p: string) => {
+    const at = join(home, p);
+    if (!existsSync(at)) return false;
+    if (lstatSync(at).isSymbolicLink()) return readlinkSync(at).replace(/[\\/]+$/, '') === join(user, p);
+    return process.platform === 'win32' && statSync(at).ino === statSync(join(user, p)).ino;
+  };
   for (const p of ['.gitconfig', '.ssh', '.gemini/antigravity-cli', '.gemini/config/config.json', '.gemini/config/projects', '.gemini/config/skills']) assert.ok(linked(p), p);
   for (const p of ['.gemini/GEMINI.md', '.gemini/config/mcp_config.json', '.gemini/config/hooks.json', '.gemini/config/plugins', '.gemini/config/workflows', '.gemini/config/sidecars']) {
     assert.ok(!existsSync(join(home, p)), `${p} stays out`);
@@ -191,7 +197,8 @@ test("agy's own HOME: the user's files and agy's state, none of their agy custom
   rmSync(join(user, '.gitconfig'));
   writeFileSync(join(user, '.npmrc'), 'x');
   agyHome(join(tmp, 'mh'), user);
-  assert.ok(!existsSync(join(home, '.gitconfig')) && linked('.npmrc'));
+  // A hard link (Windows without symlinks) can't be told from agy's own file, so it outlives its source.
+  assert.ok((process.platform === 'win32' || !existsSync(join(home, '.gitconfig'))) && linked('.npmrc'));
   assert.equal(readFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), 'utf8'), '');
 });
 

@@ -45,9 +45,14 @@ export async function hiddenSkills(server: { request(method: string, params: unk
   }
 }
 
+/**
+ * The MCP servers a thread would still have once plugins are off. A plugin's servers (the Codex
+ * app's computer use brings cua_repl) go with the plugin, and turning one off by name then leaves
+ * an entry with no command or url, which Codex refuses to load ("invalid transport").
+ */
 async function listUserMcpServers(bin: string): Promise<string[]> {
   try {
-    const { stdout } = await promisify(execFile)(bin, ['mcp', 'list', '--json'], { timeout: 15_000 });
+    const { stdout } = await promisify(execFile)(bin, ['-c', 'features.plugins=false', 'mcp', 'list', '--json'], { timeout: 15_000 });
     return (JSON.parse(stdout) as { name: string }[]).map(s => s.name);
   } catch {
     return [];
