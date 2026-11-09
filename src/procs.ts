@@ -11,10 +11,24 @@ import { readdirSync, readFileSync } from 'node:fs';
 const live = new Set<ChildProcess>();
 const WINDOWS = process.platform === 'win32';
 
+/**
+ * How to start `bin` with `args`. Windows won't start a .cmd or .bat (npm's shims, codex.cmd)
+ * without cmd.exe, so those go through it, each argument quoted and its metacharacters escaped
+ * twice: once for cmd.exe, once more for the shim passing %* on (as cross-spawn does).
+ */
+export function launch(bin: string, args: string[], windows = WINDOWS): { bin: string; args: string[]; verbatim?: boolean } {
+  if (!windows || !/\.(cmd|bat)$/i.test(bin)) return { bin, args };
+  const meta = /([()\][%!^"`<>&|;, *?])/g;
+  const quote = (a: string) => `"${a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1')}"`.replace(meta, '^$1').replace(meta, '^$1');
+  const line = [bin.replace(meta, '^$1'), ...args.map(quote)].join(' ');
+  return { bin: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true };
+}
+
 /** spawn(), with the child leading a process group of its own (on Windows, a tree taskkill reaches). */
 export function spawnTree(bin: string, args: string[], opts: SpawnOptions & { keepOrphans?: boolean }): ChildProcessWithoutNullStreams {
   const { keepOrphans, ...rest } = opts;
-  const proc = spawn(bin, args, { ...rest, detached: !WINDOWS });
+  const l = rest.shell ? { bin, args } : launch(bin, args);
+  const proc = spawn(l.bin, l.args, { ...rest, detached: !WINDOWS, ...(l.verbatim && { windowsVerbatimArguments: true }) });
   live.add(proc);
   proc.once('exit', () => {
     live.delete(proc);
