@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { endTree, spawnTree } from '../procs.ts';
 import { foldEfforts, nearestEffort } from '../effort.ts';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseFrontMatter } from '../config.ts';
@@ -234,7 +234,8 @@ const AGY_GEMINI_HIDDEN = ['config', 'GEMINI.md', 'AGENTS.md', 'jetski'];
 export function agyHome(dir: string, userHome = homedir()): { HOME: string; BASH_ENV: string } {
   const home = join(dir, 'home');
   const gemini = join(userHome, '.gemini');
-  linkEntries(userHome, home, name => name !== '.gemini');
+  // Windows: the registry's hive files (NTUSER.DAT and its logs) are in the profile but no one's to share.
+  linkEntries(userHome, home, name => name !== '.gemini' && !/^ntuser\./i.test(name));
   linkEntries(gemini, join(home, '.gemini'), name => !AGY_GEMINI_HIDDEN.includes(name));
   linkEntries(join(gemini, 'config'), join(home, '.gemini', 'config'), name => AGY_CONFIG_KEPT.includes(name));
   const bashEnv = join(dir, 'bash-env.sh');
@@ -254,15 +255,37 @@ function linkEntries(src: string, dst: string, keep: (name: string) => boolean):
   const want = new Set(existsSync(src) ? readdirSync(src).filter(name => keep(name) && join(src, name) !== dst) : []);
   for (const name of readdirSync(dst)) {
     const p = join(dst, name);
-    if (lstatSync(p).isSymbolicLink() && (!want.has(name) || readlinkSync(p) !== join(src, name))) rmSync(p, { force: true });
+    if (lstatSync(p).isSymbolicLink() && (!want.has(name) || unslash(readlinkSync(p)) !== join(src, name))) rmSync(p, { force: true });
   }
   for (const name of want) {
     try {
-      symlinkSync(join(src, name), join(dst, name));
+      link(join(src, name), join(dst, name));
     } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
       // Another agent starting at the same time made it, or agy keeps a file of its own there.
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      if (code === 'EEXIST') continue;
+      // Windows: a file in use (NTUSER.DAT), one on another drive, or one the user can't read stays out.
+      if (WINDOWS && ['EPERM', 'EACCES', 'EBUSY', 'EXDEV', 'ENOENT'].includes(code ?? '')) continue;
+      throw e;
     }
+  }
+}
+
+const WINDOWS = process.platform === 'win32';
+const unslash = (p: string) => p.replace(/[\\/]+$/, '');
+
+/**
+ * A link at `path` to `target`. Windows makes symlinks only for admins or in Developer Mode, so
+ * there a folder gets a junction and a file a hard link when a symlink isn't allowed.
+ */
+function link(target: string, path: string): void {
+  if (!WINDOWS) return symlinkSync(target, path);
+  if (statSync(target).isDirectory()) return symlinkSync(target, path, 'junction');
+  try {
+    symlinkSync(target, path, 'file');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e;
+    linkSync(target, path);
   }
 }
 
