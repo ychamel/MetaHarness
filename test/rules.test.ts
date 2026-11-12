@@ -276,3 +276,33 @@ test('rules from the app: switch one off, customize a built-in, delete the copy'
   v = (await d.command({ cmd: 'rule.delete', name: 'no-duplicates', scope: 'repo' })) as any;
   assert.equal(rule(v, 'no-duplicates').scope, 'built-in', 'the built-in one is back');
 });
+
+test('beginner mode: the plain-language rule reaches agents only while the setting is on', async () => {
+  const promptWith = async (settings: Record<string, unknown>) => {
+    // In beginner mode the plain-summary rule holds the first done and asks for it again.
+    const { d, fake } = shop({ lead: async ctx => void (/call done again/.test(await ctx.tool('done', { note: 'ok' })) && (await ctx.tool('done', { note: 'ok' }))) }, settings);
+    const goal = d.startGoal({ request: 'Anything', lead: 'lead' });
+    await withTimeout(d.goals.get(goal)!.leadDone, 10_000, 'lead done');
+    const prompt = fake.started[0].spec.systemPrompt;
+    await d.close();
+    return prompt;
+  };
+  const on = await promptWith({ beginner: true });
+  assert.match(on, /new to coding/);
+  assert.match(on, /`Options:`[\s\S]*\(recommended\)/, 'it asks for choices in the shape the Inbox turns into buttons');
+  assert.doesNotMatch(await promptWith({}), /new to coding/, 'off by default');
+});
+
+test('beginner mode: the lead is asked for a plain summary before its done goes through', async () => {
+  let first = '';
+  const { d } = shop({
+    lead: async ctx => {
+      first = await ctx.tool('done', { note: 'did it' });
+      await ctx.tool('done', { note: 'What changed: …' });
+    },
+  }, { beginner: true });
+  const goal = d.startGoal({ request: 'Anything', lead: 'lead' });
+  await withTimeout(d.goals.get(goal)!.leadDone, 10_000, 'lead done');
+  assert.match(first, /plain-summary[\s\S]*What changed[\s\S]*How to try it[\s\S]*Undo this goal[\s\S]*call done again/);
+  await d.close();
+});

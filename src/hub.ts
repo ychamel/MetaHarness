@@ -43,7 +43,7 @@ export const TOOL_DOCS: Record<(typeof TOOL_NAMES)[number], { description: strin
       to: 'Recipient',
       text: 'The message',
       urgent: 'true to interrupt them',
-      decision: 'With to: human, true to ask for an approval (e.g. of a design). Say what to approve and where it is; the answer arrives as a message',
+      decision: 'With to: human, true to ask for an approval (e.g. of a design). Say what to approve and where it is; the answer arrives as a message. To offer choices, list them under a line saying Options: (a numbered list, the one you would pick marked (recommended)): the human gets a button for each',
       allow: "For a lead, answering a teammate's request that MetaHarness passed to you: yes to let it run, no to refuse it (text says why)",
     },
   },

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { ConfigView, Scope } from '../types.ts';
-import { ScopeBadge, useConfirm } from '../components/common.tsx';
+import { ScopeBadge, Termed, useConfirm } from '../components/common.tsx';
 import { Splitter } from '../components/Splitter.tsx';
 
 /** What every Setup page gets from the app. */
@@ -128,7 +128,9 @@ export function Section({ title, hint, children }: { title: string; hint?: React
   return (
     <section className="form-section">
       <div className="form-section-head">
-        <h3>{title}</h3>
+        <h3>
+          <Termed text={title} />
+        </h3>
         {hint && <span className="hint">{hint}</span>}
       </div>
       <div className="form-section-body">{children}</div>

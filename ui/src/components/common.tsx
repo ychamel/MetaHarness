@@ -3,6 +3,7 @@ import type { Agent } from '../types.ts';
 import { modelLabel } from '../format.ts';
 import { fileAt, withFileLinks, type FileLinks } from '../fileLinks.tsx';
 import { useBackCloses, useIsPhone } from '../phone.ts';
+import { termIn, useBeginner } from '../beginner.ts';
 
 /**
  * Keeps a view that throws from blanking the whole app: it says what broke and offers to try
@@ -360,10 +361,29 @@ function inline(s: string, files?: FileLinks): ReactNode[] {
 
 /* ---------------- forms ---------------- */
 
+/**
+ * A label that, in beginner mode, explains the term it names on hover or focus (the glossary in
+ * beginner.ts). Otherwise just the text.
+ */
+export function Termed({ text }: { text: string }) {
+  const t = useBeginner() ? termIn(text) : undefined;
+  if (!t) return <>{text}</>;
+  return (
+    <span className="term" tabIndex={0}>
+      {text}
+      <span className="term-tip" role="tooltip">
+        {t.meaning}
+      </span>
+    </span>
+  );
+}
+
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
     <label className="field">
-      <span className="field-label">{label}</span>
+      <span className="field-label">
+        <Termed text={label} />
+      </span>
       {children}
       {hint && <span className="hint">{hint}</span>}
     </label>

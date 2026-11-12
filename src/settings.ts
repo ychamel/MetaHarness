@@ -67,6 +67,11 @@ export interface Settings {
   agentTools: boolean;
   /** The role that makes tools, which agentTools: false keeps from starting. */
   toolsmith: string;
+  /**
+   * The human is new to coding: agents write to them plainly (the plain-language rule), and the
+   * app explains its terms and leads with what an approval does before the command itself.
+   */
+  beginner: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -87,6 +92,7 @@ export const DEFAULT_SETTINGS: Settings = {
   design: true,
   agentTools: true,
   toolsmith: 'toolsmith',
+  beginner: false,
 };
 
 const FILE = 'settings.json';
@@ -134,6 +140,7 @@ function apply(s: Settings, raw: Record<string, unknown>): void {
   if (typeof raw.cacheReminders === 'boolean') s.cacheReminders = raw.cacheReminders;
   if (typeof raw.design === 'boolean') s.design = raw.design;
   if (typeof raw.agentTools === 'boolean') s.agentTools = raw.agentTools;
+  if (typeof raw.beginner === 'boolean') s.beginner = raw.beginner;
   if (typeof raw.toolsmith === 'string' && raw.toolsmith.trim()) s.toolsmith = raw.toolsmith.trim();
   for (const k of ['cacheRemindSec', 'cacheRemindMinTokens', 'defaultCacheMinutes', 'limitCheckMinutes', 'contextHandoffPct', 'stallMinutes'] as const) if (num(raw[k]) !== undefined) s[k] = num(raw[k])!;
   if (raw.models && typeof raw.models === 'object') {

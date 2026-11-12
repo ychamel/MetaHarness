@@ -5,7 +5,7 @@ import { TeamTree } from '../components/TeamTree.tsx';
 import { ACTIONABLE, NeedsYou, Updates } from '../components/Inbox.tsx';
 import { AgentDetail } from '../components/AgentDetail.tsx';
 import { ErrorBoundary, HeaderActions, Markdown, More, useConfirm } from '../components/common.tsx';
-import { ContinueButtons, MessageDialog, type ContinueFrom } from '../components/Dialogs.tsx';
+import { ContinueButtons, MessageDialog, UndoGoalButton, type ContinueFrom } from '../components/Dialogs.tsx';
 import { AccountChips, harnessOf } from '../components/Accounts.tsx';
 import { ApprovalsSelect, AwayButton, AwayNote, useAway } from '../components/Away.tsx';
 import { Splitter } from '../components/Splitter.tsx';
@@ -523,6 +523,7 @@ function Outcome({ goal, lead, item, events, onResolve, onContinue, onFile, onNe
         <button className="btn small ghost" onClick={() => onNewRoom({ id: goal.id, label: title, kind: 'goal', topic: `How did "${title.slice(0, 80)}" turn out, and what's next?` })} title="Talk over how it turned out: a room that starts with this goal's outcome on its canvas">
           Discuss in a room
         </button>
+        <UndoGoalButton goal={goal.id} />
         <span className="grow" />
         {item &&
           (reply === undefined ? (

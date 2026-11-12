@@ -590,6 +590,8 @@ export interface Settings {
   stallMinutes: number;
   /** Agents make and use tools (design §24). */
   agentTools: boolean;
+  /** The human is new to coding: agents write plainly, and the app explains its terms. */
+  beginner: boolean;
   models: Record<string, ModelSettings>;
   rules: Record<string, boolean>;
 }

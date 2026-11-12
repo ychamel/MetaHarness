@@ -26,7 +26,7 @@ export function Settings({ config, ...p }: Props) {
 function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: ConfigView }) {
   const eff = config.settings.effective;
   const [scope, setScope] = useState<Scope>(config.scopes.some(s => s.scope === 'repo') ? 'repo' : 'personal');
-  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, roomLead: eff.roomLead, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes, limitCheckMinutes: eff.limitCheckMinutes, contextHandoffPct: eff.contextHandoffPct, stallMinutes: eff.stallMinutes, agentTools: eff.agentTools }), [eff]);
+  const saved = useMemo<Draft>(() => ({ approvals: eff.approvals, gatekeeper: eff.gatekeeper, assistant: eff.assistant, roomLead: eff.roomLead, cacheReminders: eff.cacheReminders, cacheRemindSec: eff.cacheRemindSec, cacheRemindMinTokens: eff.cacheRemindMinTokens, defaultCacheMinutes: eff.defaultCacheMinutes, limitCheckMinutes: eff.limitCheckMinutes, contextHandoffPct: eff.contextHandoffPct, stallMinutes: eff.stallMinutes, agentTools: eff.agentTools, beginner: eff.beginner }), [eff]);
   const { draft, set, dirty, revert } = useDraft<Draft>(saved);
   const [busy, setBusy] = useState(false);
   const from = (k: keyof Draft) => [...config.settings.files].reverse().find(f => f.values[k] !== undefined)?.scope;
@@ -57,6 +57,15 @@ function SettingsForm({ config, onSave, onBuiltinRole }: Props & { config: Confi
           <div className="editor-scroll">
             <Section title="Save to">
               <ScopePicker config={config} value={scope} onChange={setScope} />
+            </Section>
+
+            <Section title="How the team talks to you" hint={where('beginner')}>
+              <Toggle
+                checked={draft.beginner}
+                onChange={v => set('beginner', v)}
+                label={draft.beginner ? 'I’m new to coding: keep it plain' : 'Write to me as a developer'}
+                hint="On: agents write to you in plain words, ask one thing at a time, give you choices with a recommendation, and tell you how to check their work. The app explains its terms and shows what an approval does before the command itself."
+              />
             </Section>
 
             <Section title="Approvals" hint={where('approvals')}>

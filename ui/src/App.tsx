@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { api, ApiError, loadToken, setToken } from './api.ts';
 import { useGoal } from './useGoal.ts';
 import type { ConfigView, GoalSummary, ProjectSummary } from './types.ts';
+import { BeginnerContext } from './beginner.ts';
 import { SpawnDialog, StartGoalDialog, type ContinueFrom } from './components/Dialogs.tsx';
 import { ConfirmProvider, ErrorBoundary, useToast } from './components/common.tsx';
 import { Home } from './pages/Home.tsx';
@@ -9,6 +10,7 @@ import { GoalPage, type GoalTab, type RoomFrom } from './pages/GoalPage.tsx';
 import { NewRoomDialog } from './components/Room.tsx';
 import { Harnesses } from './pages/Harnesses.tsx';
 import { AssistantPanel } from './components/AssistantPanel.tsx';
+import { UpdateBanner } from './components/UpdateBanner.tsx';
 import { Settings } from './pages/Settings.tsx';
 import { Roles } from './pages/Roles.tsx';
 import { Workflows } from './pages/Workflows.tsx';
@@ -278,6 +280,7 @@ function Shell() {
   const continueFrom = (from: ContinueFrom) => setDialog({ kind: 'goal', from });
 
   return (
+    <BeginnerContext.Provider value={!!config?.settings.effective.beginner}>
     <div className="shell">
       <nav className="rail" aria-label="Main">
         <div className="rail-brand" title="MetaHarness">
@@ -310,6 +313,7 @@ function Shell() {
 
       <main className="content">
         <ErrorBoundary resetKey={place.page}>
+        <UpdateBanner />
         {error && (onGoalPage || onRoomPage) && <div className="error-bar">{error}</div>}
         {(place.page === 'projects' || (noProject && ['home', 'goal', 'room'].includes(place.page))) && (
           <Projects projects={projects} loaded={loaded} current={projectId} onPick={pickProject} onCommand={command} onChanged={() => void loadGoals()} />
@@ -467,6 +471,7 @@ function Shell() {
       />
       {toast}
     </div>
+    </BeginnerContext.Provider>
   );
 }
 

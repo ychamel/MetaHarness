@@ -28,6 +28,22 @@ to your subscriptions. For how it works inside, see [DESIGN.md](DESIGN.md).
 
 ## 2. Install
 
+The quickest way is one line. It checks Node and git (and says how to install them if they're
+missing), downloads MetaHarness to `~/metaharness`, builds it, puts `mh` on your PATH and runs
+`mh doctor`:
+
+```sh
+# macOS and Linux
+curl -fsSL https://raw.githubusercontent.com/ychamel/MetaHarness/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/ychamel/MetaHarness/main/install.ps1 | iex
+```
+
+Run it again later to update. Or do it by hand:
+
 ```sh
 git clone <this repository> metaharness
 cd metaharness
@@ -37,6 +53,14 @@ npm link              # optional: puts `mh` on your PATH (otherwise use `node sr
 ```
 
 The examples below use `mh`.
+
+`mh daemon` starts MetaHarness again by itself when you press **Restart now** in the app, which
+it offers after an update: a running MetaHarness keeps the code it started with until then.
+
+**New to coding?** Turn on *Setup → Settings → How the team talks to you*. Agents then write to
+you in plain words and give you choices as buttons, approvals say what a command does before
+showing it, the app explains its terms when you hover them, and a finished goal ends with a
+summary of what changed, how to try it, and an **Undo this goal** button.
 
 ## 3. Check your harnesses
 

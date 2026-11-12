@@ -35,6 +35,38 @@ export function checkRoute(harness: string, model: string, reports: Map<string, 
 
 const mark = (ok: boolean | undefined) => (ok === true ? '✓' : ok === false ? '✗' : '?');
 
+/** What MetaHarness itself needs here: Node, git, and the built web app. */
+export interface MachineCheck {
+  node: string;
+  /** `git --version`'s number; undefined when git isn't installed. */
+  git?: string;
+  uiBuilt: boolean;
+  /** Where MetaHarness is, for the build command. */
+  dir: string;
+  platform: NodeJS.Platform;
+}
+
+/** a.b(.c) at least min, compared number by number. */
+export function atLeast(version: string, min: string): boolean {
+  const a = version.split('.').map(Number);
+  const b = min.split('.').map(Number);
+  for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i];
+  return true;
+}
+
+/** The machine's checks, each failing one with the command that fixes it. */
+export function machineLines(m: MachineCheck): string[] {
+  const install = (what: 'node' | 'git') =>
+    m.platform === 'win32' ? `winget install ${what === 'node' ? 'OpenJS.NodeJS' : 'Git.Git'}` : m.platform === 'darwin' ? `brew install ${what}` : what === 'node' ? 'https://nodejs.org (or your package manager)' : 'your package manager, e.g. sudo apt install git';
+  const lines = ['This machine', ''];
+  const nodeOk = atLeast(m.node, '24');
+  lines.push(`  ${mark(nodeOk)} Node ${m.node}${nodeOk ? '' : `: MetaHarness needs 24 or newer. Fix: ${install('node')}`}`);
+  const gitOk = !!m.git && atLeast(m.git, '2.28');
+  lines.push(`  ${mark(gitOk)} ${m.git ? `git ${m.git}` : 'git'}${gitOk ? '' : m.git ? ': MetaHarness needs 2.28 or newer, to keep agents from deleting branches. Fix: ' + install('git') : ": not installed. Fix: " + install('git')}`);
+  lines.push(`  ${mark(m.uiBuilt)} Web app${m.uiBuilt ? ' built' : `: not built yet. Fix: cd "${m.dir}" && npm run ui:build`}`);
+  return lines;
+}
+
 /** Tools (design §24) as doctor reads them: what each needs, and what of that isn't installed here. */
 export interface ToolCheck {
   name: string;
@@ -56,7 +88,10 @@ export function doctorLines(reports: HarnessReport[], roles: Role[], mcpDefs: Ma
   }
   if (!found.length) lines.push('  None found.');
   const missing = reports.filter(r => !r.path);
-  if (missing.length) lines.push('', `  Not found: ${missing.map(r => r.title).join(', ')}`);
+  if (missing.length) {
+    lines.push('', '  Not found (optional: one harness is enough to start):');
+    for (const r of missing) lines.push(`    ${r.title.padEnd(20)} ${r.install ? `install: ${r.install}` : ''}`.trimEnd());
+  }
 
   if (roles.length) {
     lines.push('', 'Roles', '');

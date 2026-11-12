@@ -4,6 +4,18 @@ import { api } from '../api.ts';
 import type { ConfigView, Goal } from '../types.ts';
 import { Dialog, Field, Toggle } from './common.tsx';
 import { ago, modelLabel } from '../format.ts';
+import { useBeginner } from '../beginner.ts';
+
+/** Ways to start a request: a few prompts that make it clear enough for the team to start well. */
+export const REQUEST_TEMPLATES: { label: string; text: string }[] = [
+  { label: 'Fix a bug', text: ['Fix a bug.', 'What happens now: ', 'What should happen instead: ', 'How to see it (steps, a page or a command): ', 'Where it is, if you know: '].join('\n') },
+  { label: 'Add a feature', text: ['Add a feature.', 'What it should do: ', 'Who uses it, and how: ', 'How I’ll know it works: ', 'Anything it must not change: '].join('\n') },
+  { label: 'Explain some code', text: ['Explain how this works, in plain words, without changing any code.', 'What I want to understand: ', 'Where it is, if you know: ', 'Write the explanation to shared/explanation.md.'].join('\n') },
+  { label: 'Clean up', text: ['Clean up code without changing what it does.', 'Which part: ', 'What bothers me about it: ', 'Keep every test passing.'].join('\n') },
+];
+
+/** Added to a request when the human wants to be asked before the team starts. */
+export const ASK_FIRST = '\n\nBefore any work starts, ask me (send to human) what you need to know to get this right: one question at a time, with options where you can.';
 
 /** What a goal starts from: the request, who leads, and (optionally) the workflow the lead follows. */
 export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', initialRequest = '', extra, autoFocus }: {
@@ -21,6 +33,8 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', i
   const [lead, setLead] = useState('');
   const [workflow, setWorkflow] = useState(initialWorkflow);
   const [busy, setBusy] = useState(false);
+  const beginner = useBeginner();
+  const [askFirst, setAskFirst] = useState(beginner);
   const leadName = lead || (leads.find(r => r.name === 'architect') ?? leads[0])?.name || '';
   const leadDef = leads.find(r => r.name === leadName);
   const wf = config?.workflows.find(w => w.name === workflow);
@@ -30,7 +44,7 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', i
     if (!request.trim() || busy) return;
     setBusy(true);
     const lines = await attachments.upload();
-    const ok = lines && (await onStart({ cmd: 'goal.start', request: request.trim(), lead: leadName || undefined, workflow: workflow || undefined, ...startFiles(draft, lines), ...extra }));
+    const ok = lines && (await onStart({ cmd: 'goal.start', request: request.trim() + (askFirst ? ASK_FIRST : ''), lead: leadName || undefined, workflow: workflow || undefined, ...startFiles(draft, lines), ...extra }));
     setBusy(false);
     if (ok) {
       setRequest('');
@@ -39,6 +53,14 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', i
   };
   return (
     <div className="new-goal">
+      <div className="templates" role="group" aria-label="Start from">
+        <span className="muted small">Start from:</span>
+        {REQUEST_TEMPLATES.map(t => (
+          <button key={t.label} type="button" className="btn ghost small" onClick={() => setRequest(r => (r.trim() ? `${r.trimEnd()}\n\n${t.text}` : t.text))}>
+            {t.label}
+          </button>
+        ))}
+      </div>
       <textarea
         autoFocus={autoFocus}
         rows={4}
@@ -91,6 +113,7 @@ export function NewGoalForm({ config, onStart, onCancel, initialWorkflow = '', i
           </select>
         </Field>
       </div>
+      <Toggle checked={askFirst} onChange={setAskFirst} label="Ask me questions before starting" hint="The lead asks you what it needs to know first, one question at a time, so the team doesn’t guess." />
       <div className="row end">
         <span className="muted kbd-hint">Ctrl+Enter to start</span>
         {onCancel && (
@@ -327,5 +350,63 @@ export function MessageDialog({ goal, initial = '', onClose, onSend }: { goal: G
         </button>
       </div>
     </Dialog>
+  );
+}
+
+/**
+ * Undo a finished goal (goal.undo): first what it would undo, then, once confirmed, every file
+ * back as it was before the goal, saved as one new commit. Refusals (uncommitted changes, another
+ * branch, a team still at work) are shown as the daemon words them.
+ */
+export function UndoGoalButton({ goal }: { goal: string }) {
+  const [step, setStep] = useState<{ kind: 'idle' } | { kind: 'busy' } | { kind: 'confirm'; commits: { sha: string; summary: string }[] } | { kind: 'said'; text: string; ok: boolean }>({ kind: 'idle' });
+  const run = async (confirm: boolean) => {
+    setStep({ kind: 'busy' });
+    try {
+      const r = await api.command<{ commits: { sha: string; summary: string }[]; undone?: string }>({ cmd: 'goal.undo', goal, confirm });
+      if (r.undone) setStep({ kind: 'said', ok: true, text: `Undone as commit ${r.undone}. The goal’s work is still in the history, so this can be undone too.` });
+      else if (!r.commits.length) setStep({ kind: 'said', ok: true, text: 'Nothing to undo: the project has no commits since this goal started.' });
+      else setStep({ kind: 'confirm', commits: r.commits });
+    } catch (e) {
+      setStep({ kind: 'said', ok: false, text: (e as Error).message });
+    }
+  };
+  if (step.kind === 'idle' || step.kind === 'busy')
+    return (
+      <button className="btn small ghost" disabled={step.kind === 'busy'} onClick={() => void run(false)} title="Put the project back as it was before this goal, as a new commit">
+        {step.kind === 'busy' ? 'Checking…' : 'Undo this goal'}
+      </button>
+    );
+  if (step.kind === 'said')
+    return (
+      <span className={`undo-said small${step.ok ? '' : ' bad'}`} role="status">
+        {step.text}{' '}
+        <button className="btn ghost small" onClick={() => setStep({ kind: 'idle' })}>
+          OK
+        </button>
+      </span>
+    );
+  return (
+    <div className="undo-confirm" role="group" aria-label="Undo this goal">
+      <div className="small">
+        This puts every file back as it was before the goal, as one new commit. It undoes {step.commits.length === 1 ? 'this commit' : `these ${step.commits.length} commits`}:
+      </div>
+      <ul className="small mono">
+        {step.commits.slice(0, 12).map(c => (
+          <li key={c.sha}>
+            {c.sha} {c.summary}
+          </li>
+        ))}
+        {step.commits.length > 12 && <li>…and {step.commits.length - 12} more</li>}
+      </ul>
+      <div className="row">
+        <button className="btn small danger" onClick={() => void run(true)}>
+          Undo {step.commits.length === 1 ? 'it' : `all ${step.commits.length}`}
+        </button>
+        <button className="btn small ghost" onClick={() => setStep({ kind: 'idle' })}>
+          Keep it
+        </button>
+      </div>
+    </div>
   );
 }

@@ -4,6 +4,27 @@ import { ago } from '../format.ts';
 import type { InboxItem } from '../types.ts';
 import { Markdown, More } from './common.tsx';
 import { AttachButton, Drafts, useAttachments, withAttachments } from './Attachments.tsx';
+import { explainApproval, parseChoices, useBeginner, type Explained } from '../beginner.ts';
+
+const RISK: Record<Explained['risk'], string> = { low: 'Low risk', medium: 'Check first', high: 'Risky' };
+
+/** Beginner mode: what an approval does, why it's asked and whether it can be undone, the command folded away. */
+function ApprovalExplained({ item, e }: { item: InboxItem; e: Explained }) {
+  return (
+    <div className={`explain risk-${e.risk}`}>
+      <div className="explain-head">
+        <b>{e.summary}</b>
+        <span className="risk-pill">{RISK[e.risk]}</span>
+      </div>
+      {item.note && <div className="small">Why you’re asked: {item.note.replace(/^Gatekeeper:\s*/, '')}</div>}
+      <div className="muted small">{e.undo}</div>
+      <details>
+        <summary className="small">Show the command</summary>
+        <pre className="code">{item.text}</pre>
+      </details>
+    </div>
+  );
+}
 
 type Resolve = (item: string, decision: 'approve' | 'deny' | 'dismiss', reply?: string) => void;
 
@@ -77,6 +98,9 @@ export function InboxCard({ item, onResolve, onSelectAgent, goalLabel, compact }
     attachments.clear();
   };
   const hasAnswer = (!!r || attachments.drafts.length > 0) && !attachments.busy;
+  const beginner = useBeginner();
+  const explained = beginner && item.kind === 'approval' ? explainApproval(item.text) : undefined;
+  const choices = parseChoices(item.text);
   return (
     <div className={`inbox-item ${item.kind}${compact ? ' compact' : ''}`}>
       <div className="head">
@@ -88,10 +112,26 @@ export function InboxCard({ item, onResolve, onSelectAgent, goalLabel, compact }
         {goalLabel && <span className="goal-label" title={goalLabel}>{goalLabel}</span>}
         <span className="muted">{ago(item.ts)}</span>
       </div>
-      <More lines={compact ? 3 : 6} className="body">
-        {item.kind === 'approval' ? <pre className="code">{item.text}</pre> : <Markdown text={item.text} />}
-      </More>
-      {item.note && <div className="muted small">{item.note}</div>}
+      {explained ? (
+        <ApprovalExplained item={item} e={explained} />
+      ) : (
+        <>
+          <More lines={compact ? 3 : 6} className="body">
+            {item.kind === 'approval' ? <pre className="code">{item.text}</pre> : <Markdown text={item.text} />}
+          </More>
+          {item.note && <div className="muted small">{item.note}</div>}
+        </>
+      )}
+      {choices.length > 0 && (item.kind === 'decision' || item.kind === 'question') && (
+        <div className="choices" role="group" aria-label="Choices">
+          {choices.map(c => (
+            <button key={c.label} className={`btn small${c.recommended ? ' primary' : ''}`} onClick={() => onResolve(item.id, 'dismiss', `My choice: ${c.label}`)}>
+              {c.label}
+              {c.recommended && <span className="rec">recommended</span>}
+            </button>
+          ))}
+        </div>
+      )}
       {item.kind === 'approval' && (
         <>
           {replying && <input type="text" autoFocus placeholder="Note or reason for the agent (optional)" value={reply} onChange={e => setReply(e.target.value)} />}

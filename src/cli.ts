@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { eventLine } from './format.ts';
 import type { MhEvent } from './types.ts';
 
@@ -260,12 +261,39 @@ async function tail(goalId?: string): Promise<void> {
   }
 }
 
+/** The exit code a daemon uses to ask its supervisor to start it again. */
+const RESTART_CODE = 75;
+
+/**
+ * `mh daemon` itself: runs the daemon as a child, with this terminal, and starts it again each time
+ * it exits asking to (RESTART_CODE). Ctrl+C reaches the child too; this one ends when it does.
+ */
+async function supervise(): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  let child: import('node:child_process').ChildProcess | undefined;
+  process.on('SIGINT', () => {});
+  process.on('SIGTERM', () => child?.kill('SIGTERM'));
+  for (;;) {
+    child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: 'inherit', env: { ...process.env, MH_DAEMON_CHILD: '1' } });
+    const code = await new Promise<number | null>(resolve => {
+      child!.on('exit', c => resolve(c));
+      child!.on('error', () => resolve(1));
+    });
+    if (code !== RESTART_CODE) process.exit(code ?? 0);
+    console.log('\nRestarting MetaHarness with the code on disk…\n');
+  }
+}
+
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   const { pos, opt } = parse(rest);
   const s = (k: string) => (typeof opt[k] === 'string' ? (opt[k] as string) : undefined);
   switch (cmd) {
     case 'daemon': {
+      // The daemon runs as a child of this one, which starts it again when it asks (the app's
+      // Restart, after an update): the port is free by then, and its output stays in this terminal.
+      if (!process.env.MH_DAEMON_CHILD) return supervise();
+      delete process.env.MH_DAEMON_CHILD;
       const { Daemon } = await import('./daemon.ts');
       const { FakeAdapter, demoScripts, demoTurns } = await import('./adapters/fake.ts');
       const { ClaudeAdapter } = await import('./adapters/claude.ts');
@@ -310,13 +338,23 @@ async function main(): Promise<void> {
       const shutdown = () => void d.close().then(() => process.exit(0));
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
+      d.onRestart = () => void d.close().then(() => process.exit(RESTART_CODE));
       return;
     }
     case 'doctor': {
       const { loadProfiles, inspect } = await import('./harnesses.ts');
       const { loadConfig } = await import('./config.ts');
-      const { doctorLines } = await import('./doctor.ts');
-      console.log('Checking harnesses (this runs each CLI\'s own version, login and model commands)…\n');
+      const { doctorLines, machineLines } = await import('./doctor.ts');
+      const { UI_DIR } = await import('./server.ts');
+      const gitVersion = (() => {
+        try {
+          return /(\d+\.\d+(\.\d+)?)/.exec(execFileSync('git', ['--version'], { encoding: 'utf8' }))?.[1];
+        } catch {
+          return undefined;
+        }
+      })();
+      for (const line of machineLines({ node: process.versions.node, git: gitVersion, uiBuilt: existsSync(join(UI_DIR, 'index.html')), dir: join(import.meta.dirname, '..'), platform: process.platform })) console.log(line);
+      console.log('\nChecking harnesses (this runs each CLI\'s own version, login and model commands)…\n');
       const reports = await Promise.all([...loadProfiles(configDirs()).values()].map(inspect));
       const cfg = loadConfig(configDirs());
       const { missingPrograms } = await import('./skills.ts');

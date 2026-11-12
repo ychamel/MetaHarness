@@ -485,6 +485,10 @@ export class Daemon {
   readonly home: string;
   readonly store: EventStore;
   readonly hub: Hub;
+  /** When this daemon started: code changed on disk after it isn't running yet (daemon.info). */
+  readonly startedAt = Date.now();
+  /** Set by `mh daemon` when a supervisor can start it again; daemon.restart calls it. */
+  onRestart?: () => void;
   readonly goals = new Map<string, GoalRec>();
   readonly humanInbox: HumanInboxItem[] = [];
   readonly quickTimeoutMs: number;
@@ -5858,6 +5862,66 @@ export class Daemon {
     return path;
   }
 
+  /**
+   * Undoing a finished goal: every file in the project put back as it was when the goal started,
+   * saved as one new commit, so the history keeps the goal's work and the undo can itself be
+   * undone. Without `confirm`, only what it would undo. Refused while the goal runs, when the
+   * project has changes that aren't committed, or when the checkout is on another branch.
+   */
+  undoGoal(id: string, confirm = false): { commits: { sha: string; summary: string }[]; undone?: string } {
+    const start = this.store.ofType('goal.started').find(e => e.goal === id);
+    if (!start) throw new Error(`There's no goal ${id}.`);
+    const dir = String(start.data.dir ?? '');
+    const base = start.data.base ? String(start.data.base) : '';
+    const branch = start.data.branch ? String(start.data.branch) : '';
+    if (!dir || !existsSync(dir)) throw new Error(`The project folder ${dir || ''} isn't there any more.`);
+    if (!base) throw new Error("This goal didn't record where it started, so it can't be undone from here.");
+    const live = this.goals.get(id);
+    // Done and idle agents only wake for a message; anyone else could still be changing files.
+    if (live && [...live.agents.values()].some(a => !['done', 'idle', ...FINISHED].includes(a.state))) throw new Error('The team is still working on this goal. End it first, then undo it.');
+    const current = git.git(dir, 'rev-parse', '--abbrev-ref', 'HEAD');
+    if (branch && current !== branch) throw new Error(`The project is on ${current}, but the goal worked on ${branch}. Switch back to ${branch} first.`);
+    if (git.git(dir, 'status', '--porcelain')) throw new Error('The project has changes that aren’t saved in a commit. Commit or put them aside (git stash) first, so nothing of yours is lost.');
+    const log = git.git(dir, 'log', '--format=%h%x09%s', `${base}..HEAD`);
+    const commits = log ? log.split('\n').map(l => ({ sha: l.split('\t')[0], summary: l.split('\t').slice(1).join('\t') })) : [];
+    if (!confirm || !commits.length) return { commits };
+    const request = String(start.data.request ?? '').split('\n')[0].slice(0, 60);
+    git.git(dir, 'restore', `--source=${base}`, '--staged', '--worktree', '--', ':/');
+    try {
+      git.git(dir, 'commit', '-m', `Undo goal ${id}${request ? `: ${request}` : ''}`, '-m', `Puts every file back as it was at ${base}, before the goal started. Undoes:\n${commits.map(c => `${c.sha} ${c.summary}`).join('\n')}`);
+    } catch (e) {
+      // The project's own commit hook said no: back to how it was. It had nothing uncommitted (checked above).
+      git.git(dir, 'reset', '--hard', 'HEAD');
+      throw new Error(`The project's commit check refused the undo, so nothing was changed: ${((e as { stderr?: string }).stderr || (e as Error).message).trim().slice(0, 400)}`);
+    }
+    const undone = git.git(dir, 'rev-parse', '--short', 'HEAD');
+    this.emit({ goal: id, type: 'goal.undone', data: { commit: undone, base, commits: commits.map(c => c.sha) } });
+    return { commits, undone };
+  }
+
+  /**
+   * Whether the code on disk is newer than this running daemon (updated by git pull, or edited):
+   * the daemon runs the code it started with, so changes need a restart. `canRestart` when a
+   * supervisor can start it again (mh daemon).
+   */
+  daemonInfo(srcDir = import.meta.dirname): { startedAt: string; codeChangedAt?: string; stale: boolean; canRestart: boolean } {
+    let newest = 0;
+    try {
+      for (const f of readdirSync(srcDir, { recursive: true, encoding: 'utf8' })) {
+        if (!f.endsWith('.ts')) continue;
+        newest = Math.max(newest, statSync(join(srcDir, f)).mtimeMs);
+      }
+    } catch {
+      // Can't read its own folder: nothing to say about it.
+    }
+    return {
+      startedAt: new Date(this.startedAt).toISOString(),
+      ...(newest ? { codeChangedAt: new Date(newest).toISOString() } : {}),
+      stale: newest > this.startedAt,
+      canRestart: !!this.onRestart,
+    };
+  }
+
   /* ---------------- client API ---------------- */
 
   /**
@@ -6354,6 +6418,16 @@ export class Daemon {
       }
       case 'goal.docs':
         return { docs: this.goalDocs(s('goal') ?? '') };
+      case 'goal.undo':
+        return this.undoGoal(s('goal') ?? '', b.confirm === true);
+      case 'daemon.info':
+        return this.daemonInfo();
+      case 'daemon.restart': {
+        if (!this.onRestart) throw new Error("This MetaHarness can't restart itself. Stop it (Ctrl+C where it runs) and start it again with mh daemon.");
+        // After the reply is sent: the app hears it, then loses the connection for a few seconds.
+        setTimeout(this.onRestart, 300).unref();
+        return { result: 'Restarting. Agents mid-task pick up where they left off.' };
+      }
       case 'goal.sizes':
         return { sizes: this.goalSizes() };
       case 'goal.open_folder':
